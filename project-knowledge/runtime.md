@@ -1197,13 +1197,27 @@ the prefix it was started with.
   collects the images nothing refers to (`_collect_images`: not while a workspace is being made
   or rebuilt, but by a rebuild's own thread as it ends, nor when a plan cannot be read, never
   one a container is made from, never by force, and the keep list is every stored plan's image
-  and id, each workspace's `image_id`, the image built for each workspace under both its names
+  and id, the `image_id` of each workspace with no stored plan (beside a plan it is stale and read
+  nowhere, the plan holding its own image's id), the image built for each workspace under both its names
   (`BUILT_TAG`, `NEXT_TAG`), and the runtime's own: the configured default image and every image
   of its repository made after it, and every tag of the builder repository, since an upgrade builds
   the next ones beside the service, and the whole default repository where the configured image is
   not there, since nothing then tells the old from the new; an image with no name stays until it
   is `IMAGE_GRACE_SECONDS` old, being perhaps a layer of a build under way; names are compared
-  fully qualified, as Podman lists them, `qualified_name`), which it does after a deletion too. It
+  fully qualified, as Podman lists them, `qualified_name`), which it does after a deletion too.
+  `PodmanRuntime.collect_images` lists with `podman images -a`, so that the nameless images a
+  build keeps for its steps are seen, each linked by `ParentId` to the image it is built on (one
+  with none is a root). An image is kept by the keep list, the runtime's own, the grace, or a
+  container made from it (`Containers`), and an image anything listed is built on is never tried,
+  which keeps everything a kept image is built on: it goes at a later collection, once nothing is
+  built on it. Podman's refusal is not counted on, since removing an image that has a child
+  succeeds there (it removes the image's record, and the child is a root after it), as
+  `tests/container/test_runtime_in_podman.py` holds. An image that is not known by its turn was
+  removed by something else meanwhile, counts as gone, and is not logged as staying. In practice
+  `-a` changes little: the step images under kept images stay, and removing them would free no
+  space, since the kept images use their layers; and removing a leaf takes its nameless parents
+  that nothing else is built on with it. What frees an old default image is that a workspace's
+  `image_id` keeps it only while the workspace has no stored plan. It
   holds `_images_lock`, which `create` holds while it records a workspace, so a workspace is either
   seen by a collection or recorded after it; `rcman-admin` does not collect; removes each person an
   earlier rcman was deleting, once none of their workspaces is left, their

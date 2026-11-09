@@ -643,7 +643,13 @@ helper made inside the holder's network and handed back.
   in the default image; and what the monitor reads of Podman: the disk read naming a
   workspace's container and both its volumes, the recordings of `tests/fakes/podman-monitor/`
   held to this Podman's tables and inspect, an inspect naming a container that is gone
-  answering those that are there, and the storage folder `info` names.
+  answering those that are there, and the storage folder `info` names; what image collection
+  rests on, `images -a` listing a plain build's nameless step image linked by `ParentId` down to
+  its base, and what `image rm` does to an image with a child, to the one name of a named image
+  with a child and to a leaf's nameless parents, held to its recording
+  (`tests/fakes/podman-images/`); and the `system df` summary counting a layer two images share
+  once, in bytes, and counting a layer that belongs to no image, held to its recording
+  (`tests/fakes/podman-monitor/df-summary.json`).
 - `tests/container/test_github_in_podman.py`: git in a workspace of the Podman runtime against
   `tests/github_server.py` served as `https://github.com` in a network of its own: the workspace
   in that network's namespace and not this process's, rcman's push (`Repository`), Claude's git
@@ -798,7 +804,8 @@ helper made inside the holder's network and handed back.
   `test_the_sizes_fit`: the slots within the engine's map, every
   `*_ID` integer of the modules of `tests/container/` and the owner of every file in every image
   on the engine within one slot's range, with its twins, a smaller map and an image with a file
-  owned beyond it.
+  owned beyond it; and the builder image built with the installer's own arguments (`build_argv`)
+  leaving no image without a name.
 - `tests/container/test_builder_on_engine.py`: the builder image in the builder's slot, its
   Podman on native overlay with no FUSE device, building a Dockerfile with a whiteout and a local
   feature into an image a workspace then runs from; and its twin, a builder without
@@ -889,7 +896,7 @@ snapshot is removed when the session ends.
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
+| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman, and `system df --format json`'s summary (`podman-monitor/df-summary.json`), which `tests/container/test_runtime_in_podman.py` holds to that Podman; `podman images -a --format json` of a plain build's leaf, its nameless step image and its base, recorded from Podman on the tests' engine (`podman-images/images-a.json`), which `tests/test_runtime.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and the screenshot capture — see [frontend.md](frontend.md) |

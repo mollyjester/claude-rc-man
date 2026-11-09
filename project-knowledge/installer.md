@@ -267,7 +267,10 @@ back by `read_status`, which takes only a JSON object with exactly `FIELDS`:
 - **The default image** (`ensure_image`): built from `CONTAINERFILE`, in the build context
   `image_context` makes, which the container tests build it from too, unless
   Podman has it, named after the file's content (`workspace_image`), so that a
-  changed file makes a new image, and the old one stays the workspaces' it is.
+  changed file makes a new image, and the old one stays the workspaces' it is. Both images
+  are built with `build_argv`'s arguments, which the container tests' fixtures build them
+  with too: `--layers=false`, so that a build keeps no image of each step, which nothing
+  names. Nothing is removed after a build, which would race the running service.
 - **The builder image** (`ensure_devcontainer_builder`): built from `BUILDER_DIR` with
   rcman's Podman unless Podman has it, like the default image, so the installer needs
   the network and there is no offline install. It is named `BUILDER_REPOSITORY` and

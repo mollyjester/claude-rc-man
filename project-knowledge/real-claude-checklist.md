@@ -210,6 +210,10 @@ and a workspace's **Terminal** tab open with `sleep` running in its shell:
    message, and the approved version is the one written down.
 4. The Terminal tab says rcman is restarting and offers **Reconnect**, and neither the
    shell nor its `sleep` is left in the workspace (`podman top` as `rcman`).
+5. On the host's own Podman (the container tests ran on another version): as `rcman`,
+   `podman images -a --format json` gives each image `ParentId` and `Containers`; after the
+   upgrade's collection, the nameless images under images that are kept are still there, and
+   the old nameless images that nothing is built on are gone.
 
 ## Upgrading from the web interface
 

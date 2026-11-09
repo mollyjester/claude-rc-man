@@ -2,8 +2,8 @@
 argv, with the suites' sizes injected (tests/container/sizes.py), and what rcman does in it - an
 exec, the channel, the Terminal tab's shell; what the workspace's seccomp profile and its unmasked
 /proc allow a container nested in it, against a sign-in container, which has neither; nothing of
-the workspace left once it is stopped or removed; and the sizes fitting the engine's ids and every
-id the suites use.
+the workspace left once it is stopped or removed; the sizes fitting the engine's ids and every
+id the suites use; and the installer's build of its images keeping no image without a name.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import json
 import os
 import pty
 import select
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
@@ -21,6 +22,7 @@ from pathlib import Path
 import pytest
 from rcman import runtime as rt
 
+from installer import install as ins
 from tests import podman_service as ps
 from tests.container import sizes
 from tests.hang_guard import CONTAINER_HANG_GUARD
@@ -651,3 +653,32 @@ def test_the_sessions_images_survive_a_collection_and_an_image_nothing_holds_doe
     finally:
         podman_service.cli("rm", "--force", ps.holder_of(held))
         podman_service.cli("rmi", "--force", held, loose)
+
+
+def nameless_images(engine) -> set[str]:
+    found = engine.cli("images", "-a", "--format", "json", timeout=CONTAINER_HANG_GUARD)
+    assert found.returncode == 0, found.stderr
+    return {e["Id"] for e in json.loads(found.stdout or b"[]") or [] if not e.get("Names")}
+
+
+def test_the_installers_build_leaves_no_image_without_a_name(podman_service, tmp_path):
+    """The installer builds its images with --layers=false (installer/install.py), so a build
+    keeps no step image, which nothing names and collect_images would have to find: the builder
+    image, of two stages, built from its own folder as the installer builds it, adds no image
+    without a name. The images it starts from are pulled first, so that only the build is
+    measured."""
+    from tests.containers import digest_references
+
+    for reference in digest_references(ins.BUILDER_DIR / "Containerfile"):
+        pulled = podman_service.cli("pull", "-q", reference, timeout=CONTAINER_HANG_GUARD)
+        assert pulled.returncode == 0, pulled.stderr
+    before = nameless_images(podman_service)
+    shutil.copytree(ins.BUILDER_DIR, tmp_path, dirs_exist_ok=True)
+    name = "localhost/rcman-test-builder:nameless"
+    try:
+        built = podman_service.cli(*ins.build_argv(name, tmp_path), timeout=CONTAINER_HANG_GUARD)
+        assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
+        assert podman_service.cli("image", "exists", name).returncode == 0  # it was built
+        assert nameless_images(podman_service) - before == set()
+    finally:
+        podman_service.cli("image", "rm", name)

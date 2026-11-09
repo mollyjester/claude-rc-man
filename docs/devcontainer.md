@@ -536,10 +536,11 @@ images pulled for workspaces that are gone and older default images; it does so 
 workspace or a person is deleted, and after a Rebuild, too, and never removes an image a
 container is made from. It keeps every image a stored plan or a workspace names, by name and by
 id, the current default image and any default image built after it, which an upgrade builds
-before rcman restarts, the builder images with every tag they have, and an image with no name for
-a while after it was made. An older default image stays only while a workspace or a stored plan
-made from it remains; where the current default image is missing from rcman's storage, every
-default image stays. It removes nothing at all when the table of workspaces is empty
+before rcman restarts, the builder images with every tag they have, an image with no name for
+a while after it was made, and every image a kept image is built on. An older default image stays only while a workspace made from it and
+running it, or a stored plan made from it, remains: a workspace that was made from it and now runs
+an image built for it does not keep it. Where the current default image is missing from rcman's
+storage, every default image stays. It removes nothing at all when the table of workspaces is empty
 while rcman's Podman holds some, which it writes to the [journal](journal.md) as an error. The
 create commands are not run again, except for a Rebuild cut short while the container was
 replaced (see [Rebuilding a workspace](#rebuilding-a-workspace)). A workspace that rcman's restart interrupted while it was

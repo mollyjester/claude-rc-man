@@ -807,9 +807,12 @@ class Runtime(ABC):
         itself keep (the configured default image and those whose Created time is later, which
         for the installer's default image, built here, is when it was built, and for an image
         configured otherwise is that image's own build time; every builder's).
-        An old default image goes with the rest unless its id is kept. Never by force: an image
-        a container is made from stays, and so does one that cannot be removed, which is not an
-        error. The names (or ids, of those with none) that were removed."""
+        An old default image goes with the rest unless its id is kept. The images with no name
+        that a build keeps for its steps are among them, once they are past the grace for a build
+        under way. An image a container is made from is kept, and an image anything listed is
+        built on is never tried, so everything a kept image is built on is kept with it: it goes
+        at a later collection, once nothing is. Never by force: one that cannot be removed stays,
+        which is not an error. The names (or ids, of those with none) that were removed."""
 
     @abstractmethod
     def default_image_id(self) -> str:
@@ -1783,35 +1786,58 @@ class PodmanRuntime(Runtime):
         default_repository = repository_of(default)
         builder_repository = repository_of(qualified_name(self.config.builder_image))
         wanted = {qualified_name(n) for n in keep_names} | {default}
-        listed = json.loads(self._podman("images", "--format=json").stdout or b"[]") or []
-        named = [(entry, _names_of(entry)) for entry in listed]
-        configured = [e for e, names in named if default in {qualified_name(n) for n in names}]
+        keep_ids = {i.removeprefix("sha256:") for i in keep_ids}
+        # Every image, the nameless ones a build keeps for its steps among them (-a); each is
+        # linked by ParentId to the image it is built on, and one with none is a root.
+        listed = json.loads(self._podman("images", "-a", "--format=json").stdout or b"[]") or []
+        entries = [
+            (str(e.get("Id") or "").removeprefix("sha256:"), e, _names_of(e)) for e in listed
+        ]
+        parent = {
+            image: str(e.get("ParentId") or "").removeprefix("sha256:") for image, e, _ in entries
+        }
+        configured = [e for _, e, names in entries if default in {qualified_name(n) for n in names}]
         made = float(configured[0].get("Created") or 0) if configured else None
-        kept = {builder_repository} | ({default_repository} if made is None else set())
-        removed: list[str] = []
+        repositories = {builder_repository} | ({default_repository} if made is None else set())
         young = time.time() - IMAGE_GRACE_SECONDS
-        for entry, names in named:
-            image = str(entry.get("Id") or "").removeprefix("sha256:")
-            qualified = [qualified_name(n) for n in names]
-            later = made is not None and float(entry.get("Created") or 0) > made
-            if image in keep_ids or any(
-                n in wanted
-                or repository_of(n) in kept
-                or (later and repository_of(n) == default_repository)
-                for n in qualified
-            ):
+
+        def keeps_itself(image: str, entry: dict, names: list[str]) -> bool:
+            created = float(entry.get("Created") or 0)
+            later = made is not None and created > made
+            return (
+                image in keep_ids
+                or any(
+                    n in wanted
+                    or repository_of(n) in repositories
+                    or (later and repository_of(n) == default_repository)
+                    for n in (qualified_name(n) for n in names)
+                )
+                or (not names and created > young)  # perhaps a step of a build under way
+                or int(entry.get("Containers") or 0) > 0
+            )
+
+        # An image anything listed is built on is never tried, which keeps everything a kept
+        # image is built on: Podman does not refuse to remove an image with a child (it removes
+        # its record, and the child is a root after it). It goes once nothing is.
+        kept = {image for image, entry, names in entries if keeps_itself(image, entry, names)}
+        built_on = set(parent.values())
+        removed: list[str] = []
+        for image, _, names in entries:
+            if image in kept or image in built_on:
                 continue
-            if not names and float(entry.get("Created") or 0) > young:
-                continue  # no name and not old: a layer of a build that may be under way
             # By name where there are names: removing an image by its id when it has more than
             # one is refused, and a name that is the last one takes the image with it.
             for target in names or [image]:
-                if not (target == image and not builder.is_image_id(image)):
-                    gone = self._podman("image", "rm", target, check=False)
-                    if gone.returncode == 0:
-                        removed.append(target)
-                    else:
-                        log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
+                if target == image and not builder.is_image_id(image):
+                    continue
+                gone = self._podman("image", "rm", target, check=False)
+                if gone.returncode == 0:
+                    removed.append(target)
+                elif b"image not known" in gone.stderr:
+                    # Something else removed it meanwhile.
+                    log.debug("the image %s was gone already", target)
+                else:
+                    log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
         return removed
 
     def default_image_id(self) -> str:

@@ -1752,6 +1752,26 @@ def test_a_builder_image_that_is_there_is_not_built_again(monkeypatch):
     assert "build" not in fake.verbs() and "rmi" not in fake.verbs()
 
 
+def test_both_images_are_built_without_keeping_step_images(monkeypatch):
+    """A plain build keeps an image of each step, which nothing names; neither build keeps
+    them, and nothing is removed after a build, which would race the running service."""
+    fake = FakePodman([])
+    use_fake_podman(monkeypatch, fake)
+    ins.ensure_image()
+    ins.ensure_devcontainer_builder()
+    builds = [c for c in fake.calls if c[1] == "build"]
+    assert [b[b.index("--tag") + 1] for b in builds] == [
+        ins.workspace_image(),
+        ins.devcontainer_builder_image(),
+    ]
+    for build in builds:
+        assert build[1:] == ins.build_argv(build[build.index("--tag") + 1], Path(build[-1]))
+        assert "--layers=false" in build
+    # Nothing is removed (an older builder image goes in its own step, which
+    # test_older_builder_images_are_pruned_by_their_own_step_and_others_left_alone shows).
+    assert [c for c in fake.calls if c[1] in ("rmi", "prune") or c[1:3] == ["image", "rm"]] == []
+
+
 def test_older_builder_images_are_pruned_by_their_own_step_and_others_left_alone(monkeypatch):
     image = ins.devcontainer_builder_image()
     old = "localhost/rcman-builder:aaaaaaaaaaaa"

@@ -2,14 +2,17 @@
 engine (tests/podman_service.py), with the suites' sizes (tests/container/sizes.py), the tools
 as the installer writes them, an empty Claude store and the default workspace image
 (tests/container/conftest.py). The same contract the host runtime keeps
-(tests/runtime_contract.py) runs here first.
+(tests/runtime_contract.py) runs here first. What image collection and the monitor read of
+Podman's images is held here too, with the recordings the unit tests read of it.
 """
 
 import dataclasses
+import io
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 import threading
 import time
 from pathlib import Path
@@ -20,6 +23,7 @@ from rcman import monitor
 from rcman import runtime as rt
 
 from helpers import instructions
+from tests import podman_service as ps
 from tests import runtime_contract
 from tests.container import sizes
 from tests.hang_guard import CONTAINER_HANG_GUARD
@@ -639,3 +643,199 @@ def test_the_storage_folder_is_the_one_podman_info_names(podman_service, podman)
     assert podman.storage_root() == asked.stdout.decode().strip()
     recorded = json.loads((MONITOR_RECORDED / "info.json").read_text())
     assert recorded["store"]["graphRoot"]  # the recording has what is read from it
+
+
+# --- what image collection and the monitor's Storage read of Podman's images -----------------
+
+IMAGES_RECORDED = Path(__file__).resolve().parent.parent / "fakes" / "podman-images"
+# What collect_images (rcman/runtime.py) reads of each entry of `podman images -a`.
+IMAGE_KEYS = ("Id", "ParentId", "Names", "Created", "Containers")
+# The steps of a plain two-step build.
+TWO_STEPS = ["RUN echo one > /one", "RUN echo two > /two"]
+
+
+def bare(image: str | None) -> str:
+    return (image or "").removeprefix("sha256:")
+
+
+def listed_all(engine) -> list[dict]:
+    """`podman images -a --format json` on the engine."""
+    found = engine.cli("images", "-a", "--format", "json", timeout=CONTAINER_HANG_GUARD)
+    assert found.returncode == 0, found.stderr
+    return json.loads(found.stdout or b"[]") or []
+
+
+def image_id(engine, name: str) -> str:
+    found = engine.cli("image", "inspect", "--format", "{{.Id}}", name)
+    assert found.returncode == 0, found.stderr
+    return bare(found.stdout.decode().strip())
+
+
+def built_on(engine, base: str, folder: Path, name: str, steps: list[str]) -> str:
+    """An image built on the engine with a plain `podman build` from ``base`` and ``steps``,
+    kept as ``name``; its id."""
+    (folder / "Containerfile").write_text("\n".join([f"FROM {base}", *steps]) + "\n")
+    built = engine.cli("build", "-q", "-t", name, "-f", str(folder / "Containerfile"),
+                       str(folder), timeout=CONTAINER_HANG_GUARD)  # fmt: skip
+    assert built.returncode == 0, built.stdout + built.stderr
+    return image_id(engine, name)
+
+
+def outcome(result) -> dict:
+    return {"returncode": result.returncode, "stderr": result.stderr.decode().strip()[-300:]}
+
+
+def test_images_all_lists_a_builds_step_images_with_their_parent(
+    podman_service, base_image, tmp_path
+):
+    """What collect_images (rcman/runtime.py) rests on, on this Podman: `images -a` lists the
+    step images of a plain build with no name, ParentId linking each to the image built on it,
+    down to the base. It holds too what `image rm` does to a nameless image with a child, what
+    removing the leaf does to its nameless parents, and what removing the name of a named image
+    with a child does, and the recording the unit tests read
+    (tests/fakes/podman-images/images-a.json) to this Podman's listing."""
+    engine, name = podman_service, "localhost/rcman-test-steps:leaf"
+    parent_name = "localhost/rcman-test-steps:parent"
+    final = built_on(engine, base_image, tmp_path, name, TWO_STEPS)
+    base = image_id(engine, base_image)
+    steps: list[str] = []
+    try:
+        entries = {bare(e["Id"]): e for e in listed_all(engine)}
+        chain = [final]
+        while chain[-1] != base and bare(entries.get(chain[-1], {}).get("ParentId")) in entries:
+            chain.append(bare(entries[chain[-1]]["ParentId"]))
+            assert len(chain) <= len(entries)
+        steps = chain[1:-1]
+        listing = [{k: entries[i].get(k) for k in IMAGE_KEYS} for i in chain]
+        facts: dict = {"chain": chain}
+
+        def there() -> dict[str, list[str]]:
+            return {bare(e["Id"]): e.get("Names") or [] for e in listed_all(engine)}
+
+        def rebuilt() -> tuple[str, str]:
+            leaf = built_on(engine, base_image, tmp_path, name, TWO_STEPS)
+            found = next(e for e in listed_all(engine) if bare(e["Id"]) == leaf)
+            steps.append(bare(found["ParentId"]))
+            return leaf, steps[-1]
+
+        facts["rm of the leaf"] = outcome(engine.cli("image", "rm", name))
+        facts["its nameless parents left"] = [s for s in chain[1:-1] if s in there()]
+        _, parent = rebuilt()
+        facts["tag"] = outcome(engine.cli("tag", parent, parent_name))
+        facts["rm of the name of a named image with a child"] = outcome(
+            engine.cli("image", "rm", parent_name)
+        )
+        facts["the named image left"] = parent in there()
+        again, parent = rebuilt()
+        facts["rm of an image with a child"] = outcome(engine.cli("image", "rm", parent))
+        facts["left after it, of the chain"] = [i for i in (again, parent, base) if i in there()]
+        facts["the child's ParentId after"] = next(
+            (e.get("ParentId") for e in listed_all(engine) if bare(e["Id"]) == again), None
+        )
+        print(json.dumps({"listing": listing, "facts": facts}, indent=1))
+
+        assert chain[-1] == base and chain[1:-1]  # the steps lead down to the base
+        assert parent_name not in str(listing)
+        assert all(not entries[s].get("Names") for s in chain[1:-1])
+        assert name in (entries[final].get("Names") or [])
+        # Not refused: the record of the image goes, the child stays and is a root after it.
+        assert facts["rm of an image with a child"]["returncode"] == 0
+        assert facts["left after it, of the chain"] == [again, base]
+        assert not facts["the child's ParentId after"]
+        # Removing the one name of an image with a child removes the image, not the name alone.
+        assert facts["rm of the name of a named image with a child"]["returncode"] == 0
+        assert not facts["the named image left"]
+        # Removing the leaf takes its nameless parents, which nothing else is built on, with it.
+        assert facts["rm of the leaf"]["returncode"] == 0
+        assert facts["its nameless parents left"] == []
+        recorded = json.loads((IMAGES_RECORDED / "images-a.json").read_text())
+        for real in listing:
+            assert set(IMAGE_KEYS) <= set(real)
+        assert recorded and all(set(r) == set(IMAGE_KEYS) for r in recorded)
+        assert {type(r[k]).__name__ for r in recorded for k in ("Created", "Containers")} == {
+            type(listing[0][k]).__name__ for k in ("Created", "Containers")
+        }
+        ids = {bare(r["Id"]) for r in recorded}
+        assert any(bare(r["ParentId"]) in ids and not r["Names"] for r in recorded)
+    finally:
+        for target in (name, parent_name, *steps):
+            engine.cli("image", "rm", target)
+
+
+def df_summary(engine) -> list[dict]:
+    found = engine.cli("system", "df", "--format", "json", timeout=CONTAINER_HANG_GUARD)
+    assert found.returncode == 0, found.stderr
+    return json.loads(found.stdout)
+
+
+def images_row(summary: list[dict]) -> dict:
+    return next(row for row in summary if row["Type"] == "Images")
+
+
+def ownerless_layer(engine, folder: Path) -> tuple[list[str], str]:
+    """A layer of a MiB that belongs to no image and no container, made in the engine's storage
+    with containers-storage, as a killed build leaves one: the argv that removes it, and the
+    layer's id."""
+    parts = ps._parts(engine.folder)
+    store = ["--graph", str(parts["root"]), "--run", str(parts["runroot"])]
+    layer = os.urandom(32).hex()
+    archive = folder / "layer.tar"
+    with tarfile.open(archive, "w") as tar:
+        data = os.urandom(1 << 20)
+        member = tarfile.TarInfo("ownerless")
+        member.size = len(data)
+        tar.addfile(member, io.BytesIO(data))
+    for argv in (
+        ["containers-storage", "create-layer", *store, "--id", layer],
+        ["containers-storage", "applydiff", *store, "--file", str(archive), layer],
+    ):
+        made = subprocess.run(argv, capture_output=True, env=ps.env(engine.folder),
+                              timeout=CONTAINER_HANG_GUARD)  # fmt: skip
+        assert made.returncode == 0, (argv, made.stderr)
+    return ["containers-storage", "delete-layer", *store, layer], layer
+
+
+def test_the_df_summary_counts_a_shared_layer_once(podman_service, base_image, tmp_path):
+    """What the monitor's Storage reads of this Podman's `system df --format json`: the Images
+    size counts a layer two images share once, in bytes, and counts a layer that belongs to no
+    image too; and the recording the unit tests read
+    (tests/fakes/podman-monitor/df-summary.json) to this Podman's summary."""
+    engine = podman_service
+    before = images_row(df_summary(engine))
+    names = ["localhost/rcman-test-share:a", "localhost/rcman-test-share:b"]
+    removal: list[str] = []
+    try:
+        for name in names:
+            folder = tmp_path / name[-1]
+            folder.mkdir()
+            built_on(engine, base_image, folder, name, [f"RUN echo {name} > /mark"])
+        summary = df_summary(engine)
+        after = images_row(summary)
+        base = engine.cli("image", "inspect", "--format", "{{.Size}}", base_image)
+        base_size = int(base.stdout.decode().strip())
+        removal, _ = ownerless_layer(engine, tmp_path)
+        with_layer = images_row(df_summary(engine))
+        facts = {
+            "base's size": base_size,
+            "RawSize grew by": after["RawSize"] - before["RawSize"],
+            "an ownerless layer counted": with_layer["RawSize"] != after["RawSize"],
+            "RawSize with it": with_layer["RawSize"],
+        }
+        print(json.dumps({"summary": summary, "facts": facts}, indent=1))
+
+        assert isinstance(after["RawSize"], int)
+        assert after["RawSize"] >= base_size  # bytes, as `image inspect` gives the base's
+        assert 0 < after["RawSize"] - before["RawSize"] < base_size  # the base counted once
+        # Every layer in the storage is counted, one that belongs to no image among them.
+        assert with_layer["RawSize"] - after["RawSize"] >= 1 << 20
+        recorded = json.loads((MONITOR_RECORDED / "df-summary.json").read_text())
+        assert {r["Type"] for r in recorded} == {r["Type"] for r in summary}
+        for row in recorded:
+            real = next(r for r in summary if r["Type"] == row["Type"])
+            assert {k: type(v) for k, v in row.items()} == {k: type(v) for k, v in real.items()}
+    finally:
+        if removal:
+            subprocess.run(removal, capture_output=True, env=ps.env(engine.folder),
+                           timeout=CONTAINER_HANG_GUARD)  # fmt: skip
+        for name in names:
+            engine.cli("image", "rm", name)
