@@ -572,11 +572,12 @@ of the clone runs, the installer refuses:
   owner, its mode or an ACL: every file and folder in the clone, `.git` and the
   project `uv sync` builds among them, and every folder above the clone. Only
   `frontend/node_modules` and `frontend/dist`, which the owner's npm makes and
-  uses, are left out;
+  uses, and `.venv`, your own virtualenv, whose lock file uv lets anyone write
+  and which root never reads, are left out;
 - a link in `.git`, `installer/` or `helpers/`, which root reads from the clone,
   a link where git tracks a file or a folder, which a release is built from, and
-  a folder above the clone that is a link. Other links, such as those `make setup`
-  leaves in `.venv`, are left alone: root never follows them;
+  a folder above the clone that is a link. Other links, such as those a worktree's
+  packages leave, are left alone: root never follows them;
 - a clone whose path holds characters other than letters, digits and
   `. _ / + -`.
 

@@ -48,14 +48,16 @@ UID_MIN_FALLBACK = 1000  # login.defs's own default, where it names none
 # of the clone, as root runs, reads or builds from what is there (install.sh, installer/, the
 # helpers, git's objects, configuration and hooks, and the project uv sync builds), and every
 # folder above it, which could be put in its place. Only the frontend's packages and its build,
-# which the owner's npm makes and uses, are passed by; the build is copied only when it holds
-# no link (installer/install.py copy_built_tree). These must be there.
-OWNER_ONLY = ("frontend/node_modules", "frontend/dist")
+# which the owner's npm makes and uses, and the owner's own virtualenv, which uv makes and keeps
+# a lock in that anyone may write, are passed by: root never reads the virtualenv, as a release
+# is built from what git tracks and gets a virtualenv of its own. The build is copied only when
+# it holds no link (installer/install.py copy_built_tree). These must be there.
+OWNER_ONLY = ("frontend/node_modules", "frontend/dist", ".venv")
 REQUIRED = (".git", "install.sh", "installer", "helpers/rules.py")
 # Where a link is refused: git's own files and the installer and helpers, which root reads by
 # their path from the clone, tracked or not; and every path git tracks, which a release is built
-# from. Elsewhere a link is what the owner's tools make (the virtualenv's interpreter, a
-# worktree's packages' programs), which root never reads: it is not followed, and passes.
+# from. Elsewhere a link is what the owner's tools make (a worktree's packages'
+# programs), which root never reads: it is not followed, and passes.
 LINKS_REFUSED_UNDER = (".git", "installer", "helpers")
 # How long git may take to list what it tracks.
 GIT_TIMEOUT = 120
