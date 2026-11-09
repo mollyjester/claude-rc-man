@@ -306,6 +306,8 @@ IMAGE_CREATE_TIMEOUT = 1800.0
 PULL_TIMEOUT = 3600.0
 PULL_POLL_SECONDS = 1.0
 PULL_TAIL_LINES = 5
+# The data of the key a process's exit is registered under in a selector (_exit_watched).
+EXITED = "exited"
 # What a pull says when the image it could not pull is one the runtime has already.
 USING_LOCAL_IMAGE = "The pull failed; the image already here is used"
 # How long an image with no name is left alone: it may be a layer of a build under way, which an
@@ -1055,6 +1057,24 @@ def podman_env() -> dict[str, str]:
     return env
 
 
+@contextlib.contextmanager
+def _exit_watched(proc: subprocess.Popen, waiting: selectors.BaseSelector):
+    """``proc``'s exit registered in ``waiting``, under the data EXITED, while the block runs:
+    a select there wakes when the process ends, as it does for its streams, so that a loop on
+    the selector covers the wait for the exit with its own cancel and deadline. The process's
+    pidfd is unregistered and closed when the block ends."""
+    pidfd = os.pidfd_open(proc.pid)
+    try:
+        waiting.register(pidfd, selectors.EVENT_READ, EXITED)
+        try:
+            yield
+        finally:
+            with contextlib.suppress(KeyError):
+                waiting.unregister(pidfd)
+    finally:
+        os.close(pidfd)
+
+
 def _run_keeping_tail(
     argv: list[str],
     stdin: bytes | None,
@@ -1665,23 +1685,33 @@ class PodmanRuntime(Runtime):
         tail: deque[str] = deque(maxlen=PULL_TAIL_LINES)
         deadline = time.monotonic() + PULL_TIMEOUT
         waiting = selectors.DefaultSelector()
-        waiting.register(proc.stdout, selectors.EVENT_READ)
+        waiting.register(proc.stdout, selectors.EVENT_READ, "out")
         pending = b""
         try:
-            while True:
-                if cancel is not None and cancel.is_set():
-                    raise RuntimeFailed("the pull was stopped")
-                if time.monotonic() > deadline:
-                    raise RuntimeFailed("podman pull did not finish in time")
-                if waiting.select(PULL_POLL_SECONDS):
-                    chunk = os.read(proc.stdout.fileno(), 65536)
-                    if not chunk:
+            with _exit_watched(proc, waiting):
+                exited = False
+                while waiting.get_map():
+                    if cancel is not None and cancel.is_set():
+                        raise RuntimeFailed("the pull was stopped")
+                    if time.monotonic() > deadline:
+                        raise RuntimeFailed("podman pull did not finish in time")
+                    ready = waiting.select(PULL_POLL_SECONDS)
+                    for key, _ in ready:
+                        if key.data == EXITED:
+                            waiting.unregister(key.fileobj)
+                            exited = True
+                            continue
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            waiting.unregister(key.fileobj)
+                            self._pulled_line(pending, tail, progress)
+                            pending = b""
+                            continue
+                        *lines, pending = re.split(rb"[\r\n]+", pending + chunk)
+                        for line in lines:
+                            self._pulled_line(line, tail, progress)
+                    if exited and not ready:  # it has ended, and nothing more is said
                         break
-                    *lines, pending = re.split(rb"[\r\n]+", pending + chunk)
-                    for line in lines:
-                        self._pulled_line(line, tail, progress)
-                elif proc.poll() is not None:
-                    break
             self._pulled_line(pending, tail, progress)
             code = proc.wait()
         finally:
@@ -1869,8 +1899,9 @@ class PodmanRuntime(Runtime):
     ) -> bytes | None:
         """What podman cp prints of ``path`` of a container that was made and not run, read up
         to the first byte beyond ``limit``, where podman is stopped; None where podman says
-        there is nothing there. Reading stops, and podman with it, at PODMAN_TIMEOUT or when
-        ``cancel`` is set, which are a RuntimeFailed; so is any other failure of podman."""
+        there is nothing there. Reading, and the wait for podman to exit, stop, and podman
+        with them, at PODMAN_TIMEOUT or when ``cancel`` is set, which are a RuntimeFailed; so
+        is any other failure of podman."""
         try:
             proc = subprocess.Popen(
                 self._argv("cp", f"{container}:{path}", "-"),
@@ -1887,24 +1918,26 @@ class PodmanRuntime(Runtime):
         waiting.register(proc.stdout, selectors.EVENT_READ, "out")
         waiting.register(proc.stderr, selectors.EVENT_READ, "err")
         try:
-            while waiting.get_map():  # never more than the limit is read
-                if cancel is not None and cancel.is_set():
-                    raise RuntimeFailed("reading the image was stopped")
-                if time.monotonic() > deadline:
-                    raise RuntimeFailed("podman cp did not finish in time")
-                for key, _ in waiting.select(PULL_POLL_SECONDS):
-                    chunk = os.read(key.fileobj.fileno(), 65536)
-                    if not chunk:
-                        waiting.unregister(key.fileobj)
-                    elif key.data == "out":
-                        data += chunk
-                        if len(data) > limit:
-                            return data
-                    else:
-                        said = (said + chunk)[:MAX_SAID_BYTES]
-            code = proc.wait(timeout=max(deadline - time.monotonic(), PULL_POLL_SECONDS))
-        except subprocess.TimeoutExpired:
-            raise RuntimeFailed("podman cp did not finish in time") from None
+            with _exit_watched(proc, waiting):
+                while waiting.get_map():  # never more than the limit is read
+                    if cancel is not None and cancel.is_set():
+                        raise RuntimeFailed("reading the image was stopped")
+                    if time.monotonic() > deadline:
+                        raise RuntimeFailed("podman cp did not finish in time")
+                    for key, _ in waiting.select(PULL_POLL_SECONDS):
+                        if key.data == EXITED:
+                            waiting.unregister(key.fileobj)
+                            continue
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            waiting.unregister(key.fileobj)
+                        elif key.data == "out":
+                            data += chunk
+                            if len(data) > limit:
+                                return data
+                        else:
+                            said = (said + chunk)[:MAX_SAID_BYTES]
+            code = proc.wait()  # it has ended
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -2188,22 +2221,26 @@ class PodmanRuntime(Runtime):
         waiting.register(proc.stdout, selectors.EVENT_READ, "out")
         waiting.register(proc.stderr, selectors.EVENT_READ, "err")
         try:
-            while waiting.get_map():
-                if cancel is not None and cancel.is_set():
-                    raise RuntimeFailed("the build was stopped")
-                if time.monotonic() > deadline:
-                    lines.close()
-                    raise BuildFailed(lines.tail(), kind="build_timeout")
-                for key, _ in waiting.select(builder.BUILD_POLL_SECONDS):
-                    chunk = os.read(key.fileobj.fileno(), 65536)
-                    if not chunk:
-                        waiting.unregister(key.fileobj)
-                    elif key.data == "err":
-                        lines.feed(chunk)
-                    else:
-                        out += chunk
-                        del out[: max(len(out) - builder.MAX_OUTCOME_BYTES, 0)]
-            code = proc.wait()
+            with _exit_watched(proc, waiting):
+                while waiting.get_map():
+                    if cancel is not None and cancel.is_set():
+                        raise RuntimeFailed("the build was stopped")
+                    if time.monotonic() > deadline:
+                        lines.close()
+                        raise BuildFailed(lines.tail(), kind="build_timeout")
+                    for key, _ in waiting.select(builder.BUILD_POLL_SECONDS):
+                        if key.data == EXITED:
+                            waiting.unregister(key.fileobj)
+                            continue
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            waiting.unregister(key.fileobj)
+                        elif key.data == "err":
+                            lines.feed(chunk)
+                        else:
+                            out += chunk
+                            del out[: max(len(out) - builder.MAX_OUTCOME_BYTES, 0)]
+            code = proc.wait()  # it has ended
         finally:
             if proc.poll() is None:
                 proc.kill()

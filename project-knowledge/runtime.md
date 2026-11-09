@@ -903,28 +903,29 @@ page](../docs/devcontainer.md#building-an-image).
   image by id (`ARCHIVE_FORMAT`) in the builder into a private staging folder
   (`STAGING_PREFIX`) under `PodmanConfig.scratch_dir`, the database's parent folder by
   default, through `builder.pump`, which counts bytes, is capped by `MAX_IMAGE_BYTES` and
-  `COPY_SECONDS`, and is killed by `cancel`. `builder.repack_archive` then makes the archive that
-  is loaded (`_load`, `podman load -i`) from the saved one, which is removed: `verify_archive`
-  accepts it first - no part of an OCI layout (Podman reads that before a docker-archive and
-  applies the names its index carries), one image, no names, the configuration's hash equal to
-  the id, the configuration listing as many layers (`rootfs.diff_ids`) as the manifest, the
-  manifest, configuration and layers as plain files with plain headers (a size
-  field that Python's tar and Go's read differently is refused) - and only the manifest (written
-  again, with no names), the configuration and the layers are written to the new archive; the
-  other members, a docker-archive's legacy folders among them, are read past and not carried
-  over. Each layer is hashed as it is copied and refused unless its bytes are the digest the
-  configuration lists: the storage takes a layer it already has by that digest without reading
-  the archive's bytes for it. Nothing is extracted. A build holds `_naming` from the reading of rcman's own names
-  (the default image's, the builder's and every `built_name`) to the naming of the new image;
-  after the load `_hold_names` finds each still on the image it was on, puts back by id any
-  that moved, takes every name off the new image, and refuses the build
-  (`build_image_refused`) if anything was wrong. The image is tagged
-  `built_name(id)`, one for each workspace; one loaded and not kept is removed by its id, and
-  the staging folder always. The restore, and the end of a build when no other build runs,
-  clear every staging folder (`_clean_staging`); while a build runs only those old enough that
-  no build can be using them go.
-  Feature `containerEnv` is in the image's environment, not the label, so the plan has it
-  through `image_facts`.
+  `COPY_SECONDS`, and is killed by `cancel`; its stops signal both commands through pidfds
+  held from their start, so it never signals a pid that has been reaped, and may have been
+  given again. `builder.repack_archive` then makes the archive that is loaded (`_load`,
+  `podman load -i`) from the saved one, which is removed: `verify_archive` accepts it
+  first - no part of an OCI layout (Podman reads that before a docker-archive and applies
+  the names its index carries), one image, no names, the configuration's hash equal to the
+  id, the configuration listing as many layers (`rootfs.diff_ids`) as the manifest, the
+  manifest, configuration and layers as plain files with plain headers (a size field that
+  Python's tar and Go's read differently is refused) - and only the manifest (written again,
+  with no names), the configuration and the layers are written to the new archive; the other
+  members, a docker-archive's legacy folders among them, are read past and not carried over.
+  Each layer is hashed as it is copied and refused unless its bytes are the digest the
+  configuration lists: the storage takes a layer it already has by that digest without
+  reading the archive's bytes for it. Nothing is extracted. A build holds `_naming` from the
+  reading of rcman's own names (the default image's, the builder's and every `built_name`)
+  to the naming of the new image; after the load `_hold_names` finds each still on the image
+  it was on, puts back by id any that moved, takes every name off the new image, and refuses
+  the build (`build_image_refused`) if anything was wrong. The image is tagged
+  `built_name(id)`, one for each workspace; one loaded and not kept is removed by its id,
+  and the staging folder always. The restore, and the end of a build when no other build
+  runs, clear every staging folder (`_clean_staging`); while a build runs only those old
+  enough that no build can be using them go. Feature `containerEnv` is in the image's
+  environment, not the label, so the plan has it through `image_facts`.
 - **Cleanup.** A `finally` removes the builder and its volume, and the image too unless it
   was kept; `remove_build` is also what a deletion calls, which ends a build in progress
   (killing the CLI's client would not). `Workspaces._remove_orphan_builds`, a step of the
