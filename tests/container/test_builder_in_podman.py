@@ -6,19 +6,11 @@ starts from, so the module's workspaces and builders are on the engine's own net
 stand-in GitHub serves on its loopback, on a port of its own, and the workspaces' git reaches it
 as https://github.com through a relay (tests/container/network.py ``Relay``). What the
 host-runtime tests and the stand-in podman of ``tests/test_runtime_build.py`` could only assume
-is checked here against the real thing, in two parts.
-
-A *stub builder* is the workspace image with a stand-in for the Dev Containers CLI that records
-what it was run with and what it was given, and waits to be told to fail. It takes no nested
-Podman and no network, and shows what rcman does around the CLI: the uid range the builder runs
-in and what it is given, the repository that is copied in and how, the build-only configuration
-and the arguments the CLI is run with, the words of a failure, a cancel, the size limit, and the
-formats of what ``builders``, ``built_images`` and ``remove_build`` read from Podman.
+is checked here against the real thing, in one real build.
 
 The *real builder* is built from ``installer/builder`` on the engine, and builds a Dockerfile and
 a feature of the repository with the real CLI: the image lands in rcman's storage, the workspace
-is made from it, and everything the build used is gone afterwards. Features that ask for what the
-policy refuses, and a base that is not glibc, are refused with nothing left.
+is made from it, and everything the build used is gone afterwards.
 
 The repositories are published on the stand-in as ``octo/<name>``.
 """
@@ -310,9 +302,6 @@ def storage_layers(runtime) -> set[str]:
     return set(os.listdir(Path(root) / "overlay"))
 
 
-# --- the stub builder: what rcman does around the CLI ------------------------------------------
-
-
 # --- the real builder ---------------------------------------------------------------------------
 
 REAL_CONFIG = {
@@ -472,6 +461,3 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     # asserted is that nothing is here that was not.
     assert image_ids(real_podman) <= images_before, sorted(image_ids(real_podman) - images_before)
     assert storage_layers(real_podman) <= layers, sorted(storage_layers(real_podman) - layers)
-
-
-# --- rebuilding a workspace whose image was built ---------------------------------------------

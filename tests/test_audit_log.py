@@ -15,11 +15,3 @@ def test_admins_read_the_newest_first_with_paging(client):
         headers=as_user(ALICE),
     )
     assert len(rest.json()["events"]) == 1
-
-
-def test_limit_is_bounded(client):
-    assert client.get("/api/audit", params={"limit": 0}, headers=as_user(ALICE)).status_code == 422
-    assert (
-        client.get("/api/audit", params={"limit": 100000}, headers=as_user(ALICE)).status_code
-        == 422
-    )

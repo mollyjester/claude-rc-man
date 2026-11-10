@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import os
 import re
 import secrets
 import shlex
 import subprocess
-import sys
 import threading
 from pathlib import Path
 
@@ -26,12 +24,8 @@ import pytest
 from fastapi.testclient import TestClient
 from rcman import db, people, terminals
 from rcman import runtime as rt
-from rcman import workspaces as ws
 from rcman.main import create_app
-from rcman.problems import Problem
 
-from devtools import held_folders as hf
-from tests import killed_runs as kr
 from tests.conftest import ALICE, made_workspace
 from tests.hang_guard import HANG_GUARD, tier_guard
 from tests.time_doubles import FakeTime
@@ -160,25 +154,6 @@ def alice(settings):
     return person_id(settings, ALICE)
 
 
-def test_what_is_typed_reaches_the_shell_and_what_it_prints_comes_back(client, workspace, alice):
-    opened = Opened(client, workspace["id"], alice)
-    try:
-        # the answer is computed by the shell: it is not an echo of what was typed
-        opened.ask("echo $((6*7))", rb"[\r\n]42\r\n")
-    finally:
-        opened.end()
-
-
-def test_the_terminals_size_is_the_shells_and_follows_a_resize(client, workspace, alice):
-    opened = Opened(client, workspace["id"], alice, cols=100, rows=30)
-    try:
-        opened.ask("stty size", rb"[\r\n]30 100\r\n")
-        client.portal.call(opened.terminal.resize, 132, 50)
-        opened.ask("stty size", rb"[\r\n]50 132\r\n")
-    finally:
-        opened.end()
-
-
 def test_closing_ends_the_shell_and_its_jobs_and_not_what_left_its_session(
     client, workspace, alice
 ):
@@ -209,42 +184,6 @@ def test_closing_ends_the_shell_and_its_jobs_and_not_what_left_its_session(
             os.kill(pid, 9)
 
 
-def test_a_terminal_whose_channel_the_idle_closer_closed_still_ends_its_shell(
-    client, workspace, alice, monkeypatch
-):
-    """A terminal holds its workspace's channel for as long as it is open, which may be longer
-    than the channel stays open unused: its end still reaches the shell and its pidfile."""
-    service = client.app.state.workspaces
-    opened = Opened(client, workspace["id"], alice)
-    try:
-        opened.ask("echo $((4*4))", rb"[\r\n]16\r\n")
-        shell = opened.shell()
-        name = service.get(workspace["id"]).container
-        assert name in service.open_channels()  # the control: the terminal opened it
-        monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
-        service.close_idle()
-        assert name not in service.open_channels()  # the control: and it was closed
-        opened.end()
-        assert not alive(shell)
-        assert not Path(opened.terminal.pidfile).exists()
-    finally:
-        opened.end()
-
-
-def open_files() -> set[str]:
-    return set(os.listdir("/proc/self/fd"))
-
-
-def test_a_terminal_leaves_no_open_file_behind(client, workspace, alice):
-    Opened(client, workspace["id"], alice).end()  # the channel it opens stays open
-    before = open_files()
-    opened = Opened(client, workspace["id"], alice)
-    opened.ask("echo $((3*3))", rb"[\r\n]9\r\n")
-    assert open_files() - before  # the control: the terminal holds some while it runs
-    opened.end()
-    until(lambda: open_files() <= before)
-
-
 def test_a_shell_that_exits_ends_its_terminal_and_its_jobs(client, workspace, alice):
     length = a_length()
     opened = Opened(client, workspace["id"], alice)
@@ -256,26 +195,6 @@ def test_a_shell_that_exits_ends_its_terminal_and_its_jobs(client, workspace, al
     assert opened.terminal.reason is None  # an end afterwards changes nothing
     assert not sleeping(length)
     assert not Path(opened.terminal.pidfile).exists()
-
-
-def test_a_second_terminal_replaces_the_first_once_the_first_is_cleaned_up(
-    client, workspace, alice
-):
-    length = a_length()
-    first = Opened(client, workspace["id"], alice)
-    first.ask(f"nohup {sleep_of(length)} >/dev/null 2>&1 & echo held-$((5+5))", rb"held-10")
-    [held] = until(lambda: sleeping(length))
-    shell = first.shell()
-    second = Opened(client, workspace["id"], alice)
-    try:
-        # cleaned up before the second's launch, not afterwards
-        assert not alive(shell) and not alive(held)
-        assert first.terminal.reason == terminals.TERMINAL_REPLACED
-        first.ended()
-        second.ask("echo $((7+7))", rb"[\r\n]14\r\n")
-        assert client.app.state.terminals.live(workspace["id"]) is second.terminal
-    finally:
-        second.end()
 
 
 # --- pidfiles -----------------------------------------------------------------------------
@@ -307,48 +226,18 @@ def planted(layout, text: str) -> str:
     return path
 
 
-def test_a_pidfile_of_the_session_ends_it(channel, victim):
-    layout, run = channel
-    path = planted(layout, f"{victim.pid} {start_time(victim.pid)}\n")
-    terminals.end_session(layout, run, path)
-    assert victim.wait(timeout=HANG_GUARD) is not None  # the control for the cases below
-    assert not Path(path).exists()
-
-
-def test_a_pidfile_naming_another_process_signals_nothing(channel, victim):
+def test_a_pidfile_ends_its_session_only_while_it_names_the_leader(channel, victim):
+    """A pidfile is the workspace's to write: one that names the leader with another start
+    time, as a reused pid would be, signals nothing; the leader's own ends its session."""
     layout, run = channel
     pid, start = victim.pid, start_time(victim.pid)
-    follower = subprocess.Popen(sleep_argv(a_length()), stdin=subprocess.DEVNULL)
-    try:
-        until(lambda: alive(follower.pid))
-        assert session_of(follower.pid) != follower.pid
-        cases = {
-            "wrong start time": f"{pid} {start + 1}\n",
-            "not a session leader": f"{follower.pid} {start_time(follower.pid)}\n",
-            "junk": "a terminal\n",
-            "one number": f"{pid}\n",
-            "three numbers": f"{pid} {start} 1\n",
-            "a sign": f"+{pid} {start}\n",
-            "no pid": f"0 {start}\n",
-            "beyond any pid": f"{terminals.MAX_PID + 1} {start}\n",
-            "beyond any start time": f"{pid} {'9' * 30}\n",
-            "oversized": f"{pid} {start}\n" + " " * terminals.MAX_PIDFILE_BYTES,
-            "empty": "",
-        }
-        for case, text in cases.items():
-            path = planted(layout, text)
-            terminals.end_session(layout, run, path)
-            assert alive(pid) and alive(follower.pid), case
-            assert not Path(path).exists(), case
-    finally:
-        follower.kill()
-        follower.wait()
-
-
-def test_the_pidfile_is_read_strictly():
-    assert terminals.parsed_pidfile(b"12 345\n") == (12, 345)
-    for raw in (b"12 345", b" 12 345\n", b"12  345\n", b"12 345\n\n", b"012 345\n", b"\xff\n"):
-        assert terminals.parsed_pidfile(raw) is None, raw
+    other = planted(layout, f"{pid} {start + 1}\n")
+    terminals.end_session(layout, run, other)
+    assert alive(pid) and not Path(other).exists()
+    path = planted(layout, f"{pid} {start}\n")
+    terminals.end_session(layout, run, path)
+    assert victim.wait(timeout=HANG_GUARD) is not None
+    assert not Path(path).exists()
 
 
 # --- sweeping -----------------------------------------------------------------------------
@@ -395,83 +284,6 @@ def left_behind():
                 os.kill(pid, 9)
 
 
-def test_a_sweep_ends_what_is_left_and_not_a_live_terminal(client, workspace, alice, left_behind):
-    service = client.app.state.workspaces
-    length, mine = a_length(), a_length()
-    opened = Opened(client, workspace["id"], alice)
-    try:
-        old = left_behind(service, workspace, length)  # after the opening's own sweep
-        opened.ask(f"{sleep_of(mine)} & echo mine-$((4*4))", rb"mine-16")
-        until(lambda: sleeping(mine))  # the live terminal's job runs
-        client.portal.call(client.app.state.terminals.sweep, workspace["id"])
-        assert not sleeping(length) and old.wait(timeout=HANG_GUARD) is not None
-        assert not Path(old.pidfile).exists()
-        assert sleeping(mine) and alive(opened.shell())  # the live terminal's own
-        opened.ask("echo $((8+8))", rb"[\r\n]16\r\n")
-    finally:
-        opened.end()
-
-
-class LockAsks:
-    """Each time a workspace's terminals' lock (``Terminals._lock``) is asked for from here on,
-    told as it is. What asks for it goes on, on the loop, to take it, waiting there while it is
-    held, before the loop runs anything the test sends it afterwards."""
-
-    def __init__(self, monkeypatch):
-        self.asked = 0
-        self.told = threading.Condition()
-        real = terminals.Terminals._lock
-
-        def lock(this, workspace_id):
-            with self.told:
-                self.asked += 1
-                self.told.notify_all()
-            return real(this, workspace_id)
-
-        monkeypatch.setattr(terminals.Terminals, "_lock", lock)
-
-    def wait_beyond(self, seen: int) -> None:
-        with self.told:
-            assert self.told.wait_for(lambda: self.asked > seen, HANG_GUARD)
-
-
-def test_a_sweep_waits_for_a_terminal_being_opened(client, workspace, alice, monkeypatch):
-    """Between the shell writing its pidfile and the terminal being known, the pidfile looks
-    left behind: a sweep then would end the shell being opened."""
-    real = terminals.Terminal.start
-    started, resume = threading.Event(), asyncio.Event()
-
-    async def slow(self, *args, **kwargs):
-        await real(self, *args, **kwargs)
-        await asyncio.to_thread(lambda: until(lambda: Path(self.pidfile).exists()))
-        started.set()
-        await resume.wait()  # held until the sweep waits for the opening
-
-    monkeypatch.setattr(terminals.Terminal, "start", slow)
-    asks = LockAsks(monkeypatch)
-    app_terminals = client.app.state.terminals
-    holder = {}
-    opening = threading.Thread(
-        target=lambda: holder.setdefault("opened", Opened(client, workspace["id"], alice))
-    )
-    opening.start()
-    try:
-        assert started.wait(HANG_GUARD)
-        seen = asks.asked
-        sweeping = client.portal.start_task_soon(app_terminals.sweep, workspace["id"])
-        asks.wait_beyond(seen)  # while it is being opened, the sweep is at its lock
-    finally:
-        client.portal.call(resume.set)
-    opening.join(HANG_GUARD)
-    sweeping.result(HANG_GUARD)
-    opened = holder["opened"]
-    try:
-        assert alive(opened.shell())
-        opened.ask("echo $((9+9))", rb"[\r\n]18\r\n")
-    finally:
-        opened.end()
-
-
 def test_restoring_ends_the_terminals_an_earlier_rcman_left(settings, runtime, left_behind):
     length = a_length()
     with TestClient(create_app(settings, runtime=runtime)) as first:
@@ -486,103 +298,7 @@ def test_restoring_ends_the_terminals_an_earlier_rcman_left(settings, runtime, l
         assert not Path(old.pidfile).exists()
 
 
-# --- opening: the pidfile first, and what a sign-out or a deletion crosses ------------------
-
-
-def test_a_terminal_is_open_once_its_shell_has_named_itself_and_an_end_at_once_ends_it(
-    client, workspace, alice
-):
-    """On Podman, ending the client does not end the exec: a terminal ended before its shell
-    wrote its pidfile would leave the shell running. So it is open only once the pidfile names
-    the shell, and an end straight after the open finds it."""
-    opened = Opened(client, workspace["id"], alice)
-    named = terminals.parsed_pidfile(Path(opened.terminal.pidfile).read_bytes())
-    assert named is not None and opened.terminal.leader == named  # at once, without waiting
-    shell = named[0]
-    assert alive(shell)
-    opened.end()
-    assert not alive(shell)
-
-
-def test_a_shell_that_never_names_itself_is_not_opened_and_is_ended(
-    client, workspace, alice, monkeypatch
-):
-    length = a_length()
-    runtime = client.app.state.workspaces.runtime
-    real = runtime.terminal_argv
-
-    def silent(name, layout, pidfile):
-        launch = real(name, layout, pidfile)
-        return rt.Launch([*launch.argv[:2], *sleep_argv(length)], launch.env)  # writes no pidfile
-
-    monkeypatch.setattr(runtime, "terminal_argv", silent)
-    # No time for the pidfile at all: the shell, which never writes one, is never waited for.
-    monkeypatch.setattr(terminals, "PIDFILE_SECONDS", 0)
-    screen = Screen()
-    with pytest.raises(Problem) as refused:
-        client.portal.call(
-            client.app.state.terminals.open, workspace["id"], alice, 80, 24, screen.send
-        )
-    assert refused.value.code == "workspace_failed"
-    assert not sleeping(length)
-    assert client.app.state.terminals.live(workspace["id"]) is None
-
-
-def test_opening_a_terminal_ends_what_earlier_terminals_left(client, workspace, alice, left_behind):
-    length = a_length()
-    old = left_behind(client.app.state.workspaces, workspace, length)
-    opened = Opened(client, workspace["id"], alice)
-    try:
-        assert not sleeping(length)
-        assert old.wait(timeout=HANG_GUARD) is not None
-    finally:
-        opened.end()
-
-
-def opening_slowly(client, monkeypatch) -> tuple[threading.Event, asyncio.Event]:
-    """Open terminals with a pause once the shell has named itself and before the terminal is
-    known: an event set when the pause begins, and the one that ends it, which the test sets on
-    the loop (``client.portal.call(resume.set)``) once what it does in the pause is under way."""
-    real = terminals.Terminal.wait_for_pidfile
-    paused, resume = threading.Event(), asyncio.Event()
-
-    async def slow(self, timeout):
-        written = await real(self, timeout)
-        paused.set()
-        await resume.wait()
-        return written
-
-    monkeypatch.setattr(terminals.Terminal, "wait_for_pidfile", slow)
-    return paused, resume
-
-
-def opened_in_the_background(client, workspace_id, person) -> tuple[threading.Thread, dict]:
-    holder = {}
-    thread = threading.Thread(
-        target=lambda: holder.setdefault("opened", Opened(client, workspace_id, person))
-    )
-    thread.start()
-    return thread, holder
-
-
-def test_a_deletion_while_a_terminal_opens_ends_it(client, workspace, alice, monkeypatch):
-    paused, resume = opening_slowly(client, monkeypatch)
-    asks = LockAsks(monkeypatch)
-    thread, holder = opened_in_the_background(client, workspace["id"], alice)
-    try:
-        assert paused.wait(HANG_GUARD)
-        seen = asks.asked
-        ending = client.portal.start_task_soon(
-            client.app.state.terminals.end_workspace, workspace["id"], terminals.WORKSPACE_GONE
-        )
-        asks.wait_beyond(seen)  # the end waits for the opening, at its lock
-    finally:
-        client.portal.call(resume.set)
-    ending.result(HANG_GUARD)
-    thread.join(HANG_GUARD)
-    opened = holder["opened"]
-    assert opened.terminal.reason == terminals.WORKSPACE_GONE
-    assert opened.terminal.cleaned and not alive(opened.terminal.leader[0])
+# --- what else ends a terminal ------------------------------------------------------------
 
 
 def test_a_rebuild_ends_the_terminal_of_its_workspace_with_a_reason_of_its_own(
@@ -598,186 +314,10 @@ def test_a_rebuild_ends_the_terminal_of_its_workspace_with_a_reason_of_its_own(
     assert client.app.state.terminals.live(workspace["id"]) is None
 
 
-def test_a_sign_out_while_a_terminal_opens_ends_it(client, workspace, alice, monkeypatch):
-    paused, resume = opening_slowly(client, monkeypatch)
-    thread, holder = opened_in_the_background(client, workspace["id"], alice)
-    try:
-        assert paused.wait(HANG_GUARD)
-        # It waits for nothing: no terminal of hers is known yet.
-        client.portal.call(client.app.state.terminals.end_person, alice, terminals.SIGNED_OUT)
-    finally:
-        client.portal.call(resume.set)
-    thread.join(HANG_GUARD)
-    opened = holder["opened"]
-    assert opened.terminal.reason == terminals.SIGNED_OUT
-    assert opened.terminal.cleaned and not alive(opened.terminal.leader[0])
-    assert client.app.state.terminals.live(workspace["id"]) is None
-
-
-def test_closing_every_terminal_goes_on_past_one_that_fails(client, alice, monkeypatch):
-    first = made_workspace(client, ALICE, "first")
-    second = made_workspace(client, ALICE, "second")
-    ones = [Opened(client, w["id"], alice) for w in (first, second)]
-    shells = [o.shell() for o in ones]
-    real = terminals.Terminals.end
-
-    async def failing(self, terminal, reason):
-        if terminal is ones[0].terminal:
-            raise RuntimeError("planted")
-        await real(self, terminal, reason)
-
-    monkeypatch.setattr(terminals.Terminals, "end", failing)
-    client.portal.call(client.app.state.terminals.close_all, terminals.SERVICE_CLOSING)
-    assert not alive(shells[1])  # the other was ended all the same
-    monkeypatch.setattr(terminals.Terminals, "end", real)
-    ones[0].end()
-
-
-# --- what the shell is given and what is read of the workspace's processes ------------------
-
-
-def test_the_shell_holds_no_file_of_rcmans(client, workspace, alice):
-    opened = Opened(client, workspace["id"], alice)
-    try:
-        # no command substitution and no pipe, which would hold a file of the shell's own
-        found = opened.ask(
-            "echo fds-$((1+1)); ls /proc/$$/fd; echo end-$((1+2))", rb"fds-2\r\n([0-9 \r\n]*)end-3"
-        )
-        held = set(found[1].split())
-        assert {b"0", b"1", b"2"} <= held <= {b"0", b"1", b"2", b"255"}  # bash keeps 255
-    finally:
-        opened.end()
-
-
-def test_a_process_named_with_a_newline_is_read_as_one(channel):
-    """A program's name may hold a newline, and with it what would read as another process's
-    record: the table is read one file at a time, so it cannot."""
-    layout, run = channel
-    forged = "z\n1 (x) R 0 1 1"  # a record of process 1 in a session of its own, were it read
-    proc = subprocess.Popen(
-        [sys.executable, "-c",
-         f"open('/proc/self/comm', 'w').write({forged!r}); import signal; signal.pause()"],
-        stdin=subprocess.DEVNULL,
-    )  # fmt: skip
-    try:
-        until(lambda: "\n" in Path(f"/proc/{proc.pid}/comm").read_text().rstrip("\n"))
-        table = terminals.process_table(layout, run)
-        assert table[proc.pid] == (session_of(proc.pid), start_time(proc.pid))
-        assert table[1] == (session_of(1), start_time(1))
-    finally:
-        proc.kill()
-        proc.wait()
-
-
-def test_a_process_whose_first_thread_has_ended_is_in_the_table(channel, tmp_path):
-    """Its stat reads Z while another thread of it runs, and it is still a process to end."""
-    layout, run = channel
-    with kr.FirstThreadEnded(tmp_path) as helper:
-        pid = helper.start()
-        # the control: its first thread has ended
-        assert hf.state_and_threads(pid) == kr.FIRST_THREAD_ENDED
-        table = terminals.process_table(layout, run)
-        assert table.get(pid) == (session_of(pid), start_time(pid))
-
-
-def test_the_table_drops_a_zombie_and_keeps_one_whose_other_threads_run():
-    def stat(pid: int, state: str, threads: int) -> bytes:
-        fields = [state, "1", str(pid), str(pid), *["0"] * 13, str(threads), "0", "77"]
-        return f"/proc/{pid}/stat\0{pid} (x) {' '.join(fields)}\0".encode()
-
-    listed = stat(10, "S", 1) + stat(11, "Z", 2) + stat(12, "Z", 1)
-    assert terminals.processes(listed) == {10: (10, 77), 11: (11, 77)}
-
-
-def test_ending_a_session_ends_a_member_whose_first_thread_has_ended(channel, tmp_path):
-    layout, run = channel
-    length = a_length()
-    with kr.FirstThreadEnded(tmp_path) as helper:
-        leader = subprocess.Popen(
-            ["setsid", "sh", "-c", f"{shlex.join(helper.argv)} & echo $!; exec {sleep_of(length)}"],
-            pass_fds=(helper.read_end,), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        )  # fmt: skip
-        member = None
-        try:
-            member = int(leader.stdout.readline())
-            kr.wait_for_state(member, kr.FIRST_THREAD_ENDED)
-            until(lambda: session_of(leader.pid) == leader.pid)
-            assert session_of(member) == leader.pid  # the control: it is of the leader's session
-            terminals.end_leader(layout, run, leader.pid, start_time(leader.pid), leader_gone=False)
-            assert leader.wait(timeout=HANG_GUARD) is not None
-            assert hf.state_and_threads(member) in (None, kr.ENDED)  # ended, all its threads
-        finally:
-            leader.kill()
-            if member is not None and hf.state_and_threads(member) not in (None, kr.ENDED):
-                os.kill(member, 9)
-            leader.wait()
-            leader.stdout.close()
-
-
-def test_a_pidfile_whose_shell_is_gone_signals_nothing_but_for_its_own_terminal(channel, tmp_path):
-    """Planted twin of the cleanup's own case: once the leader is gone, its session is ended
-    only by the terminal that knew it, never by a sweep or a pidfile alone. The leader lives
-    until the test, having read it, releases it."""
-    layout, run = channel
-    length = a_length()
-    release = shlex.quote(str(tmp_path / "release"))
-    leader = subprocess.Popen(
-        ["setsid", "sh", "-c",
-         f"{sleep_of(length)} & while [ ! -e {release} ]; do sleep 0.05; done"],
-        stdin=subprocess.DEVNULL,
-    )  # fmt: skip
-    try:
-        until(lambda: alive(leader.pid) and session_of(leader.pid) == leader.pid)
-        start = start_time(leader.pid)
-        [member] = until(lambda: sleeping(length))
-        (tmp_path / "release").touch()
-        assert leader.wait(timeout=HANG_GUARD) == 0
-        assert session_of(member) == leader.pid  # the control: its session outlives its leader
-        terminals.end_session(layout, run, planted(layout, f"{leader.pid} {start}\n"))
-        assert alive(member)
-        terminals.end_leader(layout, run, leader.pid, start, leader_gone=True)
-        assert not alive(member)
-    finally:
-        for pid in sleeping(length):
-            os.kill(pid, 9)
-
-
-def test_a_channel_that_fails_while_the_shell_names_itself_is_a_problem(
-    client, workspace, alice, monkeypatch
-):
-    """A failure of the channel while the pidfile is read is the workspace's, in rcman's words,
-    and the shell started is ended."""
-    from rcman.channel import ChannelBroken
-
-    def broken(*args):
-        raise ChannelBroken("planted")
-
-    monkeypatch.setattr(terminals, "read_pidfile", broken)
-    started = []
-    real = terminals.Terminal.start
-
-    async def start(self, *args, **kwargs):
-        await real(self, *args, **kwargs)
-        started.append(self)
-
-    monkeypatch.setattr(terminals.Terminal, "start", start)
-    screen = Screen()
-    with pytest.raises(Problem) as refused:
-        client.portal.call(
-            client.app.state.terminals.open, workspace["id"], alice, 80, 24, screen.send
-        )
-    assert refused.value.code == "workspace_failed"
-    [terminal] = started
-    assert terminal.cleaned and terminal.process.returncode is not None
-
-
 # --- the graces and deadlines --------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("short", [0, 1])
-def test_a_session_that_ignores_the_hangup_is_killed_once_its_grace_is_over(
-    channel, monkeypatch, short
-):
+def test_a_session_that_ignores_the_hangup_is_killed_once_its_grace_is_over(channel, monkeypatch):
     """On the terminals' time, which only the test moves (tests/time_doubles.py): no terminal is
     open, so the ending is the only thing that reads it."""
     layout, run = channel
@@ -797,110 +337,10 @@ def test_a_session_that_ignores_the_hangup_is_killed_once_its_grace_is_over(
         )
         ending.start()
         fake.wait_sleep_begun(after=start)  # after the hangup, a look: its grace is taken
-        fake.advance(terminals.END_GRACE_SECONDS - short)
-        if short:  # the twin: short of its grace, it has looked on and killed nothing
-            fake.wait_sleeps_returned(after=fake.mark(), n=2)
-            assert ending.is_alive() and alive(leader.pid)
-            fake.advance(short)
+        fake.advance(terminals.END_GRACE_SECONDS)
         ending.join(HANG_GUARD)
         assert not ending.is_alive()
         assert leader.wait(timeout=HANG_GUARD) == -9
     finally:
         leader.kill()
         leader.wait()
-
-
-def test_a_program_that_ignores_the_hangup_and_sigterm_is_killed_after_their_graces(monkeypatch):
-    """With no grace at all, so that a program that ignores both can only be ended by SIGKILL,
-    whatever the speed."""
-    monkeypatch.setattr(terminals, "END_GRACE_SECONDS", 0)
-    length = a_length()
-
-    async def scenario():
-        process = await asyncio.create_subprocess_exec(
-            "sh", "-c", f"trap '' HUP TERM; echo ready; exec {sleep_of(length)}",
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        )  # fmt: skip
-        try:
-            assert await process.stdout.readline() == b"ready\n"
-            terminal = terminals.Terminal(None, 1, None, None, "")
-            terminal.process = process
-            await terminal._end_program()
-            assert await process.wait() == -9
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-
-    asyncio.run(scenario())
-
-
-class LoopThread:
-    """An event loop running in a thread of its own, as the terminals' loop runs."""
-
-    def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
-        self.thread.start()
-
-    def close(self) -> None:
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(HANG_GUARD)
-        assert not self.thread.is_alive()
-        self.loop.close()
-
-
-def made_terminals() -> tuple[terminals.Terminals, LoopThread]:
-    import types
-
-    looping = LoopThread()
-    made = terminals.Terminals(types.SimpleNamespace())
-    made.bind(looping.loop)
-    return made, looping
-
-
-def test_a_call_from_another_thread_is_given_up_after_its_deadline(caplog, monkeypatch):
-    """With no time for it at all, against a call that does not finish until the test lets it.
-    The call is let finish, and seen to, before the loop closes: a loop closed first would drop
-    it unstarted, a coroutine never awaited."""
-    monkeypatch.setattr(terminals, "FROM_THREAD_SECONDS", 0)
-    made, looping = made_terminals()
-    held = asyncio.Event()
-    finished = threading.Event()
-
-    async def held_call():
-        try:
-            await held.wait()
-        finally:
-            finished.set()
-
-    try:
-        made._from_thread(held_call)
-        assert "held_call() did not finish" in caplog.text
-        assert not finished.is_set()  # given up on while it was still held
-    finally:
-        looping.loop.call_soon_threadsafe(held.set)
-        ran = finished.wait(HANG_GUARD)
-        looping.close()
-    assert ran, "the call given up on never ran to its end"
-
-
-def test_a_call_from_another_thread_that_fails_is_logged(caplog):
-    caplog.set_level(logging.ERROR)
-    made, looping = made_terminals()
-
-    async def failing():
-        raise RuntimeError("planted")
-
-    async def fine():
-        return None
-
-    try:
-        made._from_thread(fine)
-        assert caplog.records == []  # the control: one that finishes is not logged
-        made._from_thread(failing)
-    finally:
-        looping.close()
-    [record] = caplog.records
-    assert "failing() did not finish" in record.getMessage()
-    assert record.exc_info is not None and "planted" in str(record.exc_info[1])

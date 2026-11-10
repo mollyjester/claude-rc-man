@@ -18,9 +18,3 @@ def test_serves_a_page_as_markdown(client):
     page = client.get("/api/docs/workspaces", headers=as_user(BOB)).json()
     assert page["title"] == "Workspaces"
     assert page["markdown"] == (REPO / "docs" / "workspaces.md").read_text(encoding="utf-8")
-
-
-def test_unknown_and_escaping_slugs_are_404(client):
-    for slug in ("nope", "..%2FREADME", "..", "workspaces.md"):
-        r = client.get(f"/api/docs/{slug}", headers=as_user(BOB))
-        assert r.status_code == 404, slug

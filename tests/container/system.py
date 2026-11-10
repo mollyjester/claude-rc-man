@@ -1,5 +1,5 @@
-"""The system image the container suites run rcman's installer, the whole stack and the worktree
-checks in: built on the tests' engine (tests/podman_service.py) from tests/container/system/.
+"""The system image the container suites run rcman's installer and the worktree checks in:
+built on the tests' engine (tests/podman_service.py) from tests/container/system/.
 
 Not a test module. tests/conftest.py makes the ``system_image`` fixture of it.
 """

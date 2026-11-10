@@ -1,7 +1,7 @@
 # The development environment of rcman's own repository, for a workspace of rcman or any tool
 # that reads devcontainer.json: what make setup and every target of the Makefile need, Podman for
-# the tests' engine and Caddy for the whole stack (project-knowledge/tests.md), and a user dev who
-# is not root and has no way to become root. uv and Node.js are the installer's pins
+# the tests' engine (project-knowledge/tests.md), and a user dev who is not root and has no way
+# to become root. uv and Node.js are the installer's pins
 # (installer/install.py), the Playwright whose Chromium's packages are installed is
 # frontend/package-lock.json's, and the base is the default workspace image's;
 # tests/test_repository_devcontainer.py holds them to those.
@@ -15,7 +15,7 @@ ARG NODE_SHA256_ARM64=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d
 ARG PLAYWRIGHT_VERSION=1.63.0
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      podman crun catatonit uidmap make git gh tmux busybox-static curl xz-utils python3 caddy \
+      podman crun catatonit uidmap make git gh tmux busybox-static curl xz-utils python3 \
       ca-certificates libcap2-bin \
  && rm -rf /var/lib/apt/lists/*
 # uv and Node.js, each checked against its pinned sha256 before it is unpacked.

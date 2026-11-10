@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 from rcman import runtime as rt
 
 from tests.conftest import host_runtime
@@ -34,14 +33,9 @@ def socket_of(runtime):
     return runtime.layout(SPEC.name).tmux_socket
 
 
-def test_same_named_tmp_paths_get_socket_folders_of_their_own(tmp_path):
-    one, two = same_named(tmp_path)
-    with host_runtime(one) as a, host_runtime(two) as b:
-        assert a.sockets.is_dir() and b.sockets.is_dir()
-        assert a.sockets != b.sockets
-
-
-def test_one_runtimes_teardown_leaves_anothers_tmux_alone(tmp_path):
+def test_each_runtime_has_a_socket_folder_of_its_own_removed_with_its_tmux_after_the_test(
+    tmp_path,
+):
     one, two = same_named(tmp_path)
     with host_runtime(one) as a:
         a.create(SPEC)
@@ -49,19 +43,11 @@ def test_one_runtimes_teardown_leaves_anothers_tmux_alone(tmp_path):
         assert tmux(sock, "new-session", "-d", "-s", "kept", "sleep", OUTLASTING).returncode == 0
         with host_runtime(two) as b:
             b.create(SPEC)
-            assert tmux(sock, "has-session", "-t", "kept").returncode == 0  # positive control
-        assert tmux(sock, "has-session", "-t", "kept").returncode == 0
-    assert tmux(sock, "has-session", "-t", "kept").returncode != 0
-
-
-def test_the_socket_folder_is_removed_after_the_test(tmp_path):
-    with host_runtime(tmp_path) as runtime:
-        sock = runtime.sockets / "probe.sock"
-        assert tmux(sock, "new-session", "-d", "-s", "a", "sleep", OUTLASTING).returncode == 0
-        folder = runtime.sockets
-        assert folder.is_dir() and sock.exists()  # positive control
+            assert a.sockets.is_dir() and b.sockets.is_dir() and a.sockets != b.sockets
+        assert tmux(sock, "has-session", "-t", "kept").returncode == 0  # another's left alone
+        folder = a.sockets
     assert not folder.exists()
-    assert tmux(sock, "has-session", "-t", "a").returncode != 0
+    assert tmux(sock, "has-session", "-t", "kept").returncode != 0
 
 
 def off_the_engine(modules: set[str], tests: dict[str, dict]) -> set[str]:
@@ -120,15 +106,15 @@ print("ignored" if ignored & 1 << (signal.SIGHUP - 1) else "default")
 """
 
 
-@pytest.mark.parametrize("configured", [False, True])
-def test_a_suite_started_ignoring_sighup_gives_its_children_its_default(configured):
+def test_a_suite_started_ignoring_sighup_gives_its_children_its_default():
     """A terminal test's shell, and what it starts, end on a hangup only if SIGHUP is at its
     default in them, which an ignore the suite was started with would not be."""
-    ran = subprocess.run(
-        [sys.executable, "-c", SIGHUP_CHILD, "configured" if configured else "not"],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).resolve().parent.parent,
-    )
-    assert ran.returncode == 0, ran.stderr
-    assert ran.stdout.strip() == ("default" if configured else "ignored")
+    for configured, given in (("not", "ignored"), ("configured", "default")):  # control first
+        ran = subprocess.run(
+            [sys.executable, "-c", SIGHUP_CHILD, configured],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+        assert ran.returncode == 0, ran.stderr
+        assert ran.stdout.strip() == given

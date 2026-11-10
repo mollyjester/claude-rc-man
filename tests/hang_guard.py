@@ -40,10 +40,10 @@ CONTAINER_HANG_GUARD: float = CONTAINER_GUARD / 2
 CONTAINER_TIMEOUT = "container_timeout"
 
 # The podman client's kill of a program the container tests run in a container whose own bounds
-# are the container tier's hang guard: tests/container/stack.py's, install_checks.py's and
-# installed.py's ``until``, handed CONTAINER_HANG_GUARD in GUARD_VARIABLE by the exec that runs
-# them. Beyond those bounds, so that the program's own ends first and says what it waited for,
-# and within the container tests' guard.
+# are the container tier's hang guard: the ``until`` of installed.py, which install_checks.py
+# runs, handed CONTAINER_HANG_GUARD in GUARD_VARIABLE by the exec that runs it. Beyond that
+# bound, so that the program's own ends first and says what it waited for, and within the
+# container tests' guard.
 EXEC_GUARD: float = 1.5 * CONTAINER_HANG_GUARD
 
 # Rule (a) in a child program's source: the seconds a ``timeout`` or a deadline written there is
@@ -51,8 +51,8 @@ EXEC_GUARD: float = 1.5 * CONTAINER_HANG_GUARD
 # tool takes; it has run out at any speed, as what it bounds never ends.
 RUNS_OUT = 1
 
-# The variable through which a program the tests start (tests/container/stack.py and the
-# install checks among them) is handed its tier's hang guard, as it runs outside any test.
+# The variable through which a program the tests start (the install checks among them) is
+# handed its tier's hang guard, as it runs outside any test.
 GUARD_VARIABLE = "RCMAN_HANG_GUARD"
 
 # The guards handed by fixtures of wider scope than a test (``handed``), the innermost last.

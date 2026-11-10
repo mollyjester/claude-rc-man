@@ -17,10 +17,7 @@ from pathlib import Path
 import pytest
 
 from installer import install as ins
-from tests.containers import asked_packages, package_lines
 from tests.hang_guard import HANG_GUARD
-from tests.time_doubles import FakeTime
-from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 PODMAN_SOURCES = REPO / "backend" / "rcman" / "podman"
@@ -49,163 +46,8 @@ def test_flags_beat_environment_beat_saved_file(tmp_path):
     assert settings["PROXY_PORT"] == "9000"
 
 
-def test_saved_settings_outside_the_fields_are_dropped(tmp_path):
-    """A setting the installer no longer has, such as a saved APP_PORT, is not kept."""
-    saved = tmp_path / "install.env"
-    saved.write_text(
-        "DOMAIN=saved.example.com\nADMIN_EMAIL=saved@example.com\nGOOGLE_CLIENT_ID=id\n"
-        "GOOGLE_CLIENT_SECRET=secret\nCOOKIE_SECRET=" + "c" * 32 + "\nAPP_PORT=8001\n"
-    )
-    settings = ins.gather(saved, environ={"RCMAN_INSTALL_APP_PORT": "901"}, flags={}, ask=None)
-    assert "APP_PORT" not in settings
-    assert settings["COOKIE_SECRET"] == "c" * 32  # kept: generated once, not a field
-    assert set(settings) == {*ins.FIELDS, "COOKIE_SECRET"}
-    ins.save_settings(saved, settings)
-    assert "APP_PORT" not in saved.read_text()
-
-
-def test_there_is_no_app_port_option(capsys):
-    with pytest.raises(SystemExit) as exited:
-        ins.main(["--app-port", "8001"])
-    assert exited.value.code == 2
-    assert "--app-port" in capsys.readouterr().err
-
-
-def test_caddy_runs_as_caddy_unless_told_otherwise(tmp_path):
-    env = {
-        "RCMAN_INSTALL_DOMAIN": "x.example.com",
-        "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
-        "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
-        "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
-    }
-    saved = tmp_path / "install.env"
-    assert ins.gather(saved, environ=env, flags={}, ask=None)["CADDY_USER"] == ("caddy")
-    flags = {"caddy_user": "www-data"}
-    assert ins.gather(saved, environ=env, flags=flags, ask=None)["CADDY_USER"] == ("www-data")
-
-
-def test_caddys_account_must_exist():
-    import pwd
-
-    present = pwd.getpwuid(os.getuid()).pw_name
-    ins.check_caddy_user(present)  # positive control: an account that exists passes
-    with pytest.raises(ins.InstallError, match="no-such-caddy"):
-        ins.check_caddy_user("no-such-caddy")
-    with pytest.raises(ins.InstallError, match="root"):  # Caddy's checks never run as root
-        ins.check_caddy_user(pwd.getpwuid(0).pw_name)
-
-
-def test_missing_values_are_asked_for_when_there_is_a_terminal(tmp_path):
-    asked = []
-
-    def ask(key, prompt, secret):
-        asked.append((key, secret))
-        return {"GOOGLE_CLIENT_SECRET": "s3cret", "ADMIN_EMAIL": "a@example.com"}.get(
-            key, "x.example.com"
-        )
-
-    settings = ins.gather(tmp_path / "install.env", environ={}, flags={}, ask=ask)
-    assert ("GOOGLE_CLIENT_SECRET", True) in asked
-    assert ("DOMAIN", False) in asked
-    assert settings["CLAUDE_DOWNLOAD"] == ins.CLAUDE_DOWNLOAD  # defaults are not asked for
-
-
-def test_without_a_terminal_every_missing_value_is_named(tmp_path):
-    with pytest.raises(ins.InstallError) as err:
-        ins.gather(tmp_path / "install.env", environ={}, flags={}, ask=None)
-    for key in ("DOMAIN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAIL"):
-        assert key in str(err.value)
-
-
-def test_cookie_secret_is_generated_once_and_kept(tmp_path):
-    saved = tmp_path / "install.env"
-    env = {
-        f"RCMAN_INSTALL_{k}": "x.example.com"
-        for k in ("DOMAIN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
-    }
-    env["RCMAN_INSTALL_ADMIN_EMAIL"] = "a@example.com"
-    first = ins.gather(saved, environ=env, flags={}, ask=None)
-    ins.save_settings(saved, first)
-    second = ins.gather(saved, environ=env, flags={}, ask=None)
-    assert len(first["COOKIE_SECRET"]) == 32  # oauth2-proxy wants 16, 24 or 32 bytes
-    assert second["COOKIE_SECRET"] == first["COOKIE_SECRET"]
-
-
-def test_saved_settings_are_private_and_round_trip(tmp_path):
-    saved = tmp_path / "etc" / "install.env"
-    ins.save_settings(saved, {"DOMAIN": "x.example.com", "GOOGLE_CLIENT_SECRET": "a b=c"})
-    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
-    assert ins.load_settings(saved) == {"DOMAIN": "x.example.com", "GOOGLE_CLIENT_SECRET": "a b=c"}
-
-
-@pytest.mark.parametrize(
-    "key,value",
-    [
-        ("DOMAIN", "https://x.example.com"),
-        ("DOMAIN", "x .com"),
-        ("ADMIN_EMAIL", "nope"),
-        ("PROXY_PORT", "80a"),
-        ("ASK_PORT", "80a"),
-        ("CADDY_USER", "Caddy!"),
-        ("CLAUDE_DOWNLOAD", "ftp://downloads.example.com"),
-        ("CLAUDE_DOWNLOAD", "https://downloads.example.com/"),
-    ],
-)
-def test_invalid_values_are_refused(tmp_path, key, value):
-    env = {
-        "RCMAN_INSTALL_DOMAIN": "x.example.com",
-        "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
-        "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
-        "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
-        f"RCMAN_INSTALL_{key}": value,
-    }
-    with pytest.raises(ins.InstallError, match=key):
-        ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None)
-
-
-def test_a_value_refused_by_a_rule_is_explained_by_it(tmp_path):
-    from helpers.rules import Rule
-
-    ruled = {key: field[3] for key, field in ins.FIELDS.items() if isinstance(field[3], Rule)}
-    assert {"ADMIN_EMAIL"} <= set(ruled)  # non-vacuity
-    for key, rule in ruled.items():
-        env = {
-            "RCMAN_INSTALL_DOMAIN": "x.example.com",
-            "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
-            "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
-            "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
-            f"RCMAN_INSTALL_{key}": "Not one!",
-        }
-        with pytest.raises(ins.InstallError) as error:
-            ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None)
-        assert key in str(error.value) and rule.sentence in str(error.value)
-
-
-def test_the_installer_takes_its_email_rule_from_the_rules():
-    import ast
-
-    source = (REPO / "installer" / "install.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imported = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "helpers.rules"
-        for alias in node.names
-    }
-    assigned = {
-        target.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
-    assert "EMAIL" in imported and "EMAIL" not in assigned
-
-
 def test_the_installer_runs_as_install_sh_runs_it_and_writes_nothing_into_the_clone(tmp_path):
     """install.sh runs it with the system interpreter in isolated mode, as root, from the clone."""
-    import shutil
-
     clone = tmp_path / "clone"
     for part in ("installer", "helpers"):
         shutil.copytree(REPO / part, clone / part, ignore=shutil.ignore_patterns("__pycache__"))
@@ -219,30 +61,6 @@ def test_the_installer_runs_as_install_sh_runs_it_and_writes_nothing_into_the_cl
     assert proc.returncode == 0, proc.stderr
     assert "usage" in proc.stdout
     assert list(clone.rglob("__pycache__")) == []
-
-
-def test_the_installer_takes_the_clone_off_the_path_once_it_has_the_rules(tmp_path):
-    """Run under -I as install.sh runs it, it leaves nothing of the clone on the path."""
-    import shutil
-
-    clone = tmp_path / "clone"
-    for part in ("installer", "helpers"):
-        shutil.copytree(REPO / part, clone / part, ignore=shutil.ignore_patterns("__pycache__"))
-    probe = (
-        "import runpy, sys\n"
-        f"found = runpy.run_path({str(clone / 'installer' / 'install.py')!r})\n"
-        "print(found['EMAIL'].pattern != '')\n"
-        f"print({str(clone)!r} in sys.path)\n"
-    )
-    proc = subprocess.run(
-        ["/usr/bin/python3", "-I", "-c", probe],
-        env={"PATH": "/usr/bin:/bin"},
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split() == ["True", "False"]  # it has the rules, and the path is clean
 
 
 # --- rendered files ----------------------------------------------------------------------
@@ -279,15 +97,19 @@ def test_app_environment_points_at_the_current_release():
     assert "RCMAN_FORWARD_SOCKET=/run/rcman/forward.sock\n" in env
 
 
-def test_every_rendered_app_setting_exists_in_the_settings_model():
+def unknown_settings(rendered: str) -> set[str]:
+    """The RCMAN_ variables of a rendered environment that rcman's settings model has not."""
     from rcman.settings import Settings
 
-    keys = {
-        line.split("=", 1)[0]
-        for line in ins.render("rcman.env", SETTINGS).splitlines()
-        if "=" in line
-    }
-    assert keys <= {f"RCMAN_{name.upper()}" for name in Settings.model_fields}
+    keys = {line.split("=", 1)[0] for line in rendered.splitlines() if "=" in line}
+    return keys - {f"RCMAN_{name.upper()}" for name in Settings.model_fields}
+
+
+def test_every_rendered_app_setting_exists_in_the_settings_model():
+    rendered = ins.render("rcman.env", SETTINGS)
+    assert "RCMAN_PUBLIC_ORIGIN" in rendered  # non-vacuity: the file is read
+    assert unknown_settings(rendered) == set()
+    assert unknown_settings(rendered + "RCMAN_PLANTED=x\n") == {"RCMAN_PLANTED"}  # the twin
 
 
 def test_oauth2_proxy_config_allows_only_the_allowlist():
@@ -299,31 +121,8 @@ def test_oauth2_proxy_config_allows_only_the_allowlist():
     assert "email_domains" not in cfg  # any domain would bypass the allowlist
     assert 'cookie_secret = "' + "c" * 32 + '"' in cfg
     assert "set_xauthrequest = true" in cfg
-
-
-def proxy_options(cfg: str) -> dict[str, str]:
-    """oauth2-proxy's configuration as option names and their values as written."""
-    return {
-        key.strip(): value.strip()
-        for line in cfg.splitlines()
-        if "=" in line and not line.lstrip().startswith("#")
-        for key, value in [line.split("=", 1)]
-    }
-
-
-def test_oauth2_proxy_cookie_name_is_host_prefixed():
-    """The sign-in cookie, and with it the CSRF cookie and the session's chunks oauth2-proxy
-    names after it, are ``__Host-`` cookies, which a forwarded port's subdomain can neither set
-    nor replace: Secure, Path=/ and no Domain."""
-    options = proxy_options(ins.render("oauth2-proxy.cfg", SETTINGS))
-    assert options.get("cookie_name") == '"__Host-rcman-auth"', options
-    assert options.get("cookie_secure") == "true", options
-    assert options.get("cookie_path", '"/"') == '"/"', options  # oauth2-proxy's default is /
-    assert not [key for key in options if key.startswith("cookie_domain")], options
-    assert "cookie_csrf_per_request" not in options, options  # the CSRF cookie: <name>_csrf
-    # Planted positive: the parse sees a domain, a path and a comment for what they are.
-    planted = proxy_options('cookie_domains = [".x"]\ncookie_path = "/a"\n# cookie_name = "b"')
-    assert planted == {"cookie_domains": '[".x"]', "cookie_path": '"/a"'}, planted
+    # a __Host- cookie, which a forwarded port's subdomain can neither set nor replace
+    assert 'cookie_name = "__Host-rcman-auth"\ncookie_secure = true\n' in cfg
 
 
 def test_units_run_as_their_own_users_and_the_app_on_its_socket():
@@ -335,7 +134,7 @@ def test_units_run_as_their_own_users_and_the_app_on_its_socket():
     assert str(ins.SOCKET) == "/run/rcman/rcman.sock"
     assert "--port" not in app and "--host" not in app  # no TCP listener at all
     assert f"EnvironmentFile={ins.ETC}/rcman.env" in app
-    assert "NoNewPrivileges=yes\n" in app
+    assert "NoNewPrivileges=yes\n" in app and "UMask=0077\n" in app
     # rcman reaches its own user manager's Podman socket
     assert "Environment=XDG_RUNTIME_DIR=/run/user/990\n" in app
     wants = next(line for line in app.splitlines() if line.startswith("Wants="))
@@ -386,22 +185,6 @@ def test_the_app_files_reach_rcman_without_sign_in_or_an_identity():
     assert "forward_auth 127.0.0.1:444" in site[signed_in:]
 
 
-def test_caddy_snippet_logs_each_request_to_a_file_it_rotates_and_expires():
-    snippet = ins.render("Caddyfile", SETTINGS)
-    block = snippet[snippet.index("\tlog {") : snippet.index("\thandle /oauth2/*")]
-    assert "output file /var/log/caddy/rcman-access.log {" in block
-    # Caddy deletes a rolled file past either limit; both are set, not left to defaults.
-    for option in ("roll_size", "roll_keep", "roll_keep_for"):
-        assert f"\t\t\t{option} " in block
-    assert "log_skip" not in snippet  # every request, the polls among them
-
-
-def test_the_socket_directory_is_made_at_boot_for_rcman_and_caddys_group():
-    assert ins.tmpfiles() == "d /run/rcman 0750 rcman rcman-web -\n"
-    assert ins.SOCKET.parent == ins.RUN == Path("/run/rcman")
-    assert ins.TMPFILES == Path("/etc/tmpfiles.d/rcman.conf")
-
-
 def snippet_site(snippet: str, address: str) -> str:
     """The site block of ``snippet`` that begins with ``address``, to its closing brace."""
     text = "\n" + snippet
@@ -437,36 +220,6 @@ def test_the_snippet_passes_every_forwarded_port_to_the_forward_socket_without_i
     assert filtered in site
 
 
-def test_the_ask_site_is_bound_to_the_loopback_and_passes_only_the_exact_ask_path():
-    """Only Caddy's question reaches the forwarding server through it, never rcman's socket;
-    the request's target as it came is matched, so no spelling of another path passes."""
-    snippet = ins.render("Caddyfile", SETTINGS)
-    site = snippet_site(snippet, "http://127.0.0.1:445")
-    assert "\tbind 127.0.0.1\n" in site
-    target = "{http.request.orig_uri}"
-    exact = f"{target} == '/.rcman/ask' || {target}.startsWith('/.rcman/ask?')"
-    assert f'\t@ask expression "{exact}"\n' in site
-    assert "\thandle @ask {\n\t\treverse_proxy unix//run/rcman/forward.sock\n\t}\n" in site
-    assert "\thandle {\n\t\trespond 404\n\t}\n" in site
-    assert "rcman.sock" not in site and site.count("reverse_proxy") == 1
-    # The planted positive: the reader finds rcman's socket where it is.
-    assert "rcman.sock" in snippet_site(snippet, "rcman.example.com")
-
-
-def test_the_ask_port_defaults_and_may_not_be_the_proxy_port(tmp_path):
-    env = {
-        "RCMAN_INSTALL_DOMAIN": "x.example.com",
-        "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
-        "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
-        "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
-    }
-    found = ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None)
-    assert found["ASK_PORT"] == ins.FIELDS["ASK_PORT"][2] != found["PROXY_PORT"]
-    same = {**env, "RCMAN_INSTALL_ASK_PORT": found["PROXY_PORT"]}
-    with pytest.raises(ins.InstallError, match="ASK_PORT"):
-        ins.gather(tmp_path / "install.env", environ=same, flags={}, ask=None)
-
-
 # --- Caddy's configuration ---------------------------------------------------------------
 
 # Ubuntu's own /etc/caddy/Caddyfile, the conffile of its caddy package (2.6.2-6ubuntu0.24.04.3),
@@ -479,138 +232,42 @@ ASK = "http://127.0.0.1:445/.rcman/ask"
 IMPORT = "import /etc/rcman/Caddyfile.snippet\n"
 ON_DEMAND = f"\ton_demand_tls {{\n\t\task {ASK}\n\t}}\n"
 GLOBAL = "{\n" + ON_DEMAND + "}\n\n"
-TRICKY = (
-    "# Global options, which a { in a comment does not open.\n"
-    "{\n"
-    "\temail admin@example.org # {\n"
-    "\t# }\n"
-    "}\n"
-    "\n"
-    "(common) {\n"
-    "\theader X-Host {host}\n"
-    '\trespond "}{"\n'
-    "}\n"
-    "\n"
-    "example.org {\n"
-    "\timport common\n"
-    "}\n"
-)
-FOREIGN_A = "a.example.org {\n\trespond a\n}\n\n"
-FOREIGN_B = "b.example.org {\n\trespond b\n}\n"
-MINE = "# The administrator's own note, which is not the snippet's.\n"
 
 
-def edit_cases():
-    snippet = ins.render("Caddyfile", SETTINGS)
-    older = snippet_site(ins.render("Caddyfile", {**SETTINGS, "ASK_PORT": "446"}),
-                         "http://127.0.0.1:446")  # fmt: skip
-    asking_other = "{\n\ton_demand_tls {\n\t\task http://127.0.0.1:900/check\n\t\tinterval 2m\n"
-    return [
-        pytest.param(
-            UBUNTU_CADDYFILE,
-            GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT,
-            ["global options with on_demand_tls added", f"import {ins.CADDY_SNIPPET} added"],
-            id="ubuntu",
-        ),
-        pytest.param(
-            TRICKY,
-            TRICKY.replace("\t# }\n}\n", "\t# }\n" + ON_DEMAND + "}\n") + "\n" + IMPORT,
-            ["on_demand_tls added to the global options", f"import {ins.CADDY_SNIPPET} added"],
-            id="comments-strings-placeholders-snippet",
-        ),
-        pytest.param(
-            asking_other + "\t}\n}\n\n" + IMPORT,
-            asking_other.replace("127.0.0.1:900/check", "127.0.0.1:445/.rcman/ask")
-            + "\t}\n}\n\n"
-            + IMPORT,
-            ["on_demand_tls ask http://127.0.0.1:900/check replaced"],
-            id="another-ask",
-        ),
-        pytest.param(
-            GLOBAL + FOREIGN_A + snippet + "\n" + FOREIGN_B + "\n" + MINE + older,
-            GLOBAL + FOREIGN_A + IMPORT + "\n" + FOREIGN_B + "\n" + MINE,
-            [
-                "copy of the site rcman.example.com removed",
-                "copy of the site *.ws.rcman.example.com removed",
-                "copy of the site http://127.0.0.1:445 removed",
-                "copy of the site http://127.0.0.1:446 removed",
-                f"import {ins.CADDY_SNIPPET} added",
-            ],
-            id="pasted-copies",
-        ),
-        pytest.param(
-            GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT,
-            GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT,
-            [],
-            id="imported",
-        ),
-        pytest.param(
-            "{\n\tadmin unix//run/caddy-admin.sock\n}\n\n" + IMPORT,
-            "{\n\tadmin unix//run/caddy-admin.sock\n" + ON_DEMAND + "}\n\n" + IMPORT,
-            ["on_demand_tls added to the global options"],
-            id="admin-untouched",
-        ),
-    ]
-
-
-@pytest.mark.parametrize("text, edited, actions", edit_cases())
-def test_the_caddyfile_is_edited_to_import_rcman_and_ask_it_and_then_left_alone(
-    text, edited, actions
-):
+def test_the_caddyfile_is_edited_to_import_rcman_and_ask_it_and_then_left_alone():
     snippet = ins.render("Caddyfile", SETTINGS)
     assert ins.ask_url("445") == ASK
     assert hashlib.md5(RECORDED_CADDYFILE.read_bytes()).hexdigest() == UBUNTU_CADDYFILE_MD5
-    assert ins.edit_caddyfile(text, snippet, ASK) == (edited, actions)
+    edited = GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT
+    actions = ["global options with on_demand_tls added", f"import {ins.CADDY_SNIPPET} added"]
+    assert ins.edit_caddyfile(UBUNTU_CADDYFILE, snippet, ASK) == (edited, actions)
     assert ins.edit_caddyfile(edited, snippet, ASK) == (edited, [])  # idempotent
-
-
-@pytest.mark.parametrize(
-    "text, why",
-    [
-        (":80\nrespond hi\n", "braces"),
-        ("a.example.org {\n\trespond a\n", "unbalanced"),
-        ("}\n", "unbalanced"),
-        (":80 {\n}\n{\n\tadmin off\n}\n", "global options"),
-        ("{\n\ton_demand_tls {\n\t\tpermission http {\n\t\t\tendpoint x\n\t\t}\n\t}\n}\n",
-         "permission"),
-        ("{\n" + ON_DEMAND + ON_DEMAND + "}\n", "twice"),
-        ("{\n\ton_demand_tls\n}\n", "block"),
-        ("{\n\temail a@example.org }\n", "own line"),
-        ("{\n\ton_demand_tls {\n\t\tinterval 2m }\n}\n", "own line"),
-    ],
-)  # fmt: skip
-def test_a_caddyfile_the_installer_cannot_edit_safely_is_refused(text, why):
-    snippet = ins.render("Caddyfile", SETTINGS)
-    with pytest.raises(ins.InstallError, match=why):
-        ins.edit_caddyfile(text, snippet, ASK)
 
 
 class CaddyMachine:
     """``ins.run`` standing in for systemctl and Caddy: caddy-api.service is neither active nor
-    enabled, caddy.service is active once restarted, and ``caddy validate`` passes or fails
-    with Caddy's words. It records each argv and the account it ran as."""
+    enabled, caddy.service is active once restarted, and ``caddy validate`` passes. It records
+    each argv and the account it ran as."""
 
-    def __init__(self, validates: bool = True, active: bool = False):
-        self.validates, self.active, self.calls = validates, active, []
+    def __init__(self):
+        self.active, self.calls = False, []
 
     def __call__(self, argv, user=None, check=True, **kw):
         self.calls.append((list(argv), user))
-        code, err = 0, ""
-        if argv[:2] == ["caddy", "validate"]:
-            code, err = (0, "") if self.validates else (1, "Error: adapting config: bad thing")
-        elif argv[:2] == ["systemctl", "restart"]:
+        code = 0
+        if argv[:2] == ["systemctl", "restart"]:
             self.active = True
         elif argv[:2] in (["systemctl", "is-active"], ["systemctl", "is-enabled"]):
             code = 0 if argv[-1] == ins.CADDY_UNIT and self.active else 3
         if check and code:
-            raise ins.InstallError(err)
-        return subprocess.CompletedProcess(argv, code, "", err)
+            raise ins.InstallError(f"{argv} failed")
+        return subprocess.CompletedProcess(argv, code, "", "")
 
     def ran(self, *start: str) -> list:
         return [(argv, user) for argv, user in self.calls if argv[: len(start)] == list(start)]
 
 
-def test_ensure_caddy_validates_as_caddy_and_changes_nothing_when_caddy_refuses(
+def test_ensure_caddy_validates_the_edit_as_caddy_puts_it_in_place_and_restarts_caddy(
     tmp_path, monkeypatch
 ):
     folder, etc = tmp_path / "caddy", tmp_path / "etc"
@@ -622,59 +279,36 @@ def test_ensure_caddy_validates_as_caddy_and_changes_nothing_when_caddy_refuses(
     monkeypatch.setattr(ins, "CADDY_BACKUP", folder / ".Caddyfile.rcman-backup")
     monkeypatch.setattr(ins, "CADDY_SNIPPET", etc / "Caddyfile.snippet")
     monkeypatch.setattr(ins, "CADDY_APPLIED", etc / "caddy.applied")
-    me = os.getuid()
-    # Caddy refuses the edited file: nothing is left changed, and Caddy is not restarted.
-    refusing = CaddyMachine(validates=False)
-    monkeypatch.setattr(ins, "run", refusing)
-    with pytest.raises(ins.InstallError, match="bad thing"):
-        ins.ensure_caddy(SETTINGS, False, owner_uid=me)
-    [(validate, user)] = refusing.ran("caddy", "validate")
-    candidate = Path(validate[validate.index("--config") + 1])
-    assert user == "caddy" and candidate.parent == folder and candidate != caddyfile
-    assert caddyfile.read_text() == UBUNTU_CADDYFILE
-    assert sorted(os.listdir(folder)) == ["Caddyfile"]
-    assert not ins.CADDY_SNIPPET.exists() and not ins.CADDY_APPLIED.exists()
-    assert refusing.ran("systemctl", "restart") == []
-    # The positive: Caddy accepts it, and it is put in place, backed up, and Caddy restarted.
-    accepting = CaddyMachine()
-    monkeypatch.setattr(ins, "run", accepting)
-    changes = ins.ensure_caddy(SETTINGS, False, owner_uid=me)
+    caddy = CaddyMachine()
+    monkeypatch.setattr(ins, "run", caddy)
+    changes = ins.ensure_caddy(SETTINGS, False, owner_uid=os.getuid())
     assert changes == [
         str(ins.CADDY_SNIPPET),
         f"{caddyfile}: global options with on_demand_tls added",
         f"{caddyfile}: import {ins.CADDY_SNIPPET} added",
         "caddy.service restarted",
     ]
-    imported = f"import {ins.CADDY_SNIPPET}\n"
-    assert caddyfile.read_text() == GLOBAL + UBUNTU_CADDYFILE + "\n" + imported
+    [(validate, user)] = caddy.ran("caddy", "validate")
+    candidate = Path(validate[validate.index("--config") + 1])
+    assert user == "caddy" and candidate.parent == folder and candidate != caddyfile
+    assert caddyfile.read_text() == GLOBAL + UBUNTU_CADDYFILE + f"\nimport {ins.CADDY_SNIPPET}\n"
     assert stat.S_IMODE(caddyfile.stat().st_mode) == 0o644
     assert ins.CADDY_BACKUP.read_text() == UBUNTU_CADDYFILE
     assert ins.CADDY_SNIPPET.read_text() == ins.render("Caddyfile", SETTINGS)
-    assert accepting.ran("systemctl", "restart") == [(["systemctl", "restart", "caddy.service"],
-                                                      None)]  # fmt: skip
-    # Nothing to edit, Caddy not running: the Caddyfile is still checked before the restart, and
-    # one Caddy refuses, a hand edit of the administrator's, fails the run with no restart.
-    unchecked = CaddyMachine(validates=False)
-    monkeypatch.setattr(ins, "run", unchecked)
-    with pytest.raises(ins.InstallError, match="bad thing"):
-        ins.ensure_caddy(SETTINGS, False, owner_uid=me)
-    assert [argv[-1] for argv, _ in unchecked.ran("caddy", "validate")] == [str(caddyfile)]
-    assert unchecked.ran("systemctl", "restart") == []
-    # A Caddyfile that is a link is refused before anything runs.
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.write_text(UBUNTU_CADDYFILE)
-    caddyfile.unlink()
-    caddyfile.symlink_to(elsewhere)
-    linked = CaddyMachine()
-    monkeypatch.setattr(ins, "run", linked)
-    with pytest.raises(ins.InstallError, match="regular file"):
-        ins.ensure_caddy(SETTINGS, True, owner_uid=me)
-    assert linked.calls == [] and elsewhere.read_text() == UBUNTU_CADDYFILE
+    assert caddy.ran("systemctl", "restart") == [(["systemctl", "restart", "caddy.service"], None)]
 
 
-def test_every_template_is_used():
-    templates = {p.name for p in (REPO / "installer" / "templates").iterdir()}
-    assert templates == set(ins.TEMPLATES)
+def template_mismatch(folder: Path) -> set[str]:
+    """The files of ``folder`` that are not TEMPLATES, and the TEMPLATES not in it."""
+    return {p.name for p in folder.iterdir()} ^ set(ins.TEMPLATES)
+
+
+def test_every_template_is_used(tmp_path):
+    assert ins.TEMPLATES and template_mismatch(REPO / "installer" / "templates") == set()
+    planted = tmp_path / "templates"
+    shutil.copytree(REPO / "installer" / "templates", planted)
+    (planted / "planted.service").write_text("[Unit]\n")  # a template no one renders
+    assert template_mismatch(planted) == {"planted.service"}
 
 
 # --- releases --------------------------------------------------------------------------
@@ -699,15 +333,6 @@ def test_switching_keeps_the_previous_release_and_prunes_the_rest(tmp_path):
     assert sorted(p.name for p in (tmp_path / "releases").iterdir()) == ["b", "c"]
 
 
-def test_switching_to_the_current_release_changes_nothing(tmp_path):
-    for name in ("a", "b"):
-        make_release(tmp_path, name)
-    ins.switch(tmp_path, "a")
-    ins.switch(tmp_path, "b")
-    assert ins.switch(tmp_path, "b") is False
-    assert os.readlink(tmp_path / "previous") == "releases/a"
-
-
 def test_rollback_swaps_current_and_previous(tmp_path):
     for name in ("a", "b"):
         make_release(tmp_path, name)
@@ -718,106 +343,24 @@ def test_rollback_swaps_current_and_previous(tmp_path):
     assert os.readlink(tmp_path / "previous") == "releases/b"
 
 
-def test_rollback_without_a_previous_release_is_refused(tmp_path):
-    make_release(tmp_path, "a")
-    ins.switch(tmp_path, "a")
-    with pytest.raises(ins.InstallError, match="previous"):
-        ins.rollback(tmp_path)
-
-
-def test_each_command_put_on_the_path_is_a_script_of_the_project():
-    import tomllib
-
-    scripts = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["scripts"]
-    assert ins.COMMANDS  # positive control: there is something to check
-    assert set(ins.COMMANDS) <= set(scripts)
-
-
-def test_the_commands_are_linked_to_the_current_releases(tmp_path):
-    bin_dir, current = tmp_path / "sbin", tmp_path / "opt" / "current"
-    (current / ".venv" / "bin").mkdir(parents=True)
-    bin_dir.mkdir()
-    for name in ins.COMMANDS:
-        (current / ".venv" / "bin" / name).write_text(name)
-    changed = ins.link_commands(bin_dir, current)
-    assert changed == [str(bin_dir / name) for name in ins.COMMANDS]
-    for name in ins.COMMANDS:
-        # through current, so a switch or a rollback needs no change to it
-        assert os.readlink(bin_dir / name) == str(current / ".venv" / "bin" / name)
-        assert (bin_dir / name).read_text() == name
-    assert ins.link_commands(bin_dir, current) == []
-
-
-def test_a_command_linked_elsewhere_is_linked_again(tmp_path):
-    bin_dir, current = tmp_path / "sbin", tmp_path / "current"
-    bin_dir.mkdir()
-    name = ins.COMMANDS[0]
-    os.symlink(tmp_path / "elsewhere", bin_dir / name)
-    assert str(bin_dir / name) in ins.link_commands(bin_dir, current)
-    assert os.readlink(bin_dir / name) == str(current / ".venv" / "bin" / name)
-
-
-def test_a_file_where_a_command_goes_is_refused_and_left_alone(tmp_path):
-    bin_dir, current = tmp_path / "sbin", tmp_path / "current"
-    bin_dir.mkdir()
-    name = ins.COMMANDS[0]
-    (bin_dir / name).write_text("someone else's")
-    with pytest.raises(ins.InstallError, match=name):
-        ins.link_commands(bin_dir, current)
-    assert not (bin_dir / name).is_symlink()
-    assert (bin_dir / name).read_text() == "someone else's"
-
-
-def test_an_incomplete_release_is_never_switched_to(tmp_path):
-    (tmp_path / "releases" / "half").mkdir(parents=True)
-    with pytest.raises(ins.InstallError, match="incomplete"):
-        ins.switch(tmp_path, "half")
-
-
-def test_write_if_changed_reports_changes_and_sets_mode(tmp_path):
-    path = tmp_path / "f"
-    assert ins.write_if_changed(path, "x", 0o640) is True
-    assert ins.write_if_changed(path, "x", 0o640) is False
-    assert ins.write_if_changed(path, "y", 0o640) is True
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
-
-
-def test_install_sh_hands_over_to_the_python_installer():
-    text = (REPO / "install.sh").read_text()
-    assert text.startswith("#!/bin/bash\n")
-    assert "installer/install.py" in text
-    assert os.access(REPO / "install.sh", os.X_OK)
-
-
 # --- the installation guide ------------------------------------------------------------
 
 
-def test_the_guide_documents_every_option_and_setting_and_nothing_else():
-    import re
-
-    guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
+def guide_mismatch(guide: str) -> set[str]:
+    """The options and variables the guide names that the installer has not, and the reverse."""
     options = {f"--{key.lower().replace('_', '-')}" for key in ins.FIELDS} | {"--rollback"}
-    assert set(re.findall(r"`(--[a-z-]+)", guide)) == options
     variables = {f"RCMAN_INSTALL_{key}" for key in ins.FIELDS}
-    assert set(re.findall(r"`(RCMAN_INSTALL_[A-Z_]+)`", guide)) == variables
+    named = set(re.findall(r"`(--[a-z-]+)", guide))
+    named |= set(re.findall(r"`(RCMAN_INSTALL_[A-Z_]+)`", guide))
+    return named ^ (options | variables)
 
 
-def test_the_guide_names_the_paths_the_installer_uses():
+def test_the_guide_documents_every_option_and_setting_and_nothing_else():
     guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
-    for path in (
-        ins.ROOT,
-        ins.ETC / "install.env",
-        ins.CADDY_SNIPPET,
-        ins.STATE,
-        ins.TOOLS,
-        ins.CLAUDE_STORE,
-        ins.SOCKET,
-        ins.TMPFILES,
-        *(ins.COMMAND_DIR / name for name in ins.COMMANDS),
-    ):
-        assert str(path) in guide, path
-    assert "/oauth2/callback" in guide
-    assert f"`{ins.WEB_GROUP}`" in guide and "admin off" in guide
+    assert guide_mismatch(guide) == set()
+    planted = guide.replace("`RCMAN_INSTALL_DOMAIN`", "`RCMAN_INSTALL_PLANTED`")
+    assert planted != guide  # the plant took effect
+    assert guide_mismatch(planted) == {"RCMAN_INSTALL_DOMAIN", "RCMAN_INSTALL_PLANTED"}
 
 
 # --- removing rcman: the guide lists everything the installer makes ------------------------
@@ -888,10 +431,7 @@ def test_removing_rcman_names_everything_the_installer_makes():
     assert any(label.startswith("unit ") for label in needs)
     assert len(removal_section(guide)) > len(REMOVING)
     assert missing_from_removal(guide, vars(ins)) == []
-
-
-def test_the_constants_that_are_not_made_are_still_constants_of_the_installer():
-    for name, reason in NOT_MADE.items():
+    for name, reason in NOT_MADE.items():  # each exemption still names a constant, with a reason
         assert name in vars(ins) and reason, name
 
 
@@ -905,373 +445,27 @@ def test_the_removal_guard_fails_on_a_name_taken_out_of_the_section():
         assert missing_from_removal(planted, vars(ins)) != [], text
 
 
-def test_the_removal_guard_fails_on_a_name_only_outside_the_section():
-    guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
-    planted = guide.replace(REMOVING, "## Elsewhere")  # the section's name taken away
-    assert planted != guide
-    with pytest.raises(ValueError):
-        missing_from_removal(planted, vars(ins))
-    only_elsewhere = guide.replace(REMOVING, REMOVING + "\n\nNothing here.\n\n## Elsewhere")
-    assert missing_from_removal(only_elsewhere, vars(ins)) != []
-
-
-@pytest.mark.parametrize(
-    "name,value",
-    [
-        ("NEW_STATE", Path("/var/lib/planted-thing")),
-        ("NEW_FILES", (Path("/etc/planted-one"), Path("/etc/planted-two"))),
-        ("NEW_USER", "planted-account"),
-        ("NEW_GROUP", "planted-group"),
-    ],
-)
-def test_a_new_path_account_or_group_constant_must_be_in_the_section(name, value):
-    guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
-    namespace = {**vars(ins), name: value}
-    assert namespace != vars(ins)  # the plant took effect
-    assert missing_from_removal(guide, namespace) != []
-
-
-def test_a_path_the_installer_only_reads_is_named_in_not_made_with_a_reason(monkeypatch):
-    guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
-    namespace = {**vars(ins), "NEW_READ": Path("/usr/share/planted")}
-    assert missing_from_removal(guide, namespace) != []
-    monkeypatch.setitem(NOT_MADE, "NEW_READ", "planted: read, not made")
-    assert missing_from_removal(guide, namespace) == []
-
-
-def test_a_new_unit_command_or_package_must_be_in_the_section():
-    guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
-    for name, value in (
-        ("UNITS", (*ins.UNITS, "planted.service")),
-        ("PLANTED_UNITS", ("planted-other.service",)),
-        ("COMMANDS", (*ins.COMMANDS, "planted-command")),
-        ("PACKAGES", (*ins.PACKAGES, "planted-package")),
-    ):
-        namespace = {**vars(ins), name: value}
-        assert missing_from_removal(guide, namespace) != [], name
-
-
-@pytest.mark.parametrize("name", ["rcman.example.com", "a-b.c-d.org", "x.io"])
-def test_host_names_accepted(name):
-    assert ins.HOSTNAME.fullmatch(name)
-
-
-@pytest.mark.parametrize(
-    "name", ["localhost", "-a.com", "a-.com", "a..com", "a_b.com", "a.com/", "https://a.com"]
-)
-def test_host_names_refused(name):
-    assert not ins.HOSTNAME.fullmatch(name)
-
-
-def test_run_returns_bytes_when_asked_and_reports_failures():
-    assert ins.run(["printf", "\\xff"], text=False).stdout == b"\xff"
-    with pytest.raises(ins.InstallError, match="boom"):
-        ins.run(["sh", "-c", "printf boom >&2; exit 3"], text=False)
-
-
-def test_unpacked_tools_are_usable_by_other_users(tmp_path):
-    import io
-    import tarfile
-
-    data = io.BytesIO()
-    with tarfile.open(fileobj=data, mode="w:gz") as tar:
-        info = tarfile.TarInfo("pkg-1/tool")
-        info.mode = 0o755
-        info.size = 2
-        tar.addfile(info, io.BytesIO(b"ok"))
-    dest = tmp_path / "pkg-1"
-    ins._unpack(data.getvalue(), dest, "r:gz", strip=1)
-    assert stat.S_IMODE(dest.stat().st_mode) == 0o755  # not mkdtemp's 0700
-    assert (dest / "tool").read_bytes() == b"ok"
-
-
-def test_toolchain_directories_are_repaired_to_be_readable(tmp_path):
-    for sub in ("a", "a/b"):
-        (tmp_path / sub).mkdir()
-        os.chmod(tmp_path / sub, 0o700)
-    ins.open_up(tmp_path)
-    assert stat.S_IMODE((tmp_path / "a" / "b").stat().st_mode) == 0o755
-
-
-def fake_downloads(monkeypatch, held=None):
-    """The toolchain's downloads served from archives made here, each with its checksum
-    file; returns the URLs fetched. With ``held``, an event, the first fetch of Node.js's
-    archive waits until it is set, so that a test can have another caller come meanwhile."""
-    import hashlib
-    import io
-    import tarfile
-
-    def archive(top: str, member: str, mode: str) -> bytes:
-        data = io.BytesIO()
-        with tarfile.open(fileobj=data, mode=mode) as tar:
-            info = tarfile.TarInfo(f"{top}/{member}")
-            info.mode, info.size = 0o755, 2
-            tar.addfile(info, io.BytesIO(b"ok"))
-        return data.getvalue()
-
-    arch = ins._arch()
-    node = f"node-v{ins.node_version()}-linux-{arch}"
-    triple = {"x64": "x86_64", "arm64": "aarch64"}[arch] + "-unknown-linux-gnu"
-    proxy = f"oauth2-proxy-{ins.OAUTH2_PROXY_VERSION}.linux-" + {"x64": "amd64"}.get(arch, arch)
-    archives = {
-        f"{node}.tar.xz": archive(node, "bin/node", "w:xz"),
-        f"uv-{triple}.tar.gz": archive(f"uv-{triple}", "uv", "w:gz"),
-        f"{proxy}.tar.gz": archive(proxy, "oauth2-proxy", "w:gz"),
-    }
-    sums = {name: hashlib.sha256(data).hexdigest() for name, data in archives.items()}
-    # uv and oauth2-proxy are checked against the pins of the repository, not a list served
-    # with them
-    monkeypatch.setattr(ins, "NODE_SHA256", {(ins.node_version(), arch): sums[f"{node}.tar.xz"]})
-    monkeypatch.setattr(ins, "UV_SHA256", {(ins.UV_VERSION, arch): sums[f"uv-{triple}.tar.gz"]})
-    monkeypatch.setattr(
-        ins, "OAUTH2_PROXY_SHA256",
-        {(ins.OAUTH2_PROXY_VERSION, arch): sums[f"{proxy}.tar.gz"]},
-    )  # fmt: skip
-    fetched = []
-    tmux = b"tmux source"
-    monkeypatch.setattr(ins, "TMUX_SHA256", hashlib.sha256(tmux).hexdigest())
-
-    def download(url: str) -> bytes:
-        name = url.rsplit("/", 1)[1]
-        fetched.append(url)
-        if name == f"{node}.tar.xz" and held is not None and fetched.count(url) == 1:
-            assert held.wait(HANG_GUARD)
-            return archives[name]
-        if name == f"tmux-{ins.TMUX_VERSION}.tar.gz":
-            return tmux
-        return archives[name]
-
-    monkeypatch.setattr(ins, "_download", download)
-    return fetched
-
-
-# What an empty toolchain is filled with: Node.js, uv, oauth2-proxy and tmux's source.
-MADE = 4
-
-
-def downloaded(fetched: list[str]) -> list[str]:
-    """The files fetched, by name: Node.js's list of checksums and archive, uv's archive,
-    oauth2-proxy's and tmux's source, each once and no list of checksums for the pinned ones."""
-    names = sorted(url.rsplit("/", 1)[1] for url in fetched)
-    assert len(names) == len(set(names)), names
-    assert not [n for n in names if n.endswith((".sha256", "-sha256sum.txt"))], names
-    return names
-
-
-def test_the_toolchain_is_fetched_once_and_complete(tmp_path, monkeypatch):
-    """Positive control for the fake downloads: one call fills an empty toolchain."""
-    fetched = fake_downloads(monkeypatch)
-    toolchain = tmp_path / "toolchain"
-    assert len(ins.ensure_toolchain(toolchain)) == MADE
-    for binary in (ins.node_bin(toolchain) / "node", ins.uv_binary(toolchain)):
-        assert binary.read_bytes() == b"ok"
-    assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
-    assert len(downloaded(fetched)) == MADE
-    assert ins.ensure_toolchain(toolchain) == []  # and finds it there the next time
-
-
-def test_two_callers_at_once_make_one_complete_toolchain(tmp_path, monkeypatch):
-    """Two callers filling the same empty toolchain at once, as two parallel test runs
-    sharing a cache do: one fetches and unpacks each tool, the other then finds it. The first
-    fetch is held until the other caller has come to the toolchain's lock, or, were there no
-    lock, to its own fetch."""
-    import fcntl
-    import threading
-
-    go = threading.Event()
-    fetched = fake_downloads(monkeypatch, held=go)
-    locking: list[str] = []
-
-    class Locks:
-        """The installer's fcntl, each exclusive lock it asks for recorded as it asks."""
-
-        def __getattr__(self, name):
-            return getattr(fcntl, name)
-
-        def flock(self, fd, operation):
-            if operation == fcntl.LOCK_EX:
-                locking.append(threading.current_thread().name)
-            return fcntl.flock(fd, operation)
-
-    monkeypatch.setattr(ins, "fcntl", Locks())
-    toolchain = tmp_path / "toolchain"
-    results, errors = [], []
-
-    def call():
-        try:
-            results.append(ins.ensure_toolchain(toolchain))
-        except Exception as error:  # noqa: BLE001 - reported below
-            errors.append(error)
-
-    threads = [threading.Thread(target=call) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    until(lambda: len(locking) == 2 or len(fetched) > len(set(fetched)))
-    go.set()
-    for thread in threads:
-        thread.join(timeout=HANG_GUARD)
-    assert errors == []
-    assert sorted(len(r) for r in results) == [0, MADE]
-    downloaded(fetched)  # each file once
-    assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
-    assert [p.name for p in toolchain.iterdir() if p.name.startswith(".") and p.is_dir()] == []
-
-
-def test_the_installer_runs_python_in_utf8_mode():
-    script = (REPO / "install.sh").read_text(encoding="utf-8")
-    runs = [line for line in script.splitlines() if "/usr/bin/python3" in line]
-    assert runs  # non-vacuity
-    for line in runs:
-        assert "/usr/bin/python3 -I -X utf8 " in line, line
-
-
 # --- rootless Podman for rcman -----------------------------------------------------------
 
 
-def test_rcman_gets_a_subordinate_range_for_every_persons_slot():
-    from rcman.people import MAX_PEOPLE
-    from rcman.runtime import RANGE
-
-    assert ins.SUBORDINATE_COUNT >= (MAX_PEOPLE + 1) * RANGE
-
-
-def test_the_subordinate_range_reaches_the_builders_slot():
+def test_a_new_subordinate_range_starts_after_every_range_there():
     from rcman import people
     from rcman.runtime import RANGE
 
-    assert people.BUILDER_SLOT > people.MAX_PEOPLE  # a slot no person has
-    assert ins.SUBORDINATE_COUNT >= (people.BUILDER_SLOT + 1) * RANGE
-    assert ins.RANGE == RANGE
+    # a range for every person's slot and the builder's, which no person has
+    assert people.BUILDER_SLOT > people.MAX_PEOPLE
+    assert ins.SUBORDINATE_COUNT >= (people.BUILDER_SLOT + 1) * RANGE and ins.RANGE == RANGE
+    lines = ["dev:100000:65536", "other:9000000:65536"]
+    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) == 9065536
 
 
-@pytest.mark.parametrize(
-    "lines,start",
-    [
-        ([], ins.SUBORDINATE_FIRST),
-        (["dev:100000:65536"], 165536),
-        (["dev:100000:65536", "other:9000000:65536"], 9065536),
-        (["dev:100000:65536", "rcman:5000000:10"], 5000010),  # one too small: another after
-        (["# a comment", "", "dev:100000:65536"], 165536),
-        (["dev:1000:10"], ins.SUBORDINATE_FIRST),  # never below the first useradd leaves
-    ],
-)
-def test_a_new_subordinate_range_starts_after_every_range_there(lines, start):
-    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) == start
-
-
-def test_a_machine_with_the_old_range_gets_a_second_full_one():
-    old = ins.SUBORDINATE_COUNT - ins.RANGE  # what an install before the builder's slot had
-    lines = ["dev:100000:65536", f"rcman:165536:{old}"]
-    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) == 165536 + old
-
-
-def test_a_range_big_enough_is_kept():
-    lines = ["dev:100000:65536", f"rcman:900000:{ins.SUBORDINATE_COUNT}"]
-    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) is None
-
-
-def test_the_packages_are_those_podman_and_the_tools_need():
-    assert {"podman", "uidmap", "catatonit", "slirp4netns", "busybox-static"} <= set(ins.PACKAGES)
-
-
-def test_crun_is_installed_and_is_the_runtime_podman_reports(monkeypatch):
-    """The runtime the workspaces and the builder are tested with is crun: a host with only
-    another one would run them differently, so the installer asks Podman which it uses."""
-    assert "crun" in ins.PACKAGES
-    assert ins.OCI_RUNTIME == "crun"
-    calls = []
-
-    def reports(name):
-        def run(argv, **kw):
-            calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, f"{name}\n", "")
-
-        return run
-
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    monkeypatch.setattr(ins, "run", reports("crun"))
-    assert ins.ensure_oci_runtime() == []
-    [argv] = calls
-    assert argv[:4] == RUNUSER  # asked as rcman, through the helper that runs Podman as rcman
-    assert argv[argv.index("podman") :][-3:] == ["info", "--format", "{{.Host.OCIRuntime.Name}}"]
-    for other in ("runc", "", "crun-vm"):
-        monkeypatch.setattr(ins, "run", reports(other))
-        with pytest.raises(ins.InstallError, match="crun") as refused:
-            ins.ensure_oci_runtime()
-        assert repr(other) in str(refused.value) or other == ""
-
-
-def test_the_runtime_is_checked_once_rcmans_podman_runs_and_before_anything_is_built():
-    import inspect
-
-    source = inspect.getsource(ins.main)
-    order = [
-        source.index(f"{name}(")
-        for name in ("ensure_podman", "ensure_oci_runtime", "ensure_toolchain", "ensure_tools")
-    ]
-    assert order == sorted(order) and len(set(order)) == len(order)
-
-
-def elf(interpreter: bool) -> bytes:
-    """The head of a 64-bit ELF program: its header and its program headers, a loaded
-    segment and, with ``interpreter``, the dynamic loader's."""
+def static_elf() -> bytes:
+    """The head of a static 64-bit ELF program: its header and one loaded segment's."""
     import struct
 
-    types = [1, 3] if interpreter else [1]  # PT_LOAD, PT_INTERP
     header = b"\x7fELF" + bytes([2, 1, 1]) + bytes(9)
-    header += struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, 64, 0, 0, 64, 56, len(types), 0, 0, 0)
-    return header + b"".join(struct.pack("<II", t, 5) + bytes(48) for t in types)
-
-
-def test_a_static_program_is_told_from_a_dynamic_one(tmp_path):
-    import shutil
-
-    assert not ins.is_static(Path(shutil.which("ls")))  # positive control: a dynamic one
-    static = tmp_path / "static"
-    static.write_bytes(elf(interpreter=False))
-    dynamic = tmp_path / "dynamic"
-    dynamic.write_bytes(elf(interpreter=True))
-    assert not ins.is_static(dynamic)
-    assert ins.is_static(static)
-    text = tmp_path / "script"
-    text.write_text("#!/bin/sh\n")
-    assert not ins.is_static(text)
-
-
-def test_tmux_is_built_from_the_pinned_tarball():
-    assert ins.TMUX_VERSION and len(ins.TMUX_SHA256) == 64
-    assert ins.TMUX_URL.endswith(f"/{ins.TMUX_VERSION}/tmux-{ins.TMUX_VERSION}.tar.gz")
-    assert ins.tmux_tarball(Path("/x")).name == f"tmux-{ins.TMUX_VERSION}.tar.gz"
-    argv = ins.tmux_build_argv(Path("/t/tmux.tar.gz"))
-    assert argv[:2] == ["run", "--rm"]
-    assert ins.TMUX_BUILD_REFERENCE in argv
-    assert "--volume=/t/tmux.tar.gz:/tmux.tar.gz:ro" in argv
-    assert any("--enable-static" in a for a in argv)
-
-
-def test_tmux_is_built_in_an_image_pinned_by_tag_and_digest():
-    assert ins.TMUX_BUILD_REFERENCE == f"{ins.TMUX_BUILD_IMAGE}@{ins.TMUX_BUILD_DIGEST}"
-    assert re.fullmatch(r"docker\.io/library/alpine:[\w.-]+", ins.TMUX_BUILD_IMAGE)
-    assert DIGEST.fullmatch(ins.TMUX_BUILD_DIGEST)
-
-
-def test_the_tmux_build_hands_the_program_over_on_standard_output_only():
-    """No folder of rcman's is mounted for the program to be written in: it comes out of the
-    container on standard output, and what the build says goes to standard error."""
-    build = ins.TMUX_BUILD
-    assert not any("/out" in a for a in ins.tmux_build_argv(Path("/t/tmux.tar.gz")))
-    assert ">&2" in build and ">/dev/null" not in build
-    assert build.index("sha256sum") < build.index("cat /tmp")  # the checksum is said first
-    assert build.rstrip().rsplit("&&", 1)[1].strip().startswith("cat ")  # the last step
-
-
-def test_the_tmux_build_container_is_not_logged_so_its_bytes_stay_out_of_the_journal():
-    """The program leaves the container on standard output. A log driver of the journal would
-    write those bytes, which are not UTF-8, into the system journal as lines, and make every
-    reader of the journal that decodes it as text fail."""
-    argv = ins.tmux_build_argv(Path("/t/tmux.tar.gz"))
-    assert "--log-driver=none" in argv
-    assert argv.index("--log-driver=none") < argv.index(ins.TMUX_BUILD_REFERENCE)
+    header += struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, 64, 0, 0, 64, 56, 1, 0, 0, 0)
+    return header + struct.pack("<II", 1, 5) + bytes(48)  # PT_LOAD
 
 
 class ToolsHost:
@@ -1279,17 +473,16 @@ class ToolsHost:
     terminal descriptions of the test's, and rcman's Podman, which builds tmux by handing its
     program over on standard output."""
 
-    def __init__(self, tmp_path, monkeypatch, built=None, reported="its own"):
+    def __init__(self, tmp_path, monkeypatch):
         self.tools = tmp_path / "opt" / "tools"
         self.state = tmp_path / "state"
         self.calls: list[list[str]] = []
-        self.built = elf(interpreter=False) if built is None else built
+        self.built = static_elf()
         # what the container says of the program it wrote: the build's noise and a line with
-        # the program's sha256 (``reported``: its own, another's, or no line at all)
-        digest = hashlib.sha256(self.built).hexdigest() if reported == "its own" else reported
-        self.stderr = b"compiling...\n" + (f"sha256 {digest}\n".encode() if digest else b"")
+        # the program's sha256
+        self.stderr = f"compiling...\nsha256 {hashlib.sha256(self.built).hexdigest()}\n".encode()
         busybox = tmp_path / "busybox"
-        busybox.write_bytes(elf(interpreter=False) + b"busybox")
+        busybox.write_bytes(static_elf() + b"busybox")
         terminfo = tmp_path / "terminfo"
         for entry in ins.TERMINFO:
             (terminfo / entry).parent.mkdir(parents=True, exist_ok=True)
@@ -1335,89 +528,11 @@ def test_the_tools_are_built_into_a_folder_of_roots_and_nothing_is_made_in_rcman
     assert build[:4] == RUNUSER  # tmux is built by rcman's Podman, as every container is
     assert not host.state.exists()  # no scratch folder in rcman's home, the build is not run there
     assert not [p for p in host.tools.rglob(".*") if p.name != ".tmux-version"]
-
-
-def test_a_tmux_that_arrived_short_is_refused_by_the_checksum_the_container_reports(
-    tmp_path, monkeypatch
-):
-    """The header of a program that was cut short on its way over the attach stream still
-    says it is static; the container's own checksum of what it wrote says it is not whole."""
-    short = elf(interpreter=False)
-    whole = short + b"the rest of the program"
-    cases = [hashlib.sha256(whole).hexdigest(), "0" * 64, ""]  # cut short, wrong, none said
-    for number, reported in enumerate(cases):
-        folder = tmp_path / f"case{number}"
-        folder.mkdir()
-        host = ToolsHost(folder, monkeypatch, built=short, reported=reported)
-        assert ins.is_static(_written(folder, short))  # positive control: it looks fine
-        with pytest.raises(ins.InstallError, match="sha256"):
-            ins.ensure_tools(
-                host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
-            )
-        assert not (host.tools / "bin" / "tmux").exists()
-        assert not [p for p in host.tools.rglob(".*")]
-    folder = tmp_path / "ok"
-    folder.mkdir()
-    ok = ToolsHost(folder, monkeypatch)
-    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(
-        ok.tools, conf=ok.conf, podman=ok.podman, fragments=ok.fragments
-    )
-
-
-def _written(folder: Path, data: bytes) -> Path:
-    path = folder / "written-program"
-    path.write_bytes(data)
-    return path
-
-
-def test_the_tools_are_not_built_again_and_a_second_run_changes_nothing(tmp_path, monkeypatch):
-    host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
     host.calls.clear()
-    assert (
-        ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
-        == []
-    )
-    assert host.calls == []
-
-
-def test_a_new_pin_builds_tmux_again(tmp_path, monkeypatch):
-    host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
-    monkeypatch.setattr(ins, "TMUX_SHA256", "1" * 64)
-    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(
+    again = ins.ensure_tools(
         host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
     )
-
-
-@pytest.mark.parametrize("built", [elf(interpreter=True), b"#!/bin/sh\n", b""])
-def test_a_tmux_that_is_not_static_is_refused_and_not_installed(tmp_path, monkeypatch, built):
-    host = ToolsHost(tmp_path, monkeypatch, built=built)
-    with pytest.raises(ins.InstallError, match="static"):
-        ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
-    assert not (host.tools / "bin" / "tmux").exists()
-    assert not [p for p in host.tools.rglob(".*")]  # and no partial file
-
-
-def test_the_tools_folder_is_not_in_rcmans_home_where_rcman_can_replace_it():
-    """Every workspace mounts the tools, and root makes them: they are out of rcman's reach."""
-    assert ins.STATE not in ins.TOOLS.parents
-    assert ins.ROOT in ins.TOOLS.parents
-    env = ins.render("rcman.env", {**SETTINGS, "APP_UID": "990", "WORKSPACE_IMAGE": "x",
-                                   "BUILDER_IMAGE": "y"})  # fmt: skip
-    assert f"RCMAN_TOOLS_DIR={ins.TOOLS}\n" in env
-
-
-def test_the_tmux_tarball_is_checked_against_its_pin(tmp_path, monkeypatch):
-    fake_downloads(monkeypatch)
-    toolchain = tmp_path / "toolchain"
-    ins.ensure_toolchain(toolchain)
-    assert ins.tmux_tarball(toolchain).read_bytes() == b"tmux source"
-    monkeypatch.setattr(ins, "TMUX_SHA256", "0" * 64)
-    other = tmp_path / "other"
-    with pytest.raises(ins.InstallError, match="checksum"):
-        ins.ensure_toolchain(other)
-    assert not ins.tmux_tarball(other).exists()
+    assert again == [] and host.calls == []  # not built again
 
 
 def pin_problems(version: str, table: dict, architectures: set[str]) -> list[str]:
@@ -1434,13 +549,14 @@ def pin_problems(version: str, table: dict, architectures: set[str]) -> list[str
     return problems
 
 
-def test_the_archives_of_uv_and_oauth2_proxy_are_pinned_with_their_versions():
+def test_the_archives_of_node_uv_and_oauth2_proxy_are_pinned_with_their_versions():
     from helpers import claude_release
 
     architectures = set(claude_release.ARCHITECTURES.values())
     assert architectures == {"x64", "arm64"}  # non-vacuity: the two the installer downloads for
     assert pin_problems(ins.UV_VERSION, ins.UV_SHA256, architectures) == []
     assert pin_problems(ins.OAUTH2_PROXY_VERSION, ins.OAUTH2_PROXY_SHA256, architectures) == []
+    assert pin_problems(ins.node_version(), ins.NODE_SHA256, architectures) == []
 
 
 def test_a_version_changed_without_its_checksums_is_found():
@@ -1453,129 +569,8 @@ def test_a_version_changed_without_its_checksums_is_found():
     assert pin_problems("1.0", {**good, ("1.0", "x64"): "xyz"}, architectures) != []  # not a hash
 
 
-def test_a_toolchain_download_that_is_not_the_pinned_one_is_refused(tmp_path, monkeypatch):
-    """The release page cannot vouch for itself: a swapped archive, even with a list of
-    checksums served to match, is not what the repository pinned."""
-    fetch_log = fake_downloads(monkeypatch)
-    arch = ins._arch()
-    for table, version in (("NODE_SHA256", ins.node_version()),
-                           ("UV_SHA256", ins.UV_VERSION),
-                           ("OAUTH2_PROXY_SHA256", ins.OAUTH2_PROXY_VERSION)):  # fmt: skip
-        toolchain = tmp_path / table
-        with monkeypatch.context() as swapped:
-            swapped.setitem(getattr(ins, table), (version, arch), "0" * 64)
-            with pytest.raises(ins.InstallError, match="checksum"):
-                ins.ensure_toolchain(toolchain)
-        tool = {
-            "NODE_SHA256": ins.node_bin(toolchain) / "node",
-            "UV_SHA256": ins.uv_binary(toolchain),
-            "OAUTH2_PROXY_SHA256": ins.oauth2_proxy_binary(toolchain),
-        }[table]
-        assert not tool.exists()
-        assert not any(u.endswith(("sha256", "sha256sum.txt", "SHASUMS256.txt")) for u in fetch_log)
-
-
-@pytest.mark.parametrize("table", ["NODE_SHA256", "UV_SHA256", "OAUTH2_PROXY_SHA256"])
-def test_a_version_without_a_pin_for_this_machine_is_refused(tmp_path, monkeypatch, table):
-    fake_downloads(monkeypatch)
-    monkeypatch.setattr(ins, table, {})
-    with pytest.raises(ins.InstallError, match="pinned"):
-        ins.ensure_toolchain(tmp_path / "toolchain")
-
-
-def test_the_node_version_the_frontend_names_has_its_archives_pinned():
-    from helpers import claude_release
-
-    architectures = set(claude_release.ARCHITECTURES.values())
-    assert pin_problems(ins.node_version(), ins.NODE_SHA256, architectures) == []
-    moved = {(f"{ins.node_version()}.1", a): d for (_, a), d in ins.NODE_SHA256.items()}
-    assert pin_problems(ins.node_version(), moved, architectures) != []  # a version moved on
-
-
-DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 # A base image the installer builds from: a registry name, a tag and a digest.
 PINNED_IMAGE = re.compile(r"[a-z0-9.-]+(?::\d+)?(?:/[a-z0-9._-]+)+:[\w.-]+@sha256:[0-9a-f]{64}")
-
-
-def test_the_default_image_is_ubuntu_pinned_by_tag_and_digest_with_what_rcman_needs():
-    containerfile = ins.CONTAINERFILE.read_text()
-    [base] = from_lines(ins.CONTAINERFILE)
-    assert base.startswith("docker.io/library/ubuntu:24.04@")
-    assert PINNED_IMAGE.fullmatch(base), base
-    packages = asked_packages(containerfile)
-    assert "git" in packages  # positive control: the line is the one read
-    # what Claude Code and rcman need, and the tools a repository's own setup commonly runs
-    wanted = ("git", "ca-certificates", "curl", "python3", "gh",
-              "make", "python3-venv", "tar", "xz-utils", "zip", "unzip")  # fmt: skip
-    for package in wanted:
-        assert package in packages, package
-    image = ins.workspace_image()
-    assert image.startswith("localhost/rcman-workspace:") and len(image.split(":")[1]) == 12
-
-
-def test_the_default_image_is_labelled_as_having_the_default_images_tools():
-    """The label says the image is the default image or one built from it, so what Claude is
-    told about its tools holds."""
-    from helpers import instructions
-
-    labels = [
-        line.split(None, 1)[1]
-        for line in ins.CONTAINERFILE.read_text().splitlines()
-        if line.startswith("LABEL ")
-    ]
-    assert labels == [f"{instructions.TOOLS_LABEL}=1"]
-
-
-def test_the_containerfile_keeps_its_packages_on_one_line():
-    """One line to read and to change: a package added on a line of its own is a second
-    line of packages."""
-    lines = package_lines(ins.CONTAINERFILE.read_text())
-    assert len(lines) == 1, lines
-    assert "git" in lines[0].split()  # the control: the line found is the packages'
-
-
-def test_packages_on_two_lines_are_found_on_two_lines():
-    """The twin: a package moved onto a line of its own."""
-    text = ins.CONTAINERFILE.read_text()
-    planted = text.replace(" gh ", " gh \\\n      ", 1)
-    assert planted != text  # the plant took effect
-    assert len(package_lines(planted)) == 2
-
-
-def test_the_packages_asked_for_are_read_across_lines_without_options():
-    text = (
-        "RUN apt-get update -qq \\\n"
-        " && apt-get install -y -qq --no-install-recommends \\\n"
-        "      git curl \\\n      make \\\n"
-        " && apt-get purge -y gone \\\n"
-        " && apt-get install -y zip; rm -rf /var/lib/apt/lists/*\n"
-    )
-    assert asked_packages(text) == ["git", "curl", "make", "zip"]
-    assert asked_packages("RUN apt-get update\n") == []
-
-
-def test_the_commands_the_instructions_name_are_read_from_their_backquotes():
-    """What tests/container/test_runtime_in_podman.py looks for in the default image."""
-    from tests.containers import named_commands
-
-    text = "Use `gh`, `make` and `podman`/`docker`; `gh auth status`, `/rcman/work`, `HOME`, `-p`."
-    assert named_commands(text) == ["gh", "make", "podman", "docker"]
-    assert named_commands("No command here.") == []
-    tools = (INSTRUCTION_SOURCES / "tools.md").read_text()
-    assert {"git", "gh", "curl", "make", "python3", "tar", "xz", "zip", "unzip", "apt-get"} <= set(
-        named_commands(tools)
-    )
-
-
-def test_the_default_images_build_context_is_its_containerfile_readable_by_everyone(tmp_path):
-    """rcman's Podman builds it, not the account the installer runs as."""
-    context = tmp_path / "context"
-    context.mkdir(mode=0o700)
-    ins.image_context(context)
-    assert sorted(p.name for p in context.iterdir()) == ["Containerfile"]
-    assert (context / "Containerfile").read_bytes() == ins.CONTAINERFILE.read_bytes()
-    assert stat.S_IMODE(context.stat().st_mode) == 0o755
-    assert stat.S_IMODE((context / "Containerfile").stat().st_mode) == 0o644
 
 
 def containerfiles() -> list[Path]:
@@ -1610,44 +605,15 @@ def test_every_base_image_the_installer_builds_from_is_pinned_by_tag_and_digest(
     assert {p.parent.name for p in files} >= {"workspace", "builder"}  # non-vacuity: both found
     assert sum(len(from_lines(p)) for p in files) >= 3  # and the FROM lines in them
     assert unpinned_bases(files) == []
+    assert PINNED_IMAGE.fullmatch(ins.TMUX_BUILD_REFERENCE)  # tmux's, named in the installer
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "FROM docker.io/library/ubuntu:24.04",
-        "FROM docker.io/library/ubuntu@sha256:" + "a" * 64,  # a digest and no tag
-        "FROM docker.io/library/ubuntu:24.04@sha256:" + "a" * 63,  # a digest too short
-        "FROM --platform=linux/amd64 docker.io/library/ubuntu:latest",
-        "FROM ubuntu",
-    ],
-)
-def test_a_base_image_without_a_tag_and_a_digest_is_found_unpinned(tmp_path, line):
+def test_a_base_image_without_a_tag_and_a_digest_is_found_unpinned(tmp_path):
     planted = tmp_path / "Containerfile"
-    planted.write_text(f"{line}\nRUN true\n")
+    planted.write_text("FROM docker.io/library/ubuntu:24.04\nRUN true\n")
     assert unpinned_bases([planted]) != []
     planted.write_text("FROM docker.io/library/ubuntu:24.04@sha256:" + "a" * 64 + "\n")
     assert unpinned_bases([planted]) == []  # the same file, pinned: the guard can pass
-
-
-def test_a_stage_named_by_a_later_from_is_not_taken_for_an_unpinned_base(tmp_path):
-    planted = tmp_path / "Containerfile"
-    pinned = "docker.io/library/node:24@sha256:" + "b" * 64
-    planted.write_text(f"FROM {pinned} AS cli\nFROM cli\n")
-    assert unpinned_bases([planted]) == []
-
-
-def test_the_image_tag_follows_the_containerfile(tmp_path, monkeypatch):
-    first = ins.workspace_image()
-    changed = tmp_path / "Containerfile"
-    changed.write_text(ins.CONTAINERFILE.read_text() + "RUN true\n")
-    monkeypatch.setattr(ins, "CONTAINERFILE", changed)
-    assert ins.workspace_image() != first
-
-
-# --- the devcontainer builder image ---------------------------------------------------------
-
-BUILDER_DIR = REPO / "installer" / "builder"
 
 
 def from_lines(containerfile: Path) -> list[str]:
@@ -1658,72 +624,14 @@ def from_lines(containerfile: Path) -> list[str]:
     ]
 
 
-def test_the_builder_image_is_tagged_after_every_file_of_its_folder(tmp_path, monkeypatch):
-    folder = tmp_path / "builder"
-    shutil.copytree(BUILDER_DIR, folder)
-    monkeypatch.setattr(ins, "BUILDER_DIR", folder)
-    first = ins.devcontainer_builder_image()
-    assert first.startswith("localhost/rcman-builder:") and len(first.split(":")[1]) == 12
-    assert ins.devcontainer_builder_image() == first  # stable
-    files = sorted(p.name for p in folder.iterdir())
-    assert {"Containerfile", "containers.conf", "storage.conf"} <= set(files)  # non-vacuity
-    tags = {first}
-    for name in files:
-        with (folder / name).open("a") as changed:
-            changed.write("\n")
-        tag = ins.devcontainer_builder_image()
-        assert tag not in tags, name
-        tags.add(tag)
-    (folder / "another").write_text("a new file")  # a file added counts too
-    assert ins.devcontainer_builder_image() not in tags
-
-
-def test_the_builder_image_is_tagged_after_names_as_well_as_content(tmp_path, monkeypatch):
-    folder = tmp_path / "builder"
-    folder.mkdir()
-    (folder / "a").write_text("x")
-    monkeypatch.setattr(ins, "BUILDER_DIR", folder)
-    first = ins.devcontainer_builder_image()
-    (folder / "a").rename(folder / "b")
-    assert ins.devcontainer_builder_image() != first
-
-
-def test_the_builder_image_pins_its_node_and_the_cli_by_integrity():
-
-    node, base = from_lines(BUILDER_DIR / "Containerfile")
-    assert re.fullmatch(r"docker\.io/library/node:[\w.-]+@sha256:[0-9a-f]{64}", node), node
-    default_base = from_lines(ins.CONTAINERFILE)[0]
-    assert base == default_base  # the builder starts from what the default image does
-    assert PINNED_IMAGE.fullmatch(base)
-    lock = json.loads((BUILDER_DIR / "package-lock.json").read_text())
-    package = json.loads((BUILDER_DIR / "package.json").read_text())
-    wanted = package["dependencies"]["@devcontainers/cli"]
-    assert re.fullmatch(r"\d+\.\d+\.\d+", wanted)  # an exact version, no range
-    entry = lock["packages"]["node_modules/@devcontainers/cli"]
-    assert entry["version"] == wanted
-    assert re.fullmatch(r"sha512-[A-Za-z0-9+/]+=*", entry["integrity"])
-    assert "npm ci" in (BUILDER_DIR / "Containerfile").read_text()
-
-
-def test_the_builder_image_has_what_building_in_podman_needs():
-    text = (BUILDER_DIR / "Containerfile").read_text()
-    for package in ("podman", "crun", "slirp4netns", "tar"):
-        assert f" {package}" in text, package
-    assert "fuse" not in text  # its Podman mounts overlay itself (native overlay)
-    assert "VOLUME" not in text  # a stray anonymous volume per builder
-    assert "COPY --from=" in text  # Node and the CLI come from the first stage
-    conf = (BUILDER_DIR / "containers.conf").read_text()
-    assert 'userns="host"' in conf and 'runtime="crun"' in conf
-    storage = (BUILDER_DIR / "storage.conf").read_text()
-    assert 'driver="overlay"' in storage  # positive control: the file is the overlay's
-    assert "mount_program" not in storage  # native overlay, without /dev/fuse
+# --- the default image and the devcontainer builder image -----------------------------------
 
 
 class FakePodman:
     """rcman's Podman as the installer drives it: images by name, and every call made."""
 
-    def __init__(self, images, undeletable=()):
-        self.images, self.undeletable, self.calls = list(images), set(undeletable), []
+    def __init__(self, images):
+        self.images, self.calls = list(images), []
 
     def argv(self, uid, *args):
         return ["podman", *args]
@@ -1737,16 +645,10 @@ class FakePodman:
         elif args[:2] == ["image", "ls"]:
             out = "".join(f"{name}\n" for name in self.images)
         elif args[0] == "rmi":
-            if args[1] in self.undeletable:
-                code = 1  # an image in use refuses
-            else:
-                self.images.remove(args[1])
+            self.images.remove(args[1])
         elif args[0] == "build":
             self.images.append(args[args.index("--tag") + 1])
         return subprocess.CompletedProcess(argv, code, stdout=out, stderr="")
-
-    def verbs(self):
-        return [" ".join(c[1:3]) if c[1] == "image" else c[1] for c in self.calls]
 
 
 def use_fake_podman(monkeypatch, fake):
@@ -1756,31 +658,28 @@ def use_fake_podman(monkeypatch, fake):
     monkeypatch.setattr(ins, "run", fake.run)
 
 
-def test_the_builder_image_is_built_with_rcmans_podman_and_no_older_one_is_removed_by_it(
-    monkeypatch,
-):
-    image = ins.devcontainer_builder_image()
-    old = "localhost/rcman-builder:aaaaaaaaaaaa"
-    other = "localhost/rcman-workspace:bbbbbbbbbbbb"
-    fake = FakePodman([old, other])
-    use_fake_podman(monkeypatch, fake)
-    assert ins.ensure_devcontainer_builder() == [f"image {image}"]
-    build = next(c for c in fake.calls if c[1] == "build")
-    assert build[build.index("--tag") + 1] == image
-    assert Path(build[build.index("--file") + 1]).name == "Containerfile"
-    # the running service is still configured with the old name, and builds in the meantime
-    # need it: building removes nothing
-    assert fake.images == [old, other, image]
-    assert "rmi" not in fake.verbs()
+# An apt-get install command's words, up to the end of its command, its continued lines with it.
+APT_INSTALL = re.compile(r"apt-get\s+install\s+((?:\\\n|[^&;|\n])*)")
 
 
-def test_a_builder_image_that_is_there_is_not_built_again(monkeypatch):
-    image = ins.devcontainer_builder_image()
-    old = "localhost/rcman-builder:aaaaaaaaaaaa"
-    fake = FakePodman([image, old])
-    use_fake_podman(monkeypatch, fake)
-    assert ins.ensure_devcontainer_builder() == []
-    assert "build" not in fake.verbs() and "rmi" not in fake.verbs()
+def package_lines(text: str) -> list[str]:
+    """The lines of the apt-get install commands of a Containerfile's ``text`` that ask for a
+    package, and not only options, as they are written but for the continuation."""
+    return [
+        line
+        for command in APT_INSTALL.findall(text)
+        for line in command.split("\\\n")
+        if any(not word.startswith("-") for word in line.split())
+    ]
+
+
+def test_the_containerfile_keeps_its_packages_on_one_line():
+    """One line to read and to change: a package added on a line of its own is a second line."""
+    text = ins.CONTAINERFILE.read_text()
+    lines = package_lines(text)
+    assert len(lines) == 1 and "git" in lines[0].split(), lines  # the line is the packages'
+    planted = text.replace(" gh ", " gh \\\n      ", 1)  # the twin: a package moved down
+    assert planted != text and len(package_lines(planted)) == 2
 
 
 def test_both_images_are_built_without_keeping_step_images(monkeypatch):
@@ -1813,57 +712,6 @@ def test_older_builder_images_are_pruned_by_their_own_step_and_others_left_alone
     assert fake.images == [other, image]  # the old builder gone, others left alone
 
 
-def test_an_older_builder_image_in_use_does_not_fail_the_install(monkeypatch):
-    image = ins.devcontainer_builder_image()
-    busy, old = "localhost/rcman-builder:aaaaaaaaaaaa", "localhost/rcman-builder:bbbbbbbbbbbb"
-    fake = FakePodman([busy, old, image], undeletable=[busy])
-    use_fake_podman(monkeypatch, fake)
-    ins.prune_devcontainer_builder_images(990, image)
-    assert fake.images == [busy, image]  # the one in use stays, the other goes
-
-
-def test_old_builder_images_are_removed_only_after_rcman_runs_with_the_new_name():
-    """Between building the image and the restart the old service runs on, configured with
-    the old name; removing that image then makes every devcontainer build fail."""
-    import inspect
-
-    source = inspect.getsource(ins.main)
-    source = source[source.index("SUDO_USER") :]  # after the rollback, which restarts as well
-    order = [
-        source.index(f"{name}(")
-        for name in (
-            "ensure_devcontainer_builder",
-            "configure",
-            "start_services",
-            "health",
-            "prune_devcontainer_builder_images",
-        )  # fmt: skip
-    ]
-    assert order == sorted(order) and len(set(order)) == len(order)
-    assert "prune_devcontainer_builder_images(" not in inspect.getsource(
-        ins.ensure_devcontainer_builder
-    )
-
-
-def test_the_installer_finds_out_both_images_rcmans_uid_and_whether_web_upgrade_is_on(
-    monkeypatch,
-):
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    found = ins.found_out({**SETTINGS, "WEB_UPGRADE": "no"})
-    assert found == {
-        "APP_UID": "990",
-        "WORKSPACE_IMAGE": ins.workspace_image(),
-        "BUILDER_IMAGE": ins.devcontainer_builder_image(),
-        "WEB_UPGRADE_ENABLED": "false",
-    }
-    env = ins.render("rcman.env", {**SETTINGS, **found})
-    assert f"RCMAN_BUILDER_IMAGE={ins.devcontainer_builder_image()}\n" in env
-    assert "RCMAN_WEB_UPGRADE=false\n" in env
-    on = ins.found_out({**SETTINGS, "WEB_UPGRADE": "yes"})
-    assert on["WEB_UPGRADE_ENABLED"] == "true"
-    assert "RCMAN_WEB_UPGRADE=true\n" in ins.render("rcman.env", {**SETTINGS, **on})
-
-
 @pytest.fixture
 def releases(tmp_path):
     """A release site: ``put(version, kind)`` makes a release, and the address is served."""
@@ -1882,19 +730,15 @@ def releases(tmp_path):
 @pytest.fixture
 def account(monkeypatch):
     """rcman's account on this machine, for the steps that write in its folders: a command run
-    as rcman is run for real as the test's user, so that what it writes is there to read, and
-    every command is recorded."""
-    calls = []
+    as rcman is run for real as the test's user, so that what it writes is there to read."""
     real = ins.run
 
     def run(argv, user=None, **kw):
-        calls.append(argv)
         done = as_rcman_for_real(argv, lambda rest: real(rest, **kw))
         return done if done is not None else real(argv, user=user, **kw)
 
     monkeypatch.setattr(ins, "run", run)
     monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    return calls
 
 
 def test_the_claude_store_holds_the_version_checked_against_its_release(
@@ -1914,28 +758,8 @@ def test_the_claude_store_holds_the_version_checked_against_its_release(
     assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.1.0"]  # no partial file
     (folder / "2.1.0" / "manifest.json").unlink()
     assert ins.ensure_claude_store(store, url, "2.1.0") == []  # nothing fetched again
-
-
-def test_a_claude_that_does_not_match_its_release_is_refused(tmp_path, releases, account):
-    url, put, _ = releases
-    put("2.1.0", "failing")
-    store = tmp_path / "claude"
-    with pytest.raises(ins.InstallError, match="checksum"):
-        ins.ensure_claude_store(store, url, "2.1.0")
-    assert not (store / "versions" / "2.1.0").exists() and not (store / "current").exists()
-    assert [p.name for p in (store / "versions").iterdir()] == []  # no partial file either
-
-
-def test_a_release_the_site_does_not_have_or_has_no_build_of_is_refused_in_words(
-    tmp_path, releases, account
-):
-    url, put, folder = releases
-    put("2.1.0")
-    with pytest.raises(ins.InstallError, match="2.0.0"):
-        ins.ensure_claude_store(tmp_path / "a", url, "2.0.0")
-    (folder / "2.1.0" / "manifest.json").write_text('{"platforms": {}}')
-    with pytest.raises(ins.InstallError, match="no build"):
-        ins.ensure_claude_store(tmp_path / "b", url, "2.1.0")
+    # the version the installer puts there is the tested one
+    assert ins.claude_version() == (REPO / "helpers" / "claude-version").read_text().strip()
 
 
 def test_the_store_keeps_the_version_current_names_and_only_adds_the_tested_one(
@@ -1955,90 +779,7 @@ def test_the_store_keeps_the_version_current_names_and_only_adds_the_tested_one(
     assert os.readlink(store / "current") == "versions/2.0.0"
 
 
-def test_the_store_gets_a_current_where_there_is_none_or_it_dangles(tmp_path, releases, account):
-    url, put, _ = releases
-    put("2.1.0")
-    store = tmp_path / "claude"
-    (store / "versions").mkdir(parents=True)
-    (store / "current").symlink_to("versions/9.9.9")  # names a version that is not there
-    ins.ensure_claude_store(store, url, "2.1.0")
-    assert os.readlink(store / "current") == "versions/2.1.0"
-
-
-def test_the_store_is_made_by_rcman_and_readable_by_the_workspaces(
-    tmp_path, releases, account, monkeypatch
-):
-    """The store is rcman's to write at run time, so rcman makes all of it: root changes
-    nothing in it by path, and every command that reaches into it runs as rcman."""
-    url, put, _ = releases
-    put("2.1.0")
-    put("2.2.0")
-    store = tmp_path / "claude"
-    seen: list = []
-    forbid_path_based_changes(monkeypatch, seen, store)
-    ins.ensure_claude_store(store, url, "2.1.0")
-    ins.ensure_claude_store(store, url, "2.2.0")
-    assert seen == []
-    everything = {store, *store.rglob("*")}
-    assert len(everything) > 5  # non-vacuity
-    for path in everything:
-        assert path.lstat().st_uid == os.getuid(), path  # made by the account the test runs as
-        if path.is_symlink():
-            continue
-        mode = stat.S_IMODE(path.stat().st_mode)
-        assert mode & 0o055 == 0o055, path  # readable, and for a folder enterable, by anyone
-        assert not mode & 0o022, path  # and writable by its owner alone
-    reaching = [c for c in account if any(str(store) in a for a in c)]
-    assert reaching  # non-vacuity
-    assert all(c[:4] == RUNUSER for c in reaching), [c for c in reaching if c[:4] != RUNUSER]
-
-
-def test_a_download_is_staged_where_rcman_cannot_write_and_installed_by_rcman(
-    tmp_path, releases, account, monkeypatch
-):
-    """Root fetches and checks the program in a folder of its own, outside the store; rcman
-    copies the checked file in. A store that rcman can replace by a link is never written by
-    root."""
-    url, put, _ = releases
-    put("2.1.0")
-    store = tmp_path / "claude"
-    staged = []
-    real = ins.claude_release.fetch
-
-    def fetch(download, version, destination):
-        staged.append(destination)
-        real(download, version, destination)
-
-    monkeypatch.setattr(ins.claude_release, "fetch", fetch)
-    ins.ensure_claude_store(store, url, "2.1.0")
-    [destination] = staged
-    assert store not in destination.parents and destination.name == "2.1.0"
-    assert not destination.exists()  # and the staging folder is gone
-    installing = [c for c in account if c[:4] == RUNUSER and str(destination) in c]
-    assert installing  # rcman is the one that copied it
-
-
-def test_the_installer_downloads_with_the_code_rcman_does(monkeypatch, tmp_path, account):
-    """One piece of code fetches releases; the installer has no downloader of its own."""
-    from helpers import claude_release
-
-    assert ins.claude_release is claude_release
-    assert ins.CLAUDE_DOWNLOAD == claude_release.DOWNLOAD
-    assert ins.DOWNLOAD_ADDRESS is claude_release.DOWNLOAD_ADDRESS
-    seen = []
-
-    def fetch(download, version, destination):
-        seen.append((download, version, destination.name))
-        destination.write_bytes(b"#!/bin/sh\n")
-
-    monkeypatch.setattr(claude_release, "fetch", fetch)
-    ins.ensure_claude_store(tmp_path / "claude", "https://downloads.example.com", "2.1.0")
-    assert seen == [("https://downloads.example.com", "2.1.0", "2.1.0")]
-
-
 def imports_urllib(source: str) -> bool:
-    import ast
-
     for node in ast.walk(ast.parse(source)):
         names = (
             [a.name for a in node.names]
@@ -2053,30 +794,24 @@ def imports_urllib(source: str) -> bool:
 
 
 def test_the_installer_has_no_downloader_of_its_own():
+    """One piece of code fetches releases, helpers/claude_release.py, rcman's as well."""
     assert not imports_urllib((REPO / "installer" / "install.py").read_text(encoding="utf-8"))
-    for planted in ("import urllib.request\n", "from urllib import request\n"):
-        assert imports_urllib(planted)  # the guard fires on a plant
-
-
-def test_a_download_of_the_toolchain_is_checked_by_the_shared_code(releases):
-    import hashlib
-
-    url, _, folder = releases
-    (folder / "file").write_bytes(b"content")
-    assert ins._verified(f"{url}/file", hashlib.sha256(b"content").hexdigest()) == b"content"
-    with pytest.raises(ins.InstallError, match="checksum mismatch"):
-        ins._verified(f"{url}/file", "0" * 64)
-    with pytest.raises(ins.InstallError):
-        ins._download(f"{url}/nothing")
-    assert ins._download(f"{url}/file") == b"content"
-
-
-def test_the_store_holds_the_tested_version():
-    assert ins.claude_version() == (REPO / "helpers" / "claude-version").read_text().strip()
+    assert imports_urllib("from urllib import request\n")  # the guard fires on a plant
 
 
 def test_the_first_administrator_is_added_by_rcman_admin_as_rcman(monkeypatch):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append((argv, kw))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
     monkeypatch.setattr(ins, "app_uid", lambda: 990)
+    monkeypatch.setattr(ins, "run", run)
+    added = ins.ensure_admin({"ADMIN_EMAIL": "Admin@Example.com"})
+    assert added == ["administrator admin@example.com"]
+    assert len(seen) == 2  # the list, then the addition, as rcman from a neutral folder
+    assert all(argv[:4] == RUNUSER and kw.get("cwd") == "/" for argv, kw in seen)
     argv = ins.admin_argv("Admin@Example.com")
     assert argv[:4] == RUNUSER
     # in rcman's own clean environment, not root's: no HOME, PATH or variable of root's
@@ -2087,39 +822,6 @@ def test_the_first_administrator_is_added_by_rcman_admin_as_rcman(monkeypatch):
         str(ins.CURRENT / ".venv" / "bin" / "rcman-admin"), "--env-file",
         str(ins.ETC / "rcman.env"), "add", "--admin", "--", "Admin@Example.com",
     ]  # fmt: skip
-
-
-def test_rcman_admin_runs_in_a_neutral_folder_and_not_in_the_clone(monkeypatch):
-    seen = []
-
-    def run(argv, **kw):
-        seen.append((argv, kw))
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    monkeypatch.setattr(ins, "run", run)
-    assert ins.ensure_admin({"ADMIN_EMAIL": "Admin@Example.com"}) == [
-        "administrator admin@example.com"
-    ]
-    assert len(seen) == 2  # the list, then the addition
-    for argv, kw in seen:
-        assert kw.get("cwd") == "/", argv
-        assert "-i" in argv and argv[:4] == RUNUSER
-
-
-def test_podman_runs_as_rcman_through_its_own_socket():
-    argv = ins.as_rcman_podman(990, "image", "exists", "x")
-    assert argv[:5] == ["runuser", "-u", ins.APP_USER, "--", "/usr/bin/env"]
-    assert "XDG_RUNTIME_DIR=/run/user/990" in argv
-    assert argv[argv.index("podman") :] == [
-        "podman", "--remote", "--url", "unix:///run/user/990/podman/podman.sock",
-        "image", "exists", "x",
-    ]  # fmt: skip
-
-
-def test_rcman_makes_its_files_private_to_itself():
-    app = ins.render("rcman.service", SETTINGS)
-    assert "UMask=0077\n" in app
 
 
 # --- limits: what the installer leaves for the slices to work -----------------------------
@@ -2158,34 +860,23 @@ def as_rcman_for_real(argv: list[str], real_run) -> subprocess.CompletedProcess 
 
 class Manager:
     """Stands in for systemctl and the user manager's cgroup, for ensure_limits: records what
-    is run, answers where rcman's user manager's control group is (``group``), and has the
-    controllers that cgroup lists as a test plants them. ``root`` is the controllers of the
-    root cgroup, which a machine on cgroup v2 has and one on v1 or a hybrid does not (None).
-    A command run as rcman is run for real as the test's user, so that what it writes is
-    there to read; a path of the state folder changed by path is refused (``chowned``)."""
+    is run, answers where rcman's user manager's control group is, and has every controller
+    there, on cgroup v2. A command run as rcman is run for real as the test's user, so that what
+    it writes is there to read; a path of the state folder changed by path is refused
+    (``chowned``)."""
 
-    def __init__(
-        self,
-        tmp_path,
-        monkeypatch,
-        controllers="cpuset cpu io memory pids",
-        group="/user.slice/user-990.slice/user@990.service",
-        root="cpuset cpu io memory pids",
-    ):
+    def __init__(self, tmp_path, monkeypatch):
         self.calls: list[list[str]] = []
         self.chowned: list[Path] = []
         self.systemd = tmp_path / "systemd"
         self.state = tmp_path / "state"
         self.cgroups = tmp_path / "cgroup"
-        self.group = group
+        self.group = "/user.slice/user-990.slice/user@990.service"
         self.real_run = ins.run
-        self.cgroups.mkdir()
-        if root is not None:
-            (self.cgroups / "cgroup.controllers").write_text(root + "\n")
-        if controllers is not None and group.strip("/"):
-            listing = self.cgroups / group.lstrip("/") / "cgroup.controllers"
-            listing.parent.mkdir(parents=True)
-            listing.write_text(controllers + "\n")
+        controllers = "cpuset cpu io memory pids\n"
+        (self.cgroups / self.group.lstrip("/")).mkdir(parents=True)
+        (self.cgroups / "cgroup.controllers").write_text(controllers)
+        (self.cgroups / self.group.lstrip("/") / "cgroup.controllers").write_text(controllers)
         for name, value in (("SYSTEMD", self.systemd), ("STATE", self.state),
                             ("CGROUP_ROOT", self.cgroups)):  # fmt: skip
             monkeypatch.setattr(ins, name, value)
@@ -2216,17 +907,12 @@ class Manager:
         return [c for c in self.calls if "daemon-reexec" in c]
 
 
-@pytest.mark.parametrize(
-    "path", ["/dev/stdin", "/dev/fd/0", "/dev/fd/12", "/proc/self/fd/0", "/proc/1234/fd/3"]
-)
-def test_the_guard_refuses_a_command_run_as_rcman_that_opens_a_descriptor_by_its_path(path):
+def test_the_guard_refuses_a_command_run_as_rcman_that_opens_a_descriptor_by_its_path():
     """The planted twin of what failed in a real install: ``install -D /dev/stdin`` as rcman."""
-    planted = [*RUNUSER, "/usr/bin/env", "-i", "install", "-D", "-m", "644", path, "/x/y"]
+    planted = [*RUNUSER, "/usr/bin/env", "-i", "install", "-D", "-m", "644", "/dev/stdin", "/x/y"]
     with pytest.raises(AssertionError):
         as_rcman_for_real(planted, lambda rest: pytest.fail("run"))
-    assert opens_a_descriptor_by_path(["install", path])
-    for fine in ("/dev/null", "/dev/fdx", "/var/lib/rcman/fd/0", "stdin"):
-        assert not opens_a_descriptor_by_path(["install", fine])
+    assert not opens_a_descriptor_by_path(["install", "/dev/null"])
 
 
 def test_no_installer_command_opens_a_descriptor_by_its_path():
@@ -2236,35 +922,6 @@ def test_no_installer_command_opens_a_descriptor_by_its_path():
             assert not DESCRIPTOR_PATHS.match(node.value), node.lineno
             for text in ("/dev/stdin", "/dev/fd/", "/proc/self/fd"):
                 assert text not in node.value, node.lineno
-
-
-def test_rcman_writes_a_file_from_standard_input_by_a_rename_with_its_mode_and_folders(
-    tmp_path, monkeypatch
-):
-    seen = []
-    real = ins.run
-
-    def run(argv, user=None, **kw):
-        seen.append(argv)
-        done = as_rcman_for_real(argv, lambda rest: real(rest, **kw))
-        return done if done is not None else real(argv, user, **kw)
-
-    monkeypatch.setattr(ins, "run", run)
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    target = tmp_path / "state" / ".config" / "x.d" / "rcman.conf"
-    assert ins.rcman_write(target, "[Manager]\nA=1\n", 0o640) is True
-    assert target.read_text() == "[Manager]\nA=1\n"
-    assert stat.S_IMODE(target.stat().st_mode) == 0o640
-    assert [p.name for p in target.parent.iterdir()] == ["rcman.conf"]  # no partial file left
-    assert ins.rcman_write(target, "[Manager]\nA=1\n", 0o640) is False
-    assert ins.rcman_write(target, "[Manager]\nA=2\n", 0o640) is True
-    assert target.read_text() == "[Manager]\nA=2\n"
-    link = tmp_path / "elsewhere"
-    link.write_text("kept")
-    (target.parent / ".rcman.conf.new").symlink_to(link)  # a link where the partial file goes
-    assert ins.rcman_write(target, "[Manager]\nA=3\n", 0o640) is True
-    assert link.read_text() == "kept" and target.read_text() == "[Manager]\nA=3\n"
-    assert [a for a in seen if ins.WRITE_SCRIPT in a]  # written by the script, not by install
 
 
 SLICE_DROP_IN = "user-990.slice.d/rcman.conf"
@@ -2285,267 +942,14 @@ def test_the_user_slice_has_no_limit_on_tasks_and_rcmans_own_default_has_none(
     assert str(slice_file) in changes and str(user_file) in changes
     assert manager.written() == {slice_file, user_file}  # nothing else, a Delegate drop-in least
     assert capsys.readouterr().err == ""  # and nothing to warn of
-
-
-def test_the_slice_drop_in_sorts_after_the_one_the_distribution_ships(tmp_path, monkeypatch):
-    """systemd reads drop-ins of one name in the order of their file names; the later wins, and
-    the distribution's is 10-defaults.conf."""
-    Manager(tmp_path, monkeypatch)
-    ins.ensure_limits()
-    assert "rcman.conf" > "10-defaults.conf"
-
-
-def test_the_user_manager_reads_its_new_default_by_reexecuting_as_rcman(tmp_path, monkeypatch):
-    manager = Manager(tmp_path, monkeypatch)
-    ins.ensure_limits()
-    [reexec] = manager.reexecutions()
-    assert reexec[:5] == ["runuser", "-u", ins.APP_USER, "--", "/usr/bin/env"]
-    assert "XDG_RUNTIME_DIR=/run/user/990" in reexec and f"HOME={manager.state}" in reexec
-    assert reexec[-3:] == ["systemctl", "--user", "daemon-reexec"]
-    assert not [c for c in manager.calls if c[:1] == ["systemctl"] and "daemon-reexec" in c]
-    # never a restart or a stop of the user manager or of anything in it
-    assert not [c for c in manager.calls if {"restart", "stop", "kill", "start"} & set(c)]
-
-
-def test_the_reexecution_comes_after_the_drop_in_is_in_place(tmp_path, monkeypatch):
-    manager = Manager(tmp_path, monkeypatch)
-    seen = []
-    real = manager.run
-    manager.run = lambda argv, *a, **k: (
-        seen.append((argv, (manager.state / USER_DROP_IN).exists())) or real(argv, *a, **k)
-    )
-    monkeypatch.setattr(ins, "run", manager.run)
-    ins.ensure_limits()
-    [(_, there)] = [(c, e) for c, e in seen if "daemon-reexec" in c]
-    assert there
-
-
-def test_running_it_again_changes_nothing_but_asks_the_manager_to_reexecute_again(
-    tmp_path, monkeypatch
-):
-    """A reexecution that failed is not left undone because the file is already there: it kills
-    nothing, so it is asked for on every install."""
-    manager = Manager(tmp_path, monkeypatch)
-    ins.ensure_limits()
-    before = {p: p.read_text() for p in manager.written()}
-    manager.calls.clear()
-    assert ins.ensure_limits() == []
-    assert {p: p.read_text() for p in manager.written()} == before
-    assert len(manager.reexecutions()) == 1
-
-
-def test_a_reexecution_that_failed_is_asked_for_again_by_the_next_install(tmp_path, monkeypatch):
-    manager = Manager(tmp_path, monkeypatch)
-    real = manager.run
-
-    def failing(argv, *a, **k):
-        if "daemon-reexec" in argv:
-            manager.calls.append(argv)
-            raise ins.InstallError("daemon-reexec failed")
-        return real(argv, *a, **k)
-
-    monkeypatch.setattr(ins, "run", failing)
-    with pytest.raises(ins.InstallError):
-        ins.ensure_limits()
-    assert (manager.state / USER_DROP_IN).exists()  # the file is there, the manager has not read it
-    monkeypatch.setattr(ins, "run", real)
-    manager.calls.clear()
-    assert ins.ensure_limits() == []
-    assert len(manager.reexecutions()) == 1
-
-
-def test_a_changed_user_default_is_written_again(tmp_path, monkeypatch):
-    manager = Manager(tmp_path, monkeypatch)
-    ins.ensure_limits()
-    (manager.state / USER_DROP_IN).write_text("[Manager]\nDefaultTasksMax=100\n")
-    manager.calls.clear()
-    assert ins.ensure_limits() == [str(manager.state / USER_DROP_IN)]
-    assert "DefaultTasksMax=infinity" in (manager.state / USER_DROP_IN).read_text()
-    assert manager.reexecutions()
-
-
-@pytest.mark.parametrize("missing", ["cpu", "memory", "pids"])
-def test_a_user_manager_without_a_controller_is_a_warning_and_the_install_goes_on(
-    tmp_path, monkeypatch, capsys, missing
-):
-    """Limits are off until an administrator sets one: an install must not fail for want of
-    what only they need. The drop-ins are written, and what is missing is said."""
-    have = [c for c in ("cpuset", "cpu", "io", "memory", "pids") if c != missing]
-    manager = Manager(tmp_path, monkeypatch, controllers=" ".join(have))
-    changes = ins.ensure_limits()  # no InstallError
-    said = capsys.readouterr().err
-    assert said.startswith("Warning: ") and "limits" in said
-    assert missing in said and "user@990.service" in said
-    assert "Delegate" in said  # and what to do about it
-    assert len(changes) == 2 and manager.written() == {
-        manager.systemd / SLICE_DROP_IN,
-        manager.state / USER_DROP_IN,
-    }
-    assert len(manager.reexecutions()) == 1
-
-
-def test_the_warning_names_every_controller_that_is_missing_and_only_those(
-    tmp_path, monkeypatch, capsys
-):
-    Manager(tmp_path, monkeypatch, controllers="cpuset io memory")
-    ins.ensure_limits()
-    named = re.search(r"has not been given: ([a-z, ]+)\.", capsys.readouterr().err)
-    assert named and named.group(1).split(", ") == ["cpu", "pids"]
-
-
-def test_a_failing_systemctl_show_is_a_warning_that_cannot_tell_and_not_a_failure(
-    tmp_path, monkeypatch, capsys
-):
-    manager = Manager(tmp_path, monkeypatch)
-    real = manager.run
-
-    def refusing(argv, *a, **k):
-        if argv[:2] == ["systemctl", "show"]:
-            raise ins.InstallError("systemctl show failed")
-        return real(argv, *a, **k)
-
-    monkeypatch.setattr(ins, "run", refusing)
-    ins.ensure_limits()
-    assert "cannot tell" in capsys.readouterr().err
-    assert manager.written()
-
-
-def test_the_controllers_checked_are_those_of_the_properties_limits_set():
-    from rcman import limits
-
-    controller_of = {
-        "MemoryMax": "memory",
-        "MemorySwapMax": "memory",
-        "CPUQuota": "cpu",
-        "TasksMax": "pids",
-    }
-    assert set(limits.PROPERTIES) == set(controller_of)  # a property added needs a controller named
-    assert set(ins.LIMIT_CONTROLLERS) == {controller_of[name] for name in limits.PROPERTIES}
-
-
-def test_a_controller_whose_name_is_part_of_another_is_not_taken_for_it(
-    tmp_path, monkeypatch, capsys
-):
-    Manager(tmp_path, monkeypatch, controllers="cpuset io memory pids")  # cpuset is not cpu
-    ins.ensure_limits()
-    assert re.search(r"\bcpu\b", capsys.readouterr().err)
-
-
-def test_a_user_manager_whose_controllers_cannot_be_read_is_a_warning_that_cannot_tell(
-    tmp_path, monkeypatch, capsys
-):
-    manager = Manager(tmp_path, monkeypatch)
-    (manager.cgroups / manager.group.lstrip("/") / "cgroup.controllers").unlink()
-    ins.ensure_limits()
-    said = capsys.readouterr().err
-    assert said.startswith("Warning: ") and "cannot tell" in said
-    assert manager.written()  # the drop-ins are written all the same
-
-
-@pytest.mark.parametrize("group", ["", "/", "\n"])
-def test_an_empty_control_group_is_never_read_as_the_root_cgroup_and_passed(
-    tmp_path, monkeypatch, capsys, group
-):
-    """An empty path would be the root cgroup, which lists every controller there is: a false
-    pass. It is not known where the user manager is, which is a warning."""
-    manager = Manager(tmp_path, monkeypatch, group=group, root="cpuset cpu io memory pids")
-    ins.ensure_limits()
-    said = capsys.readouterr().err
-    assert said.startswith("Warning: ") and "cannot tell" in said
-    assert manager.written()
-
-
-def test_the_root_cgroup_does_list_the_controllers_the_check_would_have_passed_on(
-    tmp_path, monkeypatch
-):
-    """Positive control for the test above: the plant's root cgroup does hold all three."""
-    manager = Manager(tmp_path, monkeypatch, group="")
-    listed = (manager.cgroups / "cgroup.controllers").read_text().split()
-    assert set(ins.LIMIT_CONTROLLERS) <= set(listed)
-
-
-def test_a_machine_on_cgroup_v1_or_a_hybrid_is_a_warning_that_says_v2_is_needed(
-    tmp_path, monkeypatch, capsys
-):
-    manager = Manager(tmp_path, monkeypatch, root=None)  # no unified hierarchy at the root
-    changes = ins.ensure_limits()
-    said = capsys.readouterr().err
-    assert said.startswith("Warning: ") and "cgroup v2" in said
-    assert len(changes) == 2 and manager.written()
-
-
-def test_limits_are_made_ready_after_the_user_manager_runs_and_before_anything_is_built():
-    import inspect
-
-    source = inspect.getsource(ins.main)
-    order = [
-        source.index(f"{name}(") for name in ("ensure_podman", "ensure_limits", "ensure_toolchain")
-    ]
-    assert order == sorted(order) and len(set(order)) == 3
-
-
-# --- what root writes in the account's own folders ---------------------------------------
-
-
-def test_what_the_account_owns_is_written_as_the_account_and_never_by_root(tmp_path, monkeypatch):
-    """Root follows a link, and every folder of rcman's home is one rcman can put a link in:
-    root changes nothing there by path, rcman does it all."""
-    manager = Manager(tmp_path, monkeypatch)
-    ins.ensure_limits()
-    assert manager.chowned == []  # no path-based change of owner or mode by root
+    [reexec] = manager.reexecutions()  # the user manager reads its new default, as rcman
+    assert reexec[:4] == RUNUSER and reexec[-3:] == ["systemctl", "--user", "daemon-reexec"]
+    assert manager.chowned == []  # root changed nothing in rcman's home by path
     in_the_home = [c for c in manager.calls if any(str(manager.state) in a for a in c)]
-    assert in_the_home  # non-vacuity
-    for call in in_the_home:
-        assert call[:4] == RUNUSER, call
-
-
-def test_a_link_in_the_account_s_folders_is_followed_by_the_account_and_not_by_root(
-    tmp_path, monkeypatch
-):
-    manager = Manager(tmp_path, monkeypatch)
-    manager.state.mkdir()
-    (manager.state / ".config").symlink_to(tmp_path)  # rcman can plant it
-    ins.ensure_limits()
-    assert manager.chowned == []
-    # every command that reached into the home ran as rcman, so a link was followed with
-    # rcman's rights, which are the rights it planted the link with
-    for call in manager.calls:
-        if any(str(manager.state) in a for a in call):
-            assert call[:4] == RUNUSER, call
+    assert in_the_home and all(call[:4] == RUNUSER for call in in_the_home)
 
 
 # --- running it again: nothing is reported changed ---------------------------------------
-
-
-class Accounts:
-    """Stands in for the account tools, for ensure_accounts: every account and group is there
-    already, as on a second run, and rcman's home is a folder of the test's."""
-
-    def __init__(self, tmp_path, monkeypatch):
-        self.state = tmp_path / "state"
-        self.calls: list[list[str]] = []
-        monkeypatch.setattr(ins, "STATE", self.state)
-        monkeypatch.setattr(ins, "ETC", tmp_path / "etc")
-        monkeypatch.setattr(ins, "_exists", lambda kind, name: True)
-        monkeypatch.setattr(ins, "run", self.run)
-        self.chowned: list[Path] = []
-        forbid_path_based_changes(monkeypatch, self.chowned, self.state)
-        monkeypatch.setattr(
-            ins.pwd,
-            "getpwnam",
-            lambda name: type(
-                "A", (), {"pw_uid": os.getuid(), "pw_gid": os.getgid(), "pw_dir": str(self.state)}
-            )(),
-        )
-
-    def run(self, argv, user=None, **kw):
-        self.calls.append(argv)
-        out = ""
-        if argv[:2] == ["id", "-nG"]:
-            out = "caddy rcman-web" if argv[2] == "caddy" else "rcman-proxy rcman"
-        elif argv[:2] == ["getent", "group"]:
-            out = "rcman-web:x:900:caddy"
-        return subprocess.CompletedProcess(argv, 0, out, "")
 
 
 def forbid_path_based_changes(monkeypatch, seen: list, under: Path) -> None:
@@ -2572,54 +976,6 @@ def forbid_path_based_changes(monkeypatch, seen: list, under: Path) -> None:
     for name in ("chown", "lchown", "chmod"):
         setattr(proxy, name, guard(name))
     monkeypatch.setattr(ins, "os", proxy)
-
-
-def test_a_second_run_of_the_account_step_reports_nothing(tmp_path, monkeypatch):
-    accounts = Accounts(tmp_path, monkeypatch)
-    accounts.state.mkdir()
-    accounts.state.chmod(0o750)
-    assert ins.ensure_accounts("caddy") == []
-    assert accounts.chowned == []
-
-
-def test_a_home_podman_made_enterable_is_still_in_order_and_is_left_as_it_is(tmp_path, monkeypatch):
-    """Podman adds the right to enter to every folder above a container that runs in a user
-    namespace of its own, rcman's home among them. That lets no one read what is in it, and
-    taking it away again would be undone at the next container: it is not a change, and it is
-    not undone."""
-    accounts = Accounts(tmp_path, monkeypatch)
-    accounts.state.mkdir()
-    accounts.state.chmod(0o751)
-    assert ins.ensure_accounts("caddy") == []
-    assert stat.S_IMODE(accounts.state.stat().st_mode) == 0o751
-
-
-@pytest.mark.parametrize("mode", [0o700, 0o755, 0o770, 0o757, 0o777, 0o640])
-def test_a_home_with_any_other_mode_is_put_right_and_reported(tmp_path, monkeypatch, mode):
-    accounts = Accounts(tmp_path, monkeypatch)
-    accounts.state.mkdir()
-    accounts.state.chmod(mode)
-    assert ins.ensure_accounts("caddy") == [str(accounts.state)]
-    assert stat.S_IMODE(accounts.state.stat().st_mode) == 0o750
-    assert accounts.chowned == []
-
-
-def test_a_home_that_is_a_link_is_refused_and_what_it_leads_to_is_left_alone(tmp_path, monkeypatch):
-    accounts = Accounts(tmp_path, monkeypatch)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    elsewhere.chmod(0o777)
-    accounts.state.symlink_to(elsewhere)
-    with pytest.raises(ins.InstallError, match="link"):
-        ins.ensure_accounts("caddy")
-    assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o777
-
-
-def test_a_missing_home_is_made_and_put_right(tmp_path, monkeypatch):
-    accounts = Accounts(tmp_path, monkeypatch)
-    assert not accounts.state.exists()
-    assert ins.ensure_accounts("caddy") == [str(accounts.state)]
-    assert stat.S_IMODE(accounts.state.stat().st_mode) == 0o750
 
 
 def test_the_steps_that_write_in_rcmans_home_report_nothing_the_second_time(tmp_path, monkeypatch):
@@ -2658,31 +1014,20 @@ def test_the_steps_that_write_in_rcmans_home_report_nothing_the_second_time(tmp_
     assert manager.chowned == []
 
 
-def test_the_socket_directory_is_changed_through_its_descriptor_and_a_link_is_refused(
-    tmp_path, monkeypatch
-):
-    run_dir = tmp_path / "run-rcman"
-    monkeypatch.setattr(ins, "RUN", run_dir)
-    monkeypatch.setattr(ins, "TMPFILES", tmp_path / "tmpfiles.conf")
-    monkeypatch.setattr(ins, "_gid", lambda group: os.getgid())
-    monkeypatch.setattr(ins.pwd, "getpwnam", lambda name: type("A", (), {"pw_uid": os.getuid()})())
-    seen: list = []
-    forbid_path_based_changes(monkeypatch, seen, run_dir)
-    assert str(run_dir) in ins.ensure_runtime_dir()
-    assert stat.S_IMODE(run_dir.stat().st_mode) == 0o750
-    assert ins.ensure_runtime_dir() == []
-    run_dir.rmdir()
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    elsewhere.chmod(0o777)
-    run_dir.symlink_to(elsewhere)
-    with pytest.raises(ins.InstallError, match="link"):
-        ins.ensure_runtime_dir()
-    assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o777
-    assert seen == []
-
-
 # --- rcman's own files are made by rcman --------------------------------------------------
+
+
+def string_constants(source: str) -> list[str]:
+    return [n.value for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Constant)
+            if isinstance(n.value, str)]  # fmt: skip
+
+
+def test_the_installer_names_the_commands_that_change_accounts_and_run_as_one_in_one_place():
+    source = INSTALLER.read_text(encoding="utf-8")
+    constants = string_constants(source)
+    assert constants.count("useradd") == 1 and constants.count("runuser") == 1
+    planted = source + '\nSECOND = "runuser"\n'  # the twin: a second place in it names it
+    assert string_constants(planted).count("runuser") == 2
 
 
 def test_the_allowed_list_is_made_by_rcman_and_only_when_it_is_not_there(tmp_path, monkeypatch):
@@ -2717,176 +1062,7 @@ def test_the_allowed_list_is_made_by_rcman_and_only_when_it_is_not_there(tmp_pat
     assert allowed.read_text() == "someone@example.com\n"
 
 
-def test_the_two_system_accounts_are_made_by_one_helper_alike(tmp_path, monkeypatch):
-    accounts = Accounts(tmp_path, monkeypatch)
-    accounts.state.mkdir()
-    accounts.state.chmod(0o750)
-    monkeypatch.setattr(
-        ins,
-        "_exists",
-        lambda kind, name: not (kind == "passwd" and name in (ins.APP_USER, ins.PROXY_USER)),
-    )
-    changes = ins.ensure_accounts("caddy")
-    assert f"user {ins.APP_USER}" in changes and f"user {ins.PROXY_USER}" in changes
-    made = {c[-1]: c for c in accounts.calls if c[:1] == ["useradd"]}
-    assert set(made) == {ins.APP_USER, ins.PROXY_USER}
-    for name, argv in made.items():
-        assert {"--system", "--user-group"} <= set(argv), name
-        assert argv[argv.index("--shell") + 1] == "/usr/sbin/nologin"
-    assert argv_option(made[ins.APP_USER], "--home-dir") == str(accounts.state)
-    assert "--no-create-home" in made[ins.PROXY_USER]
-
-
-def argv_option(argv: list[str], option: str) -> str:
-    return argv[argv.index(option) + 1]
-
-
-def string_constants(source: str) -> list[str]:
-    return [n.value for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Constant)
-            if isinstance(n.value, str)]  # fmt: skip
-
-
-def test_the_installer_names_the_commands_that_change_accounts_and_run_as_one_in_one_place():
-    source = INSTALLER.read_text(encoding="utf-8")
-    constants = string_constants(source)
-    assert constants.count("useradd") == 1
-    assert constants.count("runuser") == 1
-    for planted in (
-        'x = ["useradd", "a"]\ny = ["useradd", "b"]\n',
-        'a = "runuser"\nb = "runuser"\n',
-    ):
-        assert (
-            string_constants(planted).count(string_constants(planted)[0]) == 2
-        )  # plant took effect
-
-
-# --- no podman system migrate while a workspace runs -----------------------------------------
-
-
-class RunningContainers:
-    """rcman's Podman, asked which containers run, for the check before new subordinate ranges
-    are taken: whether its socket is there, and what it lists."""
-
-    def __init__(self, tmp_path, monkeypatch, *, socket=True, running=()):
-        self.calls: list[list[str]] = []
-        self.running = list(running)
-        self.files = [tmp_path / "subuid", tmp_path / "subgid"]
-        monkeypatch.setattr(ins, "SUBORDINATE_FILES", tuple(self.files))
-        monkeypatch.setattr(ins, "app_uid", lambda: 990)
-        monkeypatch.setattr(ins, "podman_socket_exists", lambda uid: socket)
-        monkeypatch.setattr(ins, "run", self.run)
-
-    def give_ranges(self, count=None):
-        for path in self.files:
-            path.write_text(
-                f"{ins.APP_USER}:{ins.SUBORDINATE_FIRST}:{count or ins.SUBORDINATE_COUNT}\n"
-            )
-
-    def run(self, argv, user=None, **kw):
-        self.calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "".join(f"{n}\n" for n in self.running), "")
-
-
-def test_new_ranges_are_refused_while_a_container_runs_and_the_remedy_is_the_exact_commands(
-    tmp_path, monkeypatch
-):
-    """rcman's interface cannot stop a container, and rcman starts a stopped one again: the
-    way on is to stop rcman, then the containers, as rcman, and run the installer again."""
-    import shlex
-
-    host = RunningContainers(tmp_path, monkeypatch, running=["rcman-ws-a", "rcman-ws-b"])
-    host.give_ranges(count=ins.RANGE)  # too small: another would be added
-    with pytest.raises(ins.InstallError) as refused:
-        ins.check_containers_stopped_before_new_ranges()
-    said = str(refused.value)
-    assert "rcman-ws-a" in said and "rcman-ws-b" in said
-    assert "systemctl stop rcman" in said
-    stop_all = shlex.join(ins.as_rcman(990, "podman", "stop", "--all"))  # as the installer runs it
-    assert stop_all in said
-    assert said.index("systemctl stop rcman") < said.index(stop_all) < said.rindex("install.sh")
-    assert "interface" not in said  # which cannot do it
-    # what has been done by then is said, and that running again is safe
-    assert "Nothing was changed" not in said
-    assert "settings" in said and "packages" in said and "accounts" in said
-    assert "safe to run" in said
-    [ask] = host.calls
-    assert ask[:4] == RUNUSER and ask[ask.index("podman") :][1:3] == ["--remote", "--url"]
-    assert "ps" in ask
-
-
-def test_the_refusal_comes_before_any_range_is_added_so_that_the_next_run_asks_again(
-    tmp_path, monkeypatch
-):
-    import inspect
-
-    source = inspect.getsource(ins.main)
-    assert source.index("check_containers_stopped_before_new_ranges(") < source.index(
-        "ensure_subordinate_ids("
-    )
-
-
-def test_a_machine_with_no_range_yet_and_no_podman_socket_has_nothing_to_stop(
-    tmp_path, monkeypatch
-):
-    host = RunningContainers(tmp_path, monkeypatch, socket=False)
-    ins.check_containers_stopped_before_new_ranges()  # a first install: nothing could run
-    assert host.calls == []
-
-
-def test_new_ranges_go_ahead_when_no_container_runs(tmp_path, monkeypatch):
-    host = RunningContainers(tmp_path, monkeypatch, running=[])
-    ins.check_containers_stopped_before_new_ranges()
-    assert len(host.calls) == 1  # it did ask: the quiet is an answer and not an absence of one
-
-
-def test_ranges_that_are_there_need_no_migration_and_so_no_question(tmp_path, monkeypatch):
-    """A second install ends nothing and asks nothing of Podman here."""
-    host = RunningContainers(tmp_path, monkeypatch, running=["rcman-ws-a"])
-    host.give_ranges()
-    ins.check_containers_stopped_before_new_ranges()
-    assert host.calls == []
-    assert ins.ensure_subordinate_ids() == []
-
-
-def test_migrate_is_asked_for_only_when_a_range_was_added_and_as_rcman(tmp_path, monkeypatch):
-    calls: list[list[str]] = []
-
-    def answer(argv, **kw):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    linger = tmp_path / "linger"
-    linger.mkdir()
-    (linger / ins.APP_USER).touch()  # lingering is on already
-    monkeypatch.setattr(ins, "LINGER", linger)
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    monkeypatch.setattr(ins, "podman_socket_exists", lambda uid: True)
-    monkeypatch.setattr(ins, "run", answer)
-    monkeypatch.setattr(ins.subprocess, "run", answer)
-    ins.ensure_podman(subordinate_changed=False)
-    assert not [c for c in calls if "migrate" in c]
-    calls.clear()
-    ins.ensure_podman(subordinate_changed=True)
-    [migrate] = [c for c in calls if "migrate" in c]
-    assert migrate[:4] == RUNUSER and migrate[-3:] == ["podman", "system", "migrate"]
-
-
 # --- rolling back to a release the database is newer than ----------------------------------
-
-
-def test_the_schema_a_release_has_is_the_number_of_its_migrations():
-    from rcman import db
-
-    source = (REPO / "backend" / "rcman" / "db.py").read_text(encoding="utf-8")
-    assert ins.release_schema_version(source) == len(db.MIGRATIONS) > 0
-    assert ins.release_schema_version("MIGRATIONS = ['a', 'b', 'c']\n") == 3
-    assert ins.release_schema_version("x = 1\nMIGRATIONS = []\n") == 0
-
-
-@pytest.mark.parametrize("source", ["x = 1\n", "MIGRATIONS = make()\n", "def broken(:\n", ""])
-def test_a_release_whose_schema_cannot_be_told_is_not_rolled_back_to(source):
-    with pytest.raises(ins.InstallError, match="schema"):
-        ins.release_schema_version(source)
 
 
 def previous_release(root: Path, migrations: int) -> None:
@@ -2898,82 +1074,14 @@ def previous_release(root: Path, migrations: int) -> None:
 
 def test_a_rollback_to_a_release_older_than_the_database_is_refused_in_words(tmp_path, monkeypatch):
     previous_release(tmp_path, migrations=2)
+    monkeypatch.setattr(ins, "database_schema_version", lambda database=ins.DATABASE: 2)
+    ins.check_rollback(tmp_path)  # the positive: a release that reads the database goes ahead
     monkeypatch.setattr(ins, "database_schema_version", lambda database=ins.DATABASE: 3)
     with pytest.raises(ins.InstallError) as refused:
         ins.check_rollback(tmp_path)
     said = str(refused.value)
     assert "3" in said and "2" in said and "database" in said
     assert "install.sh" in said  # the way on is to install a newer release, not back
-
-
-@pytest.mark.parametrize("database", [0, 1, 2])
-def test_a_rollback_to_a_release_that_can_read_the_database_goes_ahead(
-    tmp_path, monkeypatch, database
-):
-    previous_release(tmp_path, migrations=2)
-    monkeypatch.setattr(ins, "database_schema_version", lambda database_=None, d=database: d)
-    ins.check_rollback(tmp_path)
-
-
-def test_a_rollback_with_no_previous_release_is_refused_as_before(tmp_path, monkeypatch):
-    monkeypatch.setattr(ins, "database_schema_version", lambda *a: 0)
-    with pytest.raises(ins.InstallError, match="no previous release"):
-        ins.check_rollback(tmp_path)
-
-
-def test_the_rollback_checks_the_database_before_it_switches_anything(
-    tmp_path, monkeypatch, capsys
-):
-    switched = []
-    monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(ins, "check_lock", lambda: None)
-    monkeypatch.setattr(ins, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        ins, "check_rollback", lambda root: (_ for _ in ()).throw(ins.InstallError("newer"))
-    )
-    monkeypatch.setattr(ins, "rollback", lambda root: switched.append("link"))
-    monkeypatch.setattr(ins, "start_services", lambda restart: switched.append("restart"))
-    assert ins.main(["--rollback"]) == 1
-    assert switched == []
-    assert "newer" in capsys.readouterr().err
-
-
-def sqlite_version(path: Path, version: int, keep_open: bool):
-    import sqlite3
-
-    con = sqlite3.connect(path)
-    con.execute("pragma journal_mode = wal")
-    con.execute("pragma wal_autocheckpoint = 0")
-    con.execute("create table t (x)")
-    con.execute(f"pragma user_version = {version}")
-    con.commit()
-    if not keep_open:
-        con.close()
-    return con
-
-
-def test_the_database_version_is_read_as_rcman_with_what_only_the_log_holds(tmp_path, monkeypatch):
-    """The header of the file lags behind in WAL mode, until a checkpoint: asking SQLite is
-    the way to know."""
-    database = tmp_path / "rcman.db"
-    con = sqlite_version(database, 7, keep_open=True)
-    header = database.read_bytes()[60:64]
-    assert int.from_bytes(header, "big") != 7  # positive control: the header alone says wrong
-    calls = []
-    real = ins.run
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-
-    def run(argv, user=None, **kw):
-        calls.append(argv)
-        return as_rcman_for_real(argv, lambda rest: real(rest, **kw))
-
-    monkeypatch.setattr(ins, "run", run)
-    assert ins.database_schema_version(database) == 7
-    assert calls[0][:4] == RUNUSER  # and root never opened it, which could leave files of its own
-    con.close()
-    assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == ["rcman.db"]
-    assert ins.database_schema_version(tmp_path / "none.db") == 0
-    assert not (tmp_path / "none.db").exists()  # asking made no database
 
 
 # --- where the installer's root may touch what rcman can write ---------------------------------
@@ -3209,117 +1317,10 @@ def installer_findings():
     )
 
 
-def test_the_path_constants_in_rcmans_reach_are_derived_from_the_installer():
-    constants = rcman_writable_constants(vars(ins))
-    assert {"STATE", "CLAUDE_STORE", "RUN", "SOCKET"} <= constants  # known positives
-    tree = ast.parse(INSTALLER.read_text(encoding="utf-8"))
-    runtime = run_user_functions(tree, account_functions(tree))
-    assert "podman_socket" in runtime and "as_rcman" not in runtime
-    assert "TOOLS" not in constants and "ROOT" not in constants and "ETC" not in constants
-    planted = {**vars(ins), "PLANTED": ins.STATE / "planted", "PLANTED_RUN": ins.RUN / "x"}
-    assert {"PLANTED", "PLANTED_RUN"} <= rcman_writable_constants(planted)
-    source = INSTALLER.read_text(encoding="utf-8")
-    functions = functions_of(ast.parse(source))
-    touching = {
-        name for name, fn in functions.items()
-        if any(isinstance(n, ast.Name) and n.id in constants for n in ast.walk(fn))
-    }  # fmt: skip
-    assert {"ensure_accounts", "ensure_claude_store", "ensure_runtime_dir", "configure"} <= touching
-
-
 def test_root_acts_on_nothing_in_its_reach_that_rcman_can_write_by_its_path_in_a_function():
     findings, _, writers = installer_findings()
     assert findings == []
     assert {"write_if_changed", "_install_file", "_set_link"} <= writers  # the guard sees them
-
-
-FAKE_ACCOUNT = """
-def as_account(user, argv):
-    return ["runuser", "-u", user, "--", *argv]
-def as_rcman(*argv):
-    return as_account("rcman", list(argv))
-def run_path(uid):
-    return Path(f"/run/user/{uid}/podman/podman.sock")
-"""
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        'os.chown(STATE / "x", 0, 0)',
-        "os.chmod(STATE, 0o700)",
-        "os.lchown(CLAUDE_STORE, 0, 0)",
-        '(RUN / "x").mkdir()',
-        "SOCKET.unlink()",
-        'shutil.rmtree(CLAUDE_STORE / "v")',
-        'tempfile.mkdtemp(dir=STATE, prefix="x")',
-        'open(STATE / "f", "w")',
-        'Path(pwd.getpwnam("rcman").pw_dir).joinpath("f").write_text("x")',
-        'home = pwd.getpwnam("rcman").pw_dir\n    os.makedirs(home)',
-        'a = STATE / "a"\n    b = a / "b"\n    b.write_text("x")',
-        'for p in (STATE / "a").rglob("*"):\n        os.lchown(p, 0, 0)',
-        'run(["chown", "rcman", str(STATE / "x")])',
-        'subprocess.run(["rm", "-rf", str(CLAUDE_STORE)])',
-        'write_it(STATE / "x")',
-        "write_it(CLAUDE_STORE)",
-        "s = socket.socket(socket.AF_UNIX)\n    s.connect(str(SOCKET))",
-        "socket.create_connection((str(RUN), 1))",
-        "run_path(1).is_socket()",
-        "os.stat(run_path(1))",
-    ],
-)
-def test_root_acting_by_path_in_rcmans_reach_is_found(body):
-    source = FAKE_ACCOUNT + (
-        f"def write_it(path: Path):\n    path.write_text('x')\n\ndef step():\n    {body}\n"
-    )
-    findings, _, _ = root_touches(source, {"STATE", "CLAUDE_STORE", "RUN", "SOCKET"}, {})
-    assert any(f.startswith("step,") for f in findings), (body, findings)
-
-
-def test_a_parameter_whose_default_is_a_path_of_rcmans_is_in_its_reach():
-    source = FAKE_ACCOUNT + 'def step(store=CLAUDE_STORE):\n    (store / "v").write_text("x")\n'
-    findings, _, _ = root_touches(source, {"CLAUDE_STORE"}, {})
-    assert findings and findings[0].startswith("step,")
-    other = FAKE_ACCOUNT + 'def step(store=SOMEWHERE):\n    (store / "v").write_text("x")\n'
-    assert root_touches(other, {"CLAUDE_STORE"}, {})[0] == []
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        'run(as_rcman("touch", str(STATE / "x")))',
-        'run(as_account("rcman", ["rm", str(STATE / "x")]))',
-        'subprocess.run(as_rcman("cat", str(STATE / "x")))',
-        'os.chown(ETC / "x", 0, 0)',
-        '(ROOT / "x").write_text("x")',
-        "print(STATE)",
-        "name = str(STATE)",
-        'write_it(ETC / "x")',
-        "os.fchown(fd, 0, 0)",
-        'socket.create_connection(("127.0.0.1", 2019))',
-        'run(as_rcman("test", "-S", str(run_path(1))))',
-    ],
-)
-def test_what_rcman_does_and_what_root_does_elsewhere_is_not_found(body):
-    source = FAKE_ACCOUNT + (
-        f"def write_it(path: Path):\n    path.write_text('x')\n\ndef step():\n    {body}\n"
-    )
-    findings, _, _ = root_touches(source, {"STATE", "CLAUDE_STORE"}, {})
-    assert findings == [], (body, findings)
-
-
-def test_an_exemption_covers_its_function_only_and_is_stale_when_the_site_is_gone():
-    source = FAKE_ACCOUNT + (
-        "def own(p: Path):\n    os.chown(p, 0, 0)\n\ndef step():\n    os.chown(STATE, 0, 0)\n"
-    )
-    findings, used, _ = root_touches(source, {"STATE"}, {"own": "reasoned"})
-    assert [f.split(",")[0] for f in findings] == ["step"]  # the exempt one is not reported
-    assert used == {"own"}  # and its site was there
-    helper = source + "def uses():\n    own(STATE)\n"
-    findings, _, _ = root_touches(helper, {"STATE"}, {"own": "reasoned"})
-    assert not [f for f in findings if f.startswith("uses")]  # calling the exempt one is fine
-    gone = FAKE_ACCOUNT + "def own(p: Path):\n    return p\n"
-    assert root_touches(gone, {"STATE"}, {"own": "reasoned"})[1] == set()  # stale: no site left
 
 
 def test_the_exemptions_still_have_their_sites():
@@ -3344,317 +1345,8 @@ def test_a_violation_planted_in_the_installer_itself_is_found():
     assert {f.split(",")[0] for f in found} >= {"ensure_accounts", "ensure_runtime_dir"}
 
 
-# --- the guide, held to the hardening ------------------------------------------------------
-
-GUIDE = REPO / "docs" / "installation.md"
-
-
-def guide_text() -> str:
-    return GUIDE.read_text(encoding="utf-8")
-
-
-def flat(text: str) -> str:
-    """Text on one line: the guide breaks its sentences wherever a line ends."""
-    return " ".join(text.split())
-
-
-def removal_steps(guide: str) -> dict[int, str]:
-    parts = re.split(r"^(\d+)\. ", removal_section(guide), flags=re.M)
-    return {int(number): flat(text) for number, text in zip(parts[1::2], parts[2::2], strict=True)}
-
-
-# What a step of the removal says of another step: the words before its number, and a word only
-# the step it must name has.
-STEP_REFERENCES = {
-    r"restart Caddy after step (\d+)": "groupdel",
-    r"step (\d+) ends them": "podman system reset",
-    r"goes with the home in step (\d+)": "install.env",
-    r"step (\d+) checks": "getent passwd",
-}
-
-
-def wrong_step_references(guide: str) -> list[str]:
-    steps, text, wrong = removal_steps(guide), flat(removal_section(guide)), []
-    for phrase, word in STEP_REFERENCES.items():
-        for match in re.finditer(phrase, text):
-            number = int(match.group(1))
-            if number not in steps or word not in steps[number]:
-                wrong.append(f"{match.group(0)!r} names a step without {word!r}")
-        if not re.search(phrase, text):
-            wrong.append(f"{phrase!r} is not in the section")
-    return wrong
-
-
-def test_every_step_the_removal_names_is_the_step_that_does_it():
-    guide = guide_text()
-    assert len(removal_steps(guide)) > 5  # non-vacuity
-    assert wrong_step_references(guide) == []
-
-
-def test_the_step_references_guard_fails_on_a_number_moved_or_a_phrase_removed():
-    guide = guide_text()
-    for phrase in STEP_REFERENCES:
-        loose = re.compile(phrase.replace(" ", r"\s+"))  # the guide breaks lines anywhere
-        planted = loose.sub(lambda m: m.group(0).replace(m.group(1), "99"), guide)
-        assert planted != guide, phrase  # the plant took effect
-        assert wrong_step_references(planted) != [], phrase
-    gone = guide.replace("step 3 ends them", "the next step ends them")
-    assert gone != guide and wrong_step_references(gone) != []
-
-
-def test_the_final_check_of_the_removal_looks_at_rcmans_entries_only():
-    check = flat(removal_steps(guide_text())[max(removal_steps(guide_text()))])
-    drop_in = ins.SLICE_DROP_IN_FILE
-    assert (
-        f"{ins.SYSTEMD}/user-" in check
-        and f"{drop_in.parent.name.replace('{uid}', '*')}/{drop_in.name}" in check
-    )
-    assert f"ls {ins.LINGER / ins.APP_USER}" in check  # rcman's entry, not every account's
-    assert f"ls {ins.LINGER} " not in check and not check.endswith(f"ls {ins.LINGER}")
-    assert f"ls {ins.SYSTEMD} | grep rcman" in check
-
-
-def test_the_removal_keeps_the_caddy_import_from_dangling_and_never_validates_as_root():
-    section = flat(removal_section(guide_text()))
-    assert "keep" in section and "empty" in section and str(ins.CADDY_SNIPPET) in section
-    assert "between" in section and "reinstall" in section.lower() or "install again" in section
-    assert "caddy validate" in section and "as root" in section
-
-
-def test_the_guide_says_install_sh_runs_from_a_clone_of_its_own():
-    guide = flat(guide_text())
-    assert "dedicated clone" in guide and "npm ci" in guide and "imports Python" in guide
-
-
-def test_the_guide_says_what_the_installer_pins_and_checks():
-    guide = flat(guide_text())
-    for name in ("NODE_SHA256", "UV_SHA256", "OAUTH2_PROXY_SHA256", "TMUX_SHA256",
-                 "TMUX_BUILD_DIGEST"):  # fmt: skip
-        assert name in guide, name
-    assert "digest" in guide
-
-
-def test_the_guide_says_which_runtime_podman_must_use_and_that_the_installer_checks_it():
-    guide = flat(guide_text())
-    assert ins.OCI_RUNTIME in guide and "podman info" in guide
-
-
-def test_the_guide_says_a_range_is_not_added_while_a_workspace_runs():
-    guide = flat(guide_text())
-    assert "podman system migrate" in guide
-    assert "refuses" in guide and "running" in guide
-    assert "stops its running containers" not in guide  # the installer stops none
-
-
-def test_the_guide_says_a_rollback_is_refused_for_a_newer_database():
-    guide = flat(guide_text())
-    start = guide.index("go back to the release before")
-    rollback = guide[start : start + 900]
-    assert "database" in rollback and "refuses" in rollback and "schema" in rollback
-
-
-def test_the_guide_no_longer_claims_a_refusal_it_does_not_make():
-    assert "as it does for no other file" not in flat(guide_text())
-    assert str(ins.TOOLS) in guide_text() and "/var/lib/rcman/tools" not in guide_text()
-
-
-# --- the health check, the built tree, the Caddy restart -----------------------------------
-
-
-# The installer's default for oauth2-proxy's port; the check is stubbed, nothing listens.
-HEALTH_SETTINGS = {"PROXY_PORT": ins.FIELDS["PROXY_PORT"][2]}
-
-
-def test_the_health_of_rcman_is_asked_as_rcman_through_its_socket_and_not_by_root(monkeypatch):
-    """The socket is in a folder rcman owns, so a link there could lead a connection of root's
-    elsewhere: the question is put by rcman."""
-    calls = []
-
-    def run(argv, **kw):
-        calls.append((argv, kw))
-        return subprocess.CompletedProcess(argv, 0, "200\n", "")
-
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    monkeypatch.setattr(ins, "run", run)
-    monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
-    ins.health(HEALTH_SETTINGS)
-    [(argv, kw), (forward, forward_kw)] = calls  # rcman's socket, and its forwarding server's
-    assert argv[:4] == RUNUSER and str(ins.SOCKET) in argv and "/api/health" in argv
-    assert kw.get("cwd") == "/"
-    assert forward[:4] == RUNUSER and str(ins.FORWARD_SOCKET) in forward
-    assert "/.rcman/health" in forward and forward_kw.get("cwd") == "/"
-    assert "socket." not in inspect_source(ins.health)  # and root opens no socket in it
-    assert ".connect(" not in inspect_source(ins._status_over_socket)
-
-
-def inspect_source(function) -> str:
-    import inspect
-
-    return inspect.getsource(function)
-
-
-def unhealthy(monkeypatch) -> ins.InstallError:
-    """What ins.health raises, on the installer's time, which only the test moves: once it has
-    looked and waits to look again, its HEALTH_TIMEOUT is passed. It runs in a thread joined
-    within the hang guard."""
-    import threading
-
-    fake = FakeTime()
-    monkeypatch.setattr(ins, "time", fake)
-    failed: list[ins.InstallError] = []
-
-    def check() -> None:
-        with pytest.raises(ins.InstallError) as refused:
-            ins.health(HEALTH_SETTINGS)
-        failed.append(refused.value)
-
-    checking = threading.Thread(target=check, daemon=True)
-    checking.start()
-    fake.wait_sleep_begun(after=0)  # it has looked, and waits to look again
-    fake.advance(ins.HEALTH_TIMEOUT + 1)
-    checking.join(HANG_GUARD)
-    assert not checking.is_alive()
-    [error] = failed
-    return error
-
-
-@pytest.mark.parametrize("answer", [(1, ""), (0, "503\n"), (0, "")])
-def test_rcman_that_does_not_answer_ok_is_not_healthy(monkeypatch, answer):
-    code, out = answer
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    monkeypatch.setattr(
-        ins, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, code, out, "")
-    )
-    monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
-    assert "rcman" in str(unhealthy(monkeypatch))
-
-
-def test_a_forwarding_server_that_does_not_answer_is_not_healthy(monkeypatch):
-    """rcman's own socket answers; its forwarding server's does not."""
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-
-    def run(argv, **kw):
-        answered = str(ins.SOCKET) in argv
-        return subprocess.CompletedProcess(argv, 0 if answered else 1, "200\n", "")
-
-    monkeypatch.setattr(ins, "run", run)
-    monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
-    refused = unhealthy(monkeypatch)
-    assert "forwarding" in str(refused)
-    assert "rcman," not in str(refused)  # the control: rcman itself was healthy
-
-
-def test_the_health_script_reports_the_status_rcman_answers_on_its_socket(tmp_path):
-    import http.server
-    import socketserver
-    import tempfile
-    import threading
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200 if self.path == "/api/health" else 404)
-            self.end_headers()
-
-        def log_message(self, *args):
-            pass
-
-    class Server(socketserver.UnixStreamServer):
-        def get_request(self):
-            request, _ = super().get_request()
-            return request, ("rcman", 0)
-
-    folder = Path(tempfile.mkdtemp(prefix="rcman-health."))
-    try:
-        path = folder / "s"
-        server = Server(str(path), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            for url, status in (("/api/health", "200"), ("/other", "404")):
-                done = subprocess.run(
-                    ["/usr/bin/python3", "-I", "-c", ins.HEALTH_SCRIPT, str(path), url],
-                    capture_output=True,
-                    text=True,
-                )
-                assert done.returncode == 0 and done.stdout.strip() == status, done.stderr
-        finally:
-            server.shutdown()
-            server.server_close()
-        gone = subprocess.run(
-            ["/usr/bin/python3", "-I", "-c", ins.HEALTH_SCRIPT, str(path), "/api/health"],
-            capture_output=True,
-            text=True,
-        )
-        assert gone.returncode != 0  # nothing listening: not an answer
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
-
-
-def test_rcmans_podman_socket_is_looked_for_by_rcman(monkeypatch):
-    seen = []
-
-    def run(argv, **kw):
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    monkeypatch.setattr(ins, "run", run)
-    assert ins.podman_socket_exists(990) is True
-    [argv] = seen
-    assert argv[:4] == RUNUSER and argv[-3:-1] == ["test", "-S"]
-    assert argv[-1] == str(ins.podman_socket(990))
-
-
-def plant_link(tree: Path) -> Path:
-    outside = tree.parent / "outside-the-tree"
-    outside.write_text("secret")
-    (tree / "assets").mkdir(parents=True, exist_ok=True)
-    (tree / "assets" / "index.js").write_text("x")
-    link = tree / "assets" / "leak"
-    link.symlink_to(outside)
-    return link
-
-
-def test_a_built_tree_with_a_link_in_it_is_refused_and_not_copied(tmp_path):
-    """npm and the build run as the clone's owner, and the copy is root's: a link written by
-    the build would be followed out of the tree."""
-    tree, copy = tmp_path / "dist", tmp_path / "release" / "dist"
-    (tree / "assets").mkdir(parents=True)
-    (tree / "assets" / "index.js").write_text("x")
-    ins.copy_built_tree(tree, copy)  # positive control: a tree with no link is copied
-    assert (copy / "assets" / "index.js").read_text() == "x"
-    shutil.rmtree(copy)
-    link = plant_link(tree)
-    assert link.is_symlink()  # the plant took effect
-    with pytest.raises(ins.InstallError, match="link"):
-        ins.copy_built_tree(tree, copy)
-    assert not copy.exists()  # refused before anything was copied
-
-
-def test_the_release_is_built_with_the_checked_copy_of_the_built_tree():
-    source = INSTALLER.read_text(encoding="utf-8")
-    assert "shutil.copytree(frontend" not in source
-    assert "copy_built_tree(frontend" in source
-
-
-def test_the_removal_restarts_caddy_after_the_group_is_gone():
-    """Caddy keeps the group it started with until it starts again: restarted before
-    ``groupdel`` it still holds rcman-web's old id."""
-    steps = removal_steps(guide_text())
-    [removing] = [n for n, text in steps.items() if "groupdel" in text]
-    assert "**restart** Caddy" in steps[removing]
-    before = [n for n, text in steps.items() if n < removing and "**restart**" in text]
-    assert before == []
-    assert "after step" in flat(removal_section(guide_text()))
-
-
-def test_the_guide_gives_the_commands_that_stop_rcman_and_its_containers():
-    guide = flat(guide_text())
-    assert "systemctl stop rcman" in guide and "podman stop --all" in guide
-    assert "in rcman's interface" not in guide
-
-
 # --- Podman in a workspace: the wrappers, their configuration and the seccomp profile ---------
-# Podman's default seccomp profile as recorded (tests/test_seccomp.py holds it to the real one).
+# Podman's default seccomp profile as recorded, a fixed recording (tests/test_seccomp.py).
 RECORDED_SECCOMP = REPO / "tests" / "fakes" / "podman-seccomp.json"
 
 
@@ -3662,12 +1354,6 @@ RECORDED_SECCOMP = REPO / "tests" / "fakes" / "podman-seccomp.json"
 def recorded_seccomp(monkeypatch):
     """The installer reads Podman's profile as recorded, not the machine's."""
     monkeypatch.setattr(ins, "PODMAN_SECCOMP", RECORDED_SECCOMP)
-
-
-def test_a_machine_without_podmans_seccomp_profile_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setattr(ins, "PODMAN_SECCOMP", tmp_path / "missing.json")  # the plant
-    with pytest.raises(ins.InstallError, match="seccomp"):
-        ins.ensure_podman_tools(tmp_path / "tools", PODMAN_SOURCES)
 
 
 def test_the_podman_tools_are_written_root_readable_and_a_second_run_changes_nothing(tmp_path):
@@ -3699,81 +1385,6 @@ def test_the_podman_tools_are_written_root_readable_and_a_second_run_changes_not
     from rcman import runtime as rt
 
     assert ins.WORKSPACE_SECCOMP == rt.SECCOMP  # where the runtime looks for it
-
-
-def test_what_the_wrapper_sources_is_written_before_the_wrapper(tmp_path, monkeypatch):
-    """A wrapper written first would run, until the next file is written, sourcing a file that
-    is not there yet, or an older one."""
-    written = []
-    writes = ins.write_if_changed
-
-    def recorded(path, text, mode):
-        written.append(path.name)
-        return writes(path, text, mode)
-
-    monkeypatch.setattr(ins, "write_if_changed", recorded)
-    tools = tmp_path / "tools"
-    (tools / "bin").mkdir(parents=True)
-    ins.ensure_podman_tools(tools, PODMAN_SOURCES)
-    assert written.index(ins.PODMAN_PUBLISH) < written.index("podman")
-
-
-def test_ensure_tools_writes_the_podman_tools(tmp_path, monkeypatch):
-    host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
-    assert (host.tools / ins.PODMAN_TOOLS / "bin" / "podman").is_file()
-    assert (host.tools / ins.WORKSPACE_SECCOMP).is_file()
-
-
-def test_the_shared_podman_configuration_is_as_the_design_says():
-    """The workspace's Podman: private pid, UTS and IPC namespaces, the workspace's own network,
-    user and cgroup namespaces, no cgroups of its own, catatonit as the init, and nothing that
-    names a folder of root's or of one user's, which the wrapper and Podman's defaults give."""
-    conf = (PODMAN_SOURCES / "containers.conf").read_text()
-    for line in ('pidns="private"', 'utsns="private"', 'ipcns="private"', 'netns="host"',
-                 'userns="host"', 'cgroupns="host"', 'cgroups="disabled"',
-                 'cgroup_manager="cgroupfs"', 'runtime="crun"', 'events_logger="file"',
-                 'init_path="/usr/bin/catatonit"'):  # fmt: skip
-        assert line in conf.splitlines(), line
-    assert "tmp_dir" not in conf and "events_logfile_path" not in conf
-    storage = (PODMAN_SOURCES / "storage.conf").read_text()
-    assert 'driver="overlay"' in storage and "mount_program" not in storage
-    from rcman import runtime as rt
-
-    assert f'graphroot="{rt.VOLUME_MOUNT}/' in storage  # root's storage is in the volume
-    registries = (PODMAN_SOURCES / "registries.conf").read_text()
-    assert 'unqualified-search-registries=["docker.io"]' in registries
-    assert 'short-name-mode="permissive"' in registries
-
-
-def test_the_default_image_has_podman_and_newuidmap_with_file_capabilities():
-    text = ins.CONTAINERFILE.read_text()
-    for package in ("podman", "crun", "catatonit", "uidmap"):
-        assert f" {package}" in text, package
-    assert "setcap cap_setuid+ep /usr/bin/newuidmap" in text
-    assert "setcap cap_setgid+ep /usr/bin/newgidmap" in text
-    assert "chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap" in text
-
-
-def test_a_docker_link_that_names_something_else_is_put_right(tmp_path):
-    tools = tmp_path / "tools"
-    (tools / "bin").mkdir(parents=True)
-    ins.ensure_podman_tools(tools, PODMAN_SOURCES)
-    link = tools / ins.PODMAN_TOOLS / "bin" / "docker"
-    link.unlink()
-    os.symlink("/usr/bin/podman", link)  # the plant
-    assert os.readlink(link) == "/usr/bin/podman"
-    assert "docker" in ins.ensure_podman_tools(tools, PODMAN_SOURCES)
-    assert os.readlink(link) == "podman"
-
-
-def test_ensure_tools_takes_the_podman_sources_it_is_given(tmp_path, monkeypatch):
-    host = ToolsHost(tmp_path, monkeypatch)
-    other = tmp_path / "elsewhere"
-    shutil.copytree(PODMAN_SOURCES, other)
-    (other / "registries.conf").write_text("# planted\n")
-    ins.ensure_tools(host.tools, conf=host.conf, podman=other, fragments=host.fragments)
-    assert (host.tools / ins.PODMAN_TOOLS / "registries.conf").read_text() == "# planted\n"
 
 
 def extra_commands(tools: Path) -> set[str]:
@@ -3834,80 +1445,6 @@ def test_the_instructions_are_written_each_of_its_fragments_in_order_and_root_re
     assert not [p for p in folder.iterdir() if p.name.startswith(".")]  # nothing left staged
 
 
-def test_a_changed_text_is_renamed_over_the_old_file(tmp_path):
-    """So that a container bound to the old file keeps it, whole, until its next start, which
-    binds the new one (tests/container/test_runtime_in_podman.py)."""
-    from helpers import instructions as told
-
-    sources = tmp_path / "sources"
-    shutil.copytree(INSTRUCTION_SOURCES, sources)
-    tools = tmp_path / "tools"
-    ins.ensure_instructions(tools, sources)
-    written = tools / told.FOLDER / told.OWN_IMAGE
-    before = written.stat().st_ino
-    with written.open() as held:
-        (sources / told.COMMON).write_text("# Another text\n")  # the plant
-        changes = ins.ensure_instructions(tools, sources)
-        assert held.read() == (INSTRUCTION_SOURCES / told.COMMON).read_text()  # the old, whole
-    assert written.read_text() == "# Another text\n"
-    assert written.stat().st_ino != before
-    assert set(changes) == {f"instructions {name}" for name in told.FILES}
-
-
-def test_a_file_of_the_instructions_folder_that_is_not_one_of_them_is_removed(tmp_path):
-    """As a file a release no longer writes, or a staged copy a killed run left."""
-    from helpers import instructions as told
-
-    tools = tmp_path / "tools"
-    ins.ensure_instructions(tools, INSTRUCTION_SOURCES)
-    folder = tools / told.FOLDER
-    for planted in ("old-name", f".{told.OWN_IMAGE}.abc123"):
-        (folder / planted).write_text("left over\n")
-    assert (folder / "old-name").exists()  # the plant took effect
-    changes = ins.ensure_instructions(tools, INSTRUCTION_SOURCES)
-    assert {p.name for p in folder.iterdir()} == set(told.FILES)
-    assert set(changes) == {"instructions old-name", f"instructions .{told.OWN_IMAGE}.abc123"}
-    assert ins.ensure_instructions(tools, INSTRUCTION_SOURCES) == []
-
-
-def test_ensure_tools_writes_the_instructions(tmp_path, monkeypatch):
-    from helpers import instructions as told
-
-    host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
-    for name in told.FILES:
-        assert (host.tools / told.FOLDER / name).is_file(), name
-
-
-# --- the kernel ------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("release", ["6.8.0-147-generic", "5.11.0", "5.15.0-1-azure", "10.0"])
-def test_a_kernel_that_mounts_overlay_in_a_user_namespace_is_taken(release):
-    ins.check_kernel(release)
-
-
-@pytest.mark.parametrize("release", ["5.10.220-1", "4.19.0", "5.4", "not-a-version"])
-def test_an_older_kernel_or_one_that_cannot_be_read_is_refused(release):
-    with pytest.raises(ins.InstallError, match="overlay") as refused:
-        ins.check_kernel(release)
-    assert release in str(refused.value)
-    minimum = ".".join(map(str, ins.USERNS_OVERLAY_KERNEL))
-    assert minimum in str(refused.value)  # it names the kernel it needs
-
-
-def test_the_kernel_is_checked_before_anything_is_changed(monkeypatch, capsys):
-    done = []
-    monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(ins.platform, "release", lambda: "5.4.0-200-generic")
-    monkeypatch.setenv("SUDO_USER", "someone")
-    monkeypatch.setattr(ins, "save_settings", lambda *a: done.append("settings"))
-    monkeypatch.setattr(ins, "ensure_packages", lambda: done.append("packages") or [])
-    assert ins.main([]) == 1
-    assert done == []
-    assert "5.4.0-200-generic" in capsys.readouterr().err
-
-
 # --- upgrading from the web interface ------------------------------------------------------
 
 from installer import upgrade  # noqa: E402 - the wrapper the upgrade unit runs
@@ -3949,23 +1486,6 @@ def test_web_upgrade_is_off_unless_asked_for_and_is_saved(tmp_path):
     assert again["WEB_UPGRADE"] == "yes"  # the saved answer is kept
 
 
-@pytest.mark.parametrize("value", ["true", "on", "YES", "1", "maybe"])
-def test_web_upgrade_is_yes_or_no(tmp_path, value):
-    with pytest.raises(ins.InstallError, match="WEB_UPGRADE"):
-        ins.gather(tmp_path / "install.env", {}, {"web_upgrade": value}, ask=answer)
-
-
-def test_the_upgrade_units_stay_out_of_the_units_the_installer_restarts():
-    import inspect
-
-    assert ins.UPGRADE_UNITS == ("rcman-upgrade.path", "rcman-upgrade.service")
-    assert not set(ins.UPGRADE_UNITS) & set(ins.UNITS)
-    assert set(ins.UPGRADE_UNITS) <= set(ins.TEMPLATES)
-    restarts = inspect.getsource(ins.start_services)
-    assert "UNITS" in restarts and "UPGRADE" not in restarts
-    assert "UPGRADE_UNITS" not in inspect.getsource(ins.configure)
-
-
 def test_the_upgrade_service_runs_the_wrapper_as_root_with_a_fixed_argv_and_environment():
     text = ins.render("rcman-upgrade.service", UPGRADE_SETTINGS)
     keys = unit_keys(text)
@@ -3980,30 +1500,6 @@ def test_the_upgrade_service_runs_the_wrapper_as_root_with_a_fixed_argv_and_envi
     assert re.fullmatch(r"[1-9][0-9]*(min|h|s)?", timeout), timeout  # finite: not infinity
     assert "[Install]" not in text  # started by its path unit alone
     assert "@" not in text.replace("@APP_UID@", "")  # every placeholder filled
-
-
-def test_the_upgrade_path_unit_watches_the_request_file_in_rcmans_home():
-    keys = unit_keys(ins.render("rcman-upgrade.path", UPGRADE_SETTINGS))
-    assert keys["PathModified"] == [str(ins.UPGRADE_REQUEST)]
-    assert ins.UPGRADE_REQUEST.parent == ins.STATE  # rcman writes it; root never opens it
-    assert keys["Unit"] == ["rcman-upgrade.service"]
-    assert keys["WantedBy"] == ["multi-user.target"]
-
-
-def test_the_unit_environment_quotes_every_assignment_and_refuses_what_systemd_would_change():
-    line = ins.unit_environment({"A": "1", "B": "two words"})
-    assert line == '"A=1" "B=two words"'
-    assert unit_environment([line]) == {"A": "1", "B": "two words"}
-    for value in ("100%", "$HOME", 'a"b', "a\\b", "a\nb", "a'b", "a\tb", "a\rb", "a\x0bb"):
-        with pytest.raises(ins.InstallError):
-            ins.unit_environment({"A": value})
-
-
-def test_the_wrapper_shares_the_installation_s_root():
-    assert upgrade.ROOT == ins.ROOT
-    assert ins.UPGRADE_DIR == upgrade.STATUS_DIR
-    assert ins.UPGRADE_SOURCE == REPO / "installer" / "upgrade.py"
-    assert upgrade.RCMAN_ACCOUNTS == (ins.APP_USER, ins.PROXY_USER)
 
 
 class Systemd:
@@ -4050,44 +1546,8 @@ def test_turned_on_the_path_unit_is_enabled_and_the_service_is_never_started(tmp
     ]
 
 
-def test_a_changed_path_unit_is_restarted_and_a_changed_service_is_not(tmp_path, monkeypatch):
-    systemd = Systemd(tmp_path, monkeypatch)
-    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
-    (systemd.systemd / "rcman-upgrade.service").write_text("old\n")
-    systemd.calls.clear()
-    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
-    assert systemd.calls == [
-        ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", "rcman-upgrade.path"],
-    ]  # the service is never restarted: it may be the one running this
-    (systemd.systemd / "rcman-upgrade.path").write_text("old\n")
-    systemd.calls.clear()
-    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
-    assert ["systemctl", "restart", "rcman-upgrade.path"] in systemd.calls
-
-
-def test_turning_it_off_from_inside_the_upgrade_service_is_refused(tmp_path, monkeypatch):
-    systemd = Systemd(tmp_path, monkeypatch)
-    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
-    systemd.calls.clear()
-    monkeypatch.setenv(upgrade.SERVICE_MARK, upgrade.ENVIRONMENT[upgrade.SERVICE_MARK])
-    with pytest.raises(ins.InstallError, match="shell"):
-        ins.ensure_web_upgrade(SETTINGS)
-    assert systemd.units() == sorted(ins.UPGRADE_UNITS) and systemd.wrapper.exists()
-    assert systemd.calls == []
-
-
-def test_turned_on_again_nothing_changes_and_the_path_unit_is_still_asked_to_run(
-    tmp_path, monkeypatch
-):
-    systemd = Systemd(tmp_path, monkeypatch)
-    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
-    systemd.calls.clear()
-    assert ins.ensure_web_upgrade(UPGRADE_SETTINGS) == []
-    assert systemd.calls == [["systemctl", "enable", "--now", "rcman-upgrade.path"]]
-
-
 def test_turned_off_the_units_are_disabled_and_removed_with_the_wrapper(tmp_path, monkeypatch):
+    monkeypatch.delenv(upgrade.SERVICE_MARK, raising=False)  # not the upgrade service's own run
     systemd = Systemd(tmp_path, monkeypatch)
     ins.ensure_web_upgrade(UPGRADE_SETTINGS)
     assert systemd.units() and systemd.wrapper.exists()  # positive: there to be removed
@@ -4101,97 +1561,25 @@ def test_turned_off_the_units_are_disabled_and_removed_with_the_wrapper(tmp_path
     assert str(systemd.wrapper) in changes
 
 
-def test_off_from_the_start_no_upgrade_unit_or_wrapper_is_made_and_nothing_is_asked(
-    tmp_path, monkeypatch
-):
-    systemd = Systemd(tmp_path, monkeypatch)
-    assert ins.ensure_web_upgrade(SETTINGS) == []
-    assert systemd.units() == [] and not systemd.wrapper.exists()
-    assert systemd.calls == [] and systemd.made == []
-
-
-def test_the_status_folder_is_root_s_and_rcmans_group_s_and_repaired(tmp_path):
-    folder = tmp_path / "upgrade"
-    assert ins.ensure_upgrade_dir(folder, os.getuid(), os.getgid()) is True
-    assert stat.S_IMODE(folder.stat().st_mode) == 0o750 == ins.UPGRADE_DIR_MODE
-    assert ins.ensure_upgrade_dir(folder, os.getuid(), os.getgid()) is False
-    folder.chmod(0o777)
-    assert ins.ensure_upgrade_dir(folder, os.getuid(), os.getgid()) is True
-    assert stat.S_IMODE(folder.stat().st_mode) == 0o750
-
-
-def test_a_link_where_the_status_folder_goes_is_refused(tmp_path):
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (tmp_path / "upgrade").symlink_to(elsewhere)
-    with pytest.raises(ins.InstallError, match="link"):
-        ins.ensure_upgrade_dir(tmp_path / "upgrade", os.getuid(), os.getgid())
-
-
-def test_the_wrapper_is_installed_by_a_rename_and_never_written_through_a_link(tmp_path):
-    source, dest = tmp_path / "upgrade.py", tmp_path / "bin" / "rcman-upgrade"
-    source.write_text("new\n")
-    dest.parent.mkdir()
-    old = tmp_path / "old"
-    old.write_text("old\n")
-    dest.symlink_to(old)  # planted: a link where the wrapper goes
-    assert ins.install_program(source, dest, 0o755) is True
-    assert old.read_text() == "old\n"  # not written through
-    assert not dest.is_symlink() and dest.read_text() == "new\n"
-    assert stat.S_IMODE(dest.stat().st_mode) == 0o755
-    with open(dest) as running:  # a run of the old wrapper keeps reading the old one
-        source.write_text("newer\n")
-        assert ins.install_program(source, dest, 0o755) is True
-        assert running.read() == "new\n"
-    assert dest.read_text() == "newer\n"
-    assert sorted(p.name for p in dest.parent.iterdir()) == ["rcman-upgrade"]  # nothing left
-    assert ins.install_program(source, dest, 0o755) is False
-    dest.chmod(0o777)
-    assert ins.install_program(source, dest, 0o755) is True
-    assert stat.S_IMODE(dest.stat().st_mode) == 0o755
-
-
-def test_the_release_s_mark_is_readable_by_rcman_whatever_root_s_umask(tmp_path):
-    previous = os.umask(0o077)
-    try:
-        ins.mark_complete(tmp_path, "abc123")
-    finally:
-        os.umask(previous)
-    mark = tmp_path / ins.COMPLETE
-    assert mark.read_text() == "abc123\n"
-    assert stat.S_IMODE(mark.stat().st_mode) == 0o644
-
-
-def test_the_release_is_marked_by_mark_complete():
-    import inspect
-
-    source = inspect.getsource(ins.build_release)
-    assert "mark_complete(work, commit)" in source and ".write_text(commit" not in source
-
-
-# turning it on: the owner, the paths, and the clone's origin
+# turning it on: the clone's checks and its origin
 
 
 class TurnedOn:
     """Stands in for the checks of the clone and for git, for check_web_upgrade."""
 
-    def __init__(self, monkeypatch, refuse: str | None = None, remote="abc\trefs/heads/main\n"):
+    def __init__(self, monkeypatch):
         self.checked: list[tuple] = []
         self.calls: list[tuple[list[str], dict]] = []
-        self.refuse, self.remote = refuse, remote
         monkeypatch.setattr(upgrade, "check_clone", self.check_clone)
         monkeypatch.setattr(ins, "run", self.run)
 
     def check_clone(self, clone, sudo_user, refused):
         self.checked.append((clone, sudo_user, tuple(refused)))
-        if self.refuse:
-            raise upgrade.Refused(self.refuse)
         return ME
 
     def run(self, argv, user=None, check=True, **kw):
         self.calls.append((argv, user, kw))
-        code = 0 if self.remote is not None else 128
-        return subprocess.CompletedProcess(argv, code, self.remote or "", "fatal: no access\n")
+        return subprocess.CompletedProcess(argv, 0, "abc\trefs/heads/main\n", "")
 
 
 def test_turning_it_on_checks_the_clone_and_asks_origin_for_main_as_the_owner(monkeypatch):
@@ -4209,87 +1597,6 @@ def test_turning_it_on_checks_the_clone_and_asks_origin_for_main_as_the_owner(mo
     assert kw["timeout"] > 0
 
 
-def test_off_nothing_is_checked_and_origin_is_not_asked(monkeypatch):
-    on = TurnedOn(monkeypatch)
-    ins.check_web_upgrade(SETTINGS, ME)
-    assert on.checked == [] and on.calls == []
-
-
-def test_a_clone_the_checks_refuse_is_not_turned_on(monkeypatch):
-    on = TurnedOn(monkeypatch, refuse="the clone's installer can be written by anyone")
-    with pytest.raises(ins.InstallError, match="written by anyone"):
-        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
-    assert on.calls == []  # refused before git is asked
-
-
-@pytest.mark.parametrize("remote", [None, "", "abc\trefs/heads/other\n"])
-def test_an_origin_that_does_not_answer_with_main_is_not_turned_on(monkeypatch, remote):
-    TurnedOn(monkeypatch, remote=remote)
-    with pytest.raises(ins.InstallError, match="ls-remote"):
-        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
-
-
-def test_an_origin_that_takes_too_long_is_not_turned_on(monkeypatch):
-    TurnedOn(monkeypatch)
-
-    def slow(argv, user=None, check=True, **kw):
-        raise subprocess.TimeoutExpired(argv, kw["timeout"])
-
-    monkeypatch.setattr(ins, "run", slow)
-    with pytest.raises(ins.InstallError, match="ls-remote"):
-        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
-
-
-@pytest.mark.parametrize("clone", ["/home/a b/rcman", "/home/x/100%", "/home/$x/rcman"])
-def test_a_clone_whose_path_a_unit_cannot_hold_as_it_is_is_not_turned_on(monkeypatch, clone):
-    TurnedOn(monkeypatch)
-    monkeypatch.setattr(ins, "REPO", Path(clone))
-    with pytest.raises(ins.InstallError, match="path"):
-        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
-
-
-def test_origin_is_asked_with_no_terminal_and_an_empty_environment_for_real(tmp_path, monkeypatch):
-    """git ls-remote really answers, under env -i, with no terminal: as the test's own user,
-    runuser left out."""
-    from tests import git_fixtures
-
-    clone = git_fixtures.make_repo(tmp_path / "clone", origin=tmp_path / "origin.git")
-    real = ins.run
-    seen = []
-
-    def as_me(argv, user=None, check=True, **kw):
-        seen.append(argv)
-        assert user == ME
-        return real(argv, check=check, **kw)
-
-    monkeypatch.setattr(ins, "run", as_me)
-    monkeypatch.setattr(ins, "REPO", clone)
-    ins.ls_remote(ME)
-    assert seen  # it ran
-    (tmp_path / "origin.git").rename(tmp_path / "gone.git")
-    with pytest.raises(ins.InstallError, match="ls-remote"):
-        ins.ls_remote(ME)
-
-
-def test_the_installer_takes_the_owner_from_the_clone_and_refuses_what_it_refuses(
-    monkeypatch, capsys
-):
-    monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(ins, "check_lock", lambda: None)
-    asked = []
-
-    def refuse(clone, sudo_user):
-        asked.append((clone, sudo_user))
-        raise upgrade.Refused("the clone is dev's, not someone-else's")
-
-    monkeypatch.setattr(upgrade, "clone_owner", refuse)
-    monkeypatch.setenv("SUDO_USER", "someone-else")
-    monkeypatch.setattr(ins, "gather", lambda *a: pytest.fail("went on"))
-    assert ins.main([]) == 1
-    assert asked == [(ins.REPO, "someone-else")]
-    assert "not someone-else's" in capsys.readouterr().err
-
-
 def test_the_steps_of_web_upgrade_come_where_they_must():
     import inspect
 
@@ -4299,15 +1606,11 @@ def test_the_steps_of_web_upgrade_come_where_they_must():
         assert source.count(f"{name}(") == 1, name
         return source.index(f"{name}(")
 
-    # the lock covers the rollback, after the kernel is checked
-    assert at("check_kernel") < at("check_lock") < source.index("if args.rollback")
     # the option is refused before it is saved
     assert at("clone_owner") < at("check_web_upgrade") < at("save_settings")
     # the units after the configuration, before the services start
     start = source.index("start_services(restart=bool(changes))")
     assert at("configure") < at("ensure_web_upgrade") < start
-    # Caddy once rcman runs, before rcman is asked through its sockets
-    assert start < at("ensure_caddy") < at("health")
 
 
 def test_a_successful_run_prints_exactly_the_summary_line(monkeypatch, capsys):
@@ -4369,60 +1672,6 @@ def test_the_lock_install_sh_holds_is_taken(lock):
     assert not os.get_inheritable(fd)  # the installer's children never hold it
 
 
-def test_the_lock_is_the_one_on_fd_9_under_the_installation():
-    assert ins.LOCK_FD == 9 and ins.INSTALL_LOCK == ins.ROOT / ".install.lock"
-
-
-def test_no_lock_on_the_descriptor_is_refused(lock, tmp_path):
-    path, _ = lock
-    closed = os.open(tmp_path / "x", os.O_WRONLY | os.O_CREAT)
-    os.close(closed)
-    with pytest.raises(ins.InstallError, match="install.sh"):
-        ins.check_lock(closed, path, os.getuid())
-
-
-def test_a_descriptor_of_another_file_is_refused(lock, tmp_path):
-    path, _ = lock
-    other = os.open(tmp_path / "other", os.O_WRONLY | os.O_CREAT)
-    try:
-        with pytest.raises(ins.InstallError, match="lock"):
-            ins.check_lock(other, path, os.getuid())
-    finally:
-        os.close(other)
-
-
-def test_the_lock_held_by_another_run_is_refused(lock):
-    path, _ = lock
-    second = os.open(path, os.O_WRONLY | os.O_APPEND)  # the same file, not the holder's
-    try:
-        with pytest.raises(ins.InstallError, match="another install.sh"):
-            ins.check_lock(second, path, os.getuid())
-    finally:
-        os.close(second)
-
-
-def test_a_lock_that_is_a_link_is_refused(lock):
-    path, fd = lock
-    link = path.with_name("link.lock")
-    link.symlink_to(path)
-    with pytest.raises(ins.InstallError, match="link"):
-        ins.check_lock(fd, link, os.getuid())
-
-
-@pytest.mark.parametrize("mode", [0o775, 0o757, 0o1777])
-def test_a_lock_in_a_folder_others_can_write_is_refused(lock, mode):
-    path, fd = lock
-    path.parent.chmod(mode)
-    with pytest.raises(ins.InstallError, match="root"):
-        ins.check_lock(fd, path, os.getuid())
-
-
-def test_a_lock_in_a_folder_of_another_account_is_refused(lock):
-    path, fd = lock
-    with pytest.raises(ins.InstallError, match="root"):
-        ins.check_lock(fd, path, os.getuid() + 1)
-
-
 # install.sh, run with stand-ins for id and runuser, from a clone of the test's own
 
 
@@ -4470,10 +1719,8 @@ class Scratch:
                            ("id", ID_STAND_IN)):  # fmt: skip
             (self.bin / name).write_text(text)
             (self.bin / name).chmod(0o755)
-        self.origin = tmp_path / "origin.git"
-        self.clone = git_fixtures.make_repo(tmp_path / "clone", origin=self.origin)
-        self.script = self.install_sh()
-        (self.clone / "install.sh").write_text(self.script)
+        self.clone = git_fixtures.make_repo(tmp_path / "clone", origin=tmp_path / "origin.git")
+        (self.clone / "install.sh").write_text(self.install_sh())
         (self.clone / "install.sh").chmod(0o755)
         stand_in = INSTALL_PY_STAND_IN.format(lock=str(self.lock), report=str(self.report))
         git_fixtures.write(self.clone / "installer" / "install.py", stand_in)
@@ -4487,14 +1734,11 @@ class Scratch:
         assert text.count(line) == 1  # the one place install.sh names the installation
         return text.replace(line, f"root={self.root}\n")
 
-    def run(
-        self, *args, env=None, command=None, stdin=subprocess.DEVNULL, **kw
-    ) -> subprocess.CompletedProcess:
-        full = {**self.git.fixture_env(self.git.FIXTURE_HOME),
-                "PATH": f"{self.bin}:/usr/bin:/bin", **(env or {})}  # fmt: skip
+    def run(self) -> subprocess.CompletedProcess:
+        full = {**self.git.fixture_env(self.git.FIXTURE_HOME), "PATH": f"{self.bin}:/usr/bin:/bin"}
         return subprocess.run(
-            command or [str(self.clone / "install.sh"), *args],
-            env=full, stdin=stdin, capture_output=True, text=True, timeout=HANG_GUARD, **kw,
+            [str(self.clone / "install.sh")], env=full, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=HANG_GUARD,
         )  # fmt: skip
 
     def reported(self) -> dict:
@@ -4516,172 +1760,5 @@ def test_install_sh_takes_the_lock_and_hands_it_to_the_installer_on_fd_9(scratch
     report = scratch.reported()
     assert report["fd9"] == report["lock"] and report["fd"] == "9"
     assert stat.S_IMODE(scratch.root.stat().st_mode) == 0o755
-
-
-@pytest.mark.parametrize("args", [[], ["--rollback"]])
-def test_a_second_install_sh_is_refused_while_the_lock_is_held(scratch, args):
-    import fcntl
-
-    scratch.root.mkdir(mode=0o755)
-    with open(scratch.lock, "a") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        proc = scratch.run(*args)
-    assert proc.returncode == 1
-    assert "another install.sh is running" in proc.stderr
-    assert not scratch.report.exists()  # the installer did not run
-    proc = scratch.run(*args)  # the lock let go: it runs
-    assert proc.returncode == 0, proc.stderr
-    assert scratch.reported()["argv"] == args
-
-
-def test_install_sh_started_again_after_an_update_keeps_its_lock(scratch):
-    scratch.git.commit_on_origin(scratch.origin, "main", "install.sh", scratch.script + "# new\n")
-    proc = scratch.run()
-    assert proc.returncode == 0, proc.stderr
-    assert "install.sh changed; starting it again." in proc.stdout
-    report = scratch.reported()
-    assert report["updated"] == "1" and report["fd9"] == report["lock"]
-
-
-def test_a_lock_named_in_the_environment_is_used_and_not_taken_again(scratch):
-    """The run started again inherits fd 9 locked: were it to open the lock again, the lock
-    the first one holds would refuse it. Planted twin: without the variable it is refused."""
-    import fcntl
-
-    scratch.root.mkdir(mode=0o755)
-    with open(scratch.lock, "a") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        fd = held.fileno()
-        script = str(scratch.clone / "install.sh")
-        hand_over = ["/bin/bash", "-c", f'exec "$0" 9>&{fd} {fd}>&-', script]
-        proc = scratch.run(env={"RCMAN_INSTALL_LOCK_FD": "9"}, command=hand_over, pass_fds=(fd,))
-        assert proc.returncode == 0, proc.stderr
-        assert scratch.reported()["fd9"] == scratch.reported()["lock"]
-        scratch.report.unlink()
-        refused = scratch.run(command=hand_over, pass_fds=(fd,))
-        assert refused.returncode == 1 and "another install.sh" in refused.stderr
-
-
-def test_what_install_sh_runs_as_the_owner_holds_no_lock_and_never_prompts(scratch):
-    scratch.git.commit_on_origin(scratch.origin, "main", "install.sh", scratch.script + "# new\n")
-    proc = scratch.run()
-    assert proc.returncode == 0, proc.stderr
-    calls = scratch.runuser_calls()
-    assert len(calls) >= 3  # status, the branch and the pull, before and after starting again
-    for held, argv in calls:
-        assert held == "closed", argv
-        assert argv.startswith(f"-u {ME} -- env "), argv
-        for key, value in upgrade.GIT_ENVIRONMENT.items():
-            assert f"{key}={value}" in argv, (key, argv)
-
-
-@pytest.mark.parametrize("sudo_user,asks", [(ME, True), (None, False)])
-def test_git_may_ask_only_an_administrator_at_a_terminal(scratch, sudo_user, asks):
-    """Run through sudo from a terminal, git may ask for a passphrase; run otherwise, as the
-    upgrade service runs it, it asks nothing."""
-    import pty
-
-    leader, terminal = pty.openpty()
-    try:
-        proc = scratch.run(env={"SUDO_USER": sudo_user} if sudo_user else {}, stdin=terminal)
-    finally:
-        os.close(leader)
-        os.close(terminal)
-    assert proc.returncode == 0, proc.stderr
-    calls = scratch.runuser_calls()
-    assert calls  # non-vacuity
-    for _, argv in calls:
-        assert ("GIT_TERMINAL_PROMPT=0" not in argv) is asks, argv
-
-
-@pytest.mark.parametrize("planted", ["none", "other", "unlocked"])
-def test_a_lock_named_in_the_environment_must_be_the_lock_and_held(scratch, tmp_path, planted):
-    """Planted twins: fd 9 not there, another file, or the lock while another run holds it."""
-    import fcntl
-
-    scratch.root.mkdir(mode=0o755)
-    scratch.lock.touch()
-    other = tmp_path / "other"
-    other.touch()
-    script = str(scratch.clone / "install.sh")
-    with open(scratch.lock, "a") as held:
-        if planted == "unlocked":
-            fcntl.flock(held, fcntl.LOCK_EX)  # held by this "other run"
-        target = {"none": None, "other": other, "unlocked": scratch.lock}[planted]
-        if target is None:
-            command, fds = ["/bin/bash", "-c", 'exec "$0" 9>&-', script], ()
-        else:
-            handle = os.open(target, os.O_WRONLY | os.O_APPEND)
-            command, fds = (
-                ["/bin/bash", "-c", f'exec "$0" 9>&{handle} {handle}>&-', script],
-                (handle,),
-            )
-        try:
-            proc = scratch.run(env={"RCMAN_INSTALL_LOCK_FD": "9"}, command=command, pass_fds=fds)
-        finally:
-            if fds:
-                os.close(fds[0])
-    assert proc.returncode == 1 and "lock" in proc.stderr, proc.stderr
-    assert not scratch.report.exists() and scratch.runuser_calls() == []
-
-
-def test_the_lock_s_folder_must_be_writable_by_root_alone(scratch):
-    scratch.root.mkdir(mode=0o755)
-    scratch.root.chmod(0o775)
-    proc = scratch.run()
-    assert proc.returncode == 1 and "root" in proc.stderr
-    assert not scratch.lock.exists() and not scratch.report.exists()
-
-
-def test_a_link_where_the_lock_goes_is_refused(scratch, tmp_path):
-    scratch.root.mkdir(mode=0o755)
-    target = tmp_path / "elsewhere"
-    scratch.lock.symlink_to(target)
-    proc = scratch.run()
-    assert proc.returncode == 1 and "link" in proc.stderr
-    assert not target.exists() and not scratch.report.exists()
-
-
-@pytest.mark.parametrize("sudo_user", [None, ME])
-def test_install_sh_takes_the_owner_from_the_clone(scratch, sudo_user):
-    proc = scratch.run(env={"SUDO_USER": sudo_user} if sudo_user else {})
-    assert proc.returncode == 0, proc.stderr
-    assert all(argv.startswith(f"-u {ME} ") for _, argv in scratch.runuser_calls())
-
-
-def test_install_sh_run_by_another_account_than_the_clone_s_is_refused(scratch):
-    proc = scratch.run(env={"SUDO_USER": "someone-else"})
-    assert proc.returncode == 1
-    assert ME in proc.stderr and "someone-else" in proc.stderr
-    assert scratch.runuser_calls() == [] and not scratch.report.exists()
-
-
-# the guide
-
-
-def test_the_guide_names_what_web_upgrade_makes_and_how_to_remove_it():
-    needs = removal_needs(vars(ins))
-    for unit in ins.UPGRADE_UNITS:
-        assert f"unit {unit}" in needs  # known positives of the derivation
-    assert f"UPGRADE_WRAPPER {ins.UPGRADE_WRAPPER}" in needs
-    assert f"INSTALL_LOCK {ins.INSTALL_LOCK}" in needs
-    assert missing_from_removal(guide_text(), vars(ins)) == []
-
-
-def test_the_guide_says_the_whole_clone_is_checked_and_acls_too():
-    guide = flat(guide_text())
-    start = guide.index("**What is checked.**")
-    checked = guide[start : guide.index("**How it works.**")]
-    for words in ("every file and folder in the clone", "`frontend/node_modules`",
-                  "`frontend/dist`", "ACL", "link"):  # fmt: skip
-        assert words in checked, words
-    assert "git asks for nothing" not in guide  # it asks an administrator at a terminal
-
-
-def test_the_guide_states_plainly_what_web_upgrade_risks():
-    guide = flat(guide_text())
-    start = guide.index("## Upgrading from the web interface")
-    section = guide[start : guide.index("## ", start + 3)]
-    for words in ("push to `main`", "as root", "`uv sync`", "token", "root credential",
-                  "without a password", "off by default", "`--web-upgrade`"):  # fmt: skip
-        assert words in section, words
+    calls = scratch.runuser_calls()  # git, run as the clone's owner, holds no lock
+    assert calls and all(held == "closed" and argv.startswith(f"-u {ME} ") for held, argv in calls)

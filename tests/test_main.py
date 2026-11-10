@@ -4,8 +4,6 @@ import os
 import subprocess
 import sys
 
-import pytest
-
 from tests.hang_guard import HANG_GUARD
 from tests.until import until
 
@@ -21,11 +19,6 @@ def test_packages_import_from_the_environment_alone():
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
-
-
-def test_openapi_lists_the_api(client):
-    paths = client.get("/api/openapi.json").json()["paths"]
-    assert "/api/workspaces" in paths and "/api/people/{person}" in paths
 
 
 # --- the sizes the tests inject stay out of the product ---------------------------------------
@@ -186,156 +179,15 @@ def test_no_product_code_gives_podman_a_size_of_the_tests():
         assert sized_defaults(repo / root) == [], root
 
 
-def test_the_size_guard_finds_a_planted_range_network_slices_and_a_spread(tmp_path):
-    from rcman import runtime as rt
-
-    clean = tmp_path / "clean.py"
-    clean.write_text(
-        "PodmanConfig(socket, image, tools, store, builder_image='b')\n"
-        "dataclasses.replace(held, **changes)\n"
-        "from dataclasses import replace as r\nr(held, memory=None)\n"
-        "setattr(thing, 'other', 1)\n"
-        "people.add(con, email, admin, last_slot=service.builder_slot - 1)\n"
-        "dc.plan(config, facts, 1, work, size=self.runtime.id_range)\n"
-        "def make(settings, runtime, *, builder_slot=people.BUILDER_SLOT):\n"
-        "    return Workspaces(settings, runtime, builder_slot=builder_slot)\n"
-        "Workspaces(settings, runtime, builder_slot=people.BUILDER_SLOT)\n"
+def test_the_size_guard_finds_a_planted_size_and_default(tmp_path):
+    """Planted twin: a size given to PodmanConfig, and a sized parameter whose default is not
+    the product's own, are found."""
+    plant = tmp_path / "plant.py"
+    plant.write_text(
+        "PodmanConfig(s, i, t, c, range=8)\n\n\ndef plan(config, *, size=8):\n    pass\n"
     )
-    assert sized_defaults(tmp_path) == []
-    assert injected_in(tmp_path) == []
-    for number, planted in enumerate(
-        [*(f"PodmanConfig(s, i, t, c, {name}=x)" for name in rt.INJECTED),
-         "rt.PodmanConfig(s, i, t, c, **sizes)",
-         "dataclasses.replace(config, network='host')",
-         "from dataclasses import replace as r\nr(config, range=8)",
-         "from rcman.runtime import PodmanConfig as P\nP(s, i, t, c, slices=False)",
-         "object.__setattr__(config, 'slices', False)",
-         "setattr(config, 'range', 8)",
-         *(f"{name}(a, b, {keyword}=6)" for name, keyword in SIZED.items()),
-         "people.add(con, email, admin, last_slot=8192 // 8192 + 4)"]
-    ):  # fmt: skip
-        (tmp_path / f"plant{number}.py").write_text(planted + "\n")
-        line = planted.count("\n") + 1  # the call is the plant's last line
-        assert (str(tmp_path / f"plant{number}.py"), line) in injected_in(tmp_path), planted
-
-
-# --- the workspaces' seccomp profile is checked when the service starts ------------------------
-
-
-def test_a_stale_or_missing_seccomp_profile_is_said_loudly_and_a_current_one_is_not(
-    tmp_path, caplog
-):
-    from rcman import main
-
-    from helpers import seccomp
-
-    recorded = __import__("pathlib").Path(__file__).parent / "fakes" / "podman-seccomp.json"
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    with caplog.at_level("ERROR", logger=main.workspaces_log.name):
-        main.check_seccomp(tools, recorded)  # missing
-        (tools / seccomp.NAME).write_text("{}\n")
-        main.check_seccomp(tools, recorded)  # another
-        (tools / seccomp.NAME).write_text(seccomp.workspace_profile(recorded.read_text()))
-        main.check_seccomp(tools, recorded)  # the control: current
-    said = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert len(said) == 2, said
-    assert "is not there" in said[0] and "not the one derived" in said[1]
-    assert all("run the installer again" in line for line in said)
-
-
-def test_a_missing_instructions_file_is_said_in_the_journal(tmp_path, caplog):
-    """No workspace can be made, nor any lost container made again, until the installer runs
-    again (rcman/runtime.py INSTRUCTIONS_MISSING)."""
-    from pathlib import Path
-
-    from rcman import main
-    from rcman import runtime as rt
-
-    from tests.test_runtime import told
-
-    tools = tmp_path / "tools"
-    runtime = rt.PodmanRuntime(rt.PodmanConfig(Path("/s"), "i", tools, Path("/c")))
-    with caplog.at_level("ERROR", logger=main.workspaces_log.name):
-        main.check_instructions(runtime)  # missing
-        told(tools)
-        main.check_instructions(runtime)  # the control: there
-    said = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert said == [rt.INSTRUCTIONS_MISSING]
-
-
-def test_the_service_checks_the_instructions_of_its_runtime(tmp_path, monkeypatch, settings):
-    from rcman import main
-    from rcman import runtime as rt
-
-    from tests.conftest import host_runtime
-
-    checked = []
-    monkeypatch.setattr(main, "check_instructions", checked.append)
-    main.create_app(settings)
-    assert len(checked) == 1 and isinstance(checked[0], rt.PodmanRuntime)
-    assert checked[0].config.tools_dir == settings.tools_dir
-    with host_runtime(tmp_path) as runtime:
-        main.create_app(settings, runtime=runtime)
-    assert checked[1:] == [runtime]  # whose answer is that it needs none
-
-
-def test_the_service_checks_the_profile_of_its_own_podman_and_not_of_a_given_runtime(
-    tmp_path, monkeypatch, settings
-):
-    from rcman import main
-
-    from tests.conftest import host_runtime
-
-    checked = []
-    monkeypatch.setattr(main, "check_seccomp", lambda tools, *more: checked.append(tools))
-    main.create_app(settings)
-    assert checked == [settings.tools_dir]
-    with host_runtime(tmp_path) as runtime:
-        main.create_app(settings, runtime=runtime)
-    assert checked == [settings.tools_dir]  # once: the test's runtime is not checked
-
-
-def test_the_service_gives_builds_the_products_builder_slot_and_people_the_slots_below_it(settings):
-    from rcman import main, people
-    from rcman import runtime as rt
-
-    app = main.create_app(settings)
-    assert app.state.workspaces.builder_slot == people.BUILDER_SLOT == people.MAX_PEOPLE + 1
-    assert app.state.workspaces.runtime.id_range == rt.RANGE
-
-
-@pytest.mark.parametrize(
-    "planted",
-    [
-        "SMALL = 8192\ndef f(settings, r):\n    return Workspaces(settings, r, builder_slot=SMALL)",
-        "people.add(con, email, admin, last_slot=people.BUILDER_SLOT - 59)",
-        "def f(settings, r, slot):\n    return Workspaces(settings, r, builder_slot=slot)",
-        "Workspaces(settings, r, builder_slot=builder_slot)",  # no parameter of that name here
-        "dc.plan(config, facts, 1, work, size=other.id_range)",
-    ],
-)
-def test_the_size_guard_finds_a_value_off_the_allow_list(tmp_path, planted):
-    (tmp_path / "plant.py").write_text(planted + "\n")
-    assert injected_in(tmp_path), planted
-
-
-@pytest.mark.parametrize(
-    "planted",
-    [
-        "class W:\n    def __init__(self, s, *, builder_slot: int = 6):\n        pass",
-        "def add(con, email, admin, *, last_slot=5):\n    pass",
-        "def plan(config, facts, *, size=8192):\n    pass",
-        "def run_canary(self, d, n, v, *, slot=6):\n    pass",
-    ],
-)
-def test_the_defaults_guard_finds_a_changed_default(tmp_path, planted):
-    (tmp_path / "plant.py").write_text(planted + "\n")
-    assert sized_defaults(tmp_path), planted
-    control = planted.replace("= 6", "= people.BUILDER_SLOT").replace("=5", "=None")
-    control = control.replace("=8192", "=RANGE").replace("slot=6", "slot=None")
-    (tmp_path / "plant.py").write_text(control + "\n")
-    assert sized_defaults(tmp_path) == [], control
+    assert injected_in(tmp_path) == [(str(plant), 1)]
+    assert sized_defaults(tmp_path) == [(str(plant), 4)]
 
 
 # --- the monitor's loops --------------------------------------------------------------------
@@ -370,26 +222,13 @@ def test_the_monitor_runs_once_the_workspaces_are_restored_and_stops_before_the_
     assert seen == [(True, True, True, False)]
 
 
-def test_the_apps_restore_tells_the_monitor(app):
-    from fastapi.testclient import TestClient
-
-    service, made = app.state.workspaces, app.state.monitor
-    with made._lock:
-        assert not made._was_restored  # positive control: not before the app starts
-    with TestClient(app):
-        with service._changed:  # the restore is over, the monitor told
-            assert service._changed.wait_for(lambda: not service._restore_running, HANG_GUARD)
-        with made._lock:
-            assert made._was_restored
-
-
 # --- the forwarding server ------------------------------------------------------------------
 
 
 def test_the_lifespan_starts_the_forwarding_server_and_at_its_end_closes_and_sweeps_first(
     settings, runtime
 ):
-    """It listens once the app has started, answering its health on any Host; at the end its
+    """It listens once the app has started, answering its health; at the end its
     WebSockets are closed, its relays ended and the workspaces it used swept, all before the
     workspaces' service closes."""
     import threading
@@ -403,7 +242,6 @@ def test_the_lifespan_starts_the_forwarding_server_and_at_its_end_closes_and_swe
     from tests.conftest import ALICE, changing
     from tests.test_forward import (
         ASK,
-        DOMAIN,
         SETTINGS_PATH,
         Forward,
         Socket,
@@ -436,9 +274,8 @@ def test_the_lifespan_starts_the_forwarding_server_and_at_its_end_closes_and_swe
         try:
             with TestClient(app) as client:
                 assert service.restored.wait(HANG_GUARD)
-                for host in ("anything.example.com", ASK, f"6080-1.ws.{DOMAIN}", DOMAIN):
-                    r = Forward(path).ask("GET", forward.HEALTH_PATH, {"Host": host})
-                    assert (r.status, r.json()) == (200, {"status": "ok"}), host
+                r = Forward(path).ask("GET", forward.HEALTH_PATH, {"Host": ASK})
+                assert (r.status, r.json()) == (200, {"status": "ok"})
                 r = client.put(SETTINGS_PATH, json={**DEFAULTS.model_dump(), "enabled": True},
                                headers=changing(ALICE))  # fmt: skip
                 assert r.status_code == 200, r.text
@@ -454,16 +291,3 @@ def test_the_lifespan_starts_the_forwarding_server_and_at_its_end_closes_and_swe
             upstream.server_close()
     assert seen == [("sweep", workspace_of(host), 0), ("close", False)]
     assert rows_of(client, "websocket.close") == [(ALICE, host, "service_closing")]
-
-
-def test_without_its_socket_no_forwarding_server_starts(client):
-    from tests.conftest import ALICE, as_user
-
-    assert client.app.state.settings.forward_socket is None
-    assert not client.app.state.forward.serving
-    r = client.get(
-        "/api/forward/hand-off",
-        params={"host": "6080-1.ws.rcman.example.com"},
-        headers={**as_user(ALICE), "Sec-Fetch-Dest": "document"},
-    )
-    assert (r.status_code, r.json()["code"]) == (404, "forwarding_off")

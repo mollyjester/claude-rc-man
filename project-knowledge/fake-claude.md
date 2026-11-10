@@ -50,8 +50,8 @@ sequence that needs the account and is given no configuration folder runs with n
 `CLAUDE_CONFIG_DIR`, in a home whose `.claude` and `.claude.json` lead to the account's own in
 the home the run was started from (`account_home`): Claude keeps the account's `.claude.json`
 beside the folder, not in it, so naming the folder would find no account.
-`tests/test_record_claude.py` holds the environment of each kind of sequence, and the home the
-run was started from untouched otherwise.
+`tests/test_record_claude.py` holds `claude_env`'s home of its own and its refusal of the home
+the run was started from.
 
 A sequence marked `git_repository` runs in a throwaway repository the
 recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch
@@ -241,7 +241,9 @@ is given and has no default:
   question has not been recorded.
 - `ExpectWatch`, in `tests/claude_watches.py`, is the contract test's, over the
   real `claude`: a screen is taken once it is, sanitised, the fixture of the
-  capture it is for, and at the hang bound it fails with how the last screen
+  capture it is for. Once the program has exited it draws nothing more, so a
+  screen that is not its fixture then fails at once; a running program's is
+  waited for up to the hang bound. Either fails with how the last screen
   differs.
 
 Every test's watch, and every test that waits on a pane itself, gives the
@@ -316,8 +318,9 @@ version it is released as, which the file bakes in (the label `FAKE_CLAUDE_VERSI
 Claude Code does, which fails the canary's checks; and `failing`, the fake whose manifest names
 another checksum, which the download refuses. `release` writes the release and the folder's
 `latest`, `candidate` a candidate for the canary, and `served` serves a folder over HTTP: the
-container suite gives that address to the installer and to rcman (`RCMAN_CLAUDE_DOWNLOAD`),
-which roll out the fake as they do the real program.
+host tests give that address to rcman (`RCMAN_CLAUDE_DOWNLOAD`), which rolls out the fake as it
+does the real program; the stubbed installation serves its release to the installer from a
+process of its own (`serve_releases` in `tests/container/installed.py`).
 
 On the host, `devtools/fake_store.py` (`fake_claude`) makes a Claude Code store as the installer
 leaves it, holding a version that runs the fake: `versions/<version>`, `current` and

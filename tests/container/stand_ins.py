@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Stand-ins for ``systemctl``, ``loginctl`` and rcman's ``podman``, for where the container
 suites run rcman with no systemd and no Podman of its own: on the tests' engine
-(tests/container/test_restored_in_container.py), in the stubbed installation and in the whole
-stack (tests/container/installed.py, tests/container/stack.py).
+(tests/container/test_restored_in_container.py), and in the stubbed installation
+(tests/container/installed.py).
 
 Not a test module, and the standard library only, so that a container can run it as it is from
 the checkout's files at /src. Which program it stands in for is its own name (it is mounted over

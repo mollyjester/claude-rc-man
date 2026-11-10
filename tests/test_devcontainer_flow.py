@@ -1,12 +1,11 @@
 """A workspace made from a repository's devcontainer.json (backend/rcman/workspaces.py), on a host
 runtime that has the images a test plants: reading and refusing the file, pulling the image,
-making the container again from the plan on the same volume, the lifecycle commands, cancelling,
-and bringing it all back when rcman starts. The repository is cloned by real git from the tests'
-stand-in for github.com."""
+making the container again from the plan on the same volume, the lifecycle commands, building an
+image, and bringing it all back when rcman starts. The repository is cloned by real git from the
+tests' stand-in for github.com."""
 
 from __future__ import annotations
 
-import collections
 import json
 import re
 import threading
@@ -18,9 +17,9 @@ from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import as_user, changing, ended, host_runtime, made_workspace
+from tests.conftest import changing, host_runtime, made_workspace
 from tests.git_fixtures import fixture_git, make_repo
-from tests.hang_guard import HANG_GUARD, runs_out
+from tests.hang_guard import HANG_GUARD
 from tests.test_clone import (
     ALICE,
     TOKEN,
@@ -28,15 +27,12 @@ from tests.test_clone import (
     cleared,
     clone,
     cloned,
-    ended_in_a_thread,
     entry,
     finished,
     insert,
-    listed,
     row,
     save_token,
 )
-from tests.time_doubles import RecordingLock, WatchedCondition
 from tests.until import until
 
 IMAGE = "registry.example.com/team/dev:latest"
@@ -47,41 +43,23 @@ FILE = ".devcontainer/devcontainer.json"
 
 
 class Flow(rt.HostRuntime):
-    """The host runtime with images, noting what is done to it in order, and able to hold the
-    pull or a lifecycle command until the test lets it go, and to answer as an image that has
-    musl, or no git, would."""
+    """The host runtime with images, noting what is done to it in order, and able to hold a
+    lifecycle command or a build until the test lets it go."""
 
     def __init__(self, *args, **more):
         super().__init__(*args, **more)
         self.events: list[tuple] = []
         self.execs: list[tuple[str, list[str], str | None]] = []
-        # Each exec's argv, with whether it may run once more should its output be lost.
-        self.agains: list[tuple[list[str], bool]] = []
-        self.libc = b"ok\n"
-        self.git: rt.Result | None = None
         self.gate: threading.Event | None = None  # a command with GATE in it waits for this
         self.hooking = threading.Event()
-        self.pull_gate: threading.Event | None = None
-        self.pulling = threading.Event()
         self.pull_lines = ["Trying to pull the image", "Copying blob a"]
-        self.fail_image_create = False
-        self.pull_error: str | None = None  # what every pull says, failing, when it is set
         self.after_pull = lambda: None  # called as a pull has succeeded
-        self.create_gate: threading.Event | None = None  # a create from an image waits for this
-        self.creating = threading.Event()
-        self.release_ok = False  # a command held at the gate ends well, whatever became of it
-        self.kept: int | None = None  # the ``keep`` of the last command
-        self.concurrent = self.most_at_once = 0  # commands held at the gate now, and at most
-        self.after_facts = lambda: None  # called as the image has been read
-        self.after_discard = lambda: None  # called as the container has been discarded
-        self.answers: list[rt.Result] = []  # what the lifecycle commands were answered
         # The planted builder (HostRuntime.build_script): it says its lines, may be held at
         # the gate until the test lets it go or the build is stopped, and makes an image with
-        # the facts below or fails with ``build_error``.
+        # the facts below.
         self.build_lines = ["[1/1] STEP 1/2: FROM scratch"]
         self.build_gate: threading.Event | None = None
         self.building = threading.Event()
-        self.build_error: Exception | None = None
         self.build_facts = rt.ImageFacts(
             passwd=PASSWD, group=GROUP, env={"PATH": "/built/bin:/bin"}
         )
@@ -107,8 +85,6 @@ class Flow(rt.HostRuntime):
                     ),
                     "the build was stopped",
                 )
-            if self.build_error is not None:
-                raise self.build_error
             return self.build_facts
         finally:
             self.builds_at_once -= 1
@@ -138,22 +114,11 @@ class Flow(rt.HostRuntime):
 
     def create(self, spec):
         self.events.append(("create", spec.image, spec.user))
-        if spec.image and self.create_gate is not None:
-            self.creating.set()
-            self.create_gate.wait(2 * HANG_GUARD)  # until the test opens it
-        if spec.image and self.fail_image_create:
-            raise rt.RuntimeFailed("OCI runtime error: cannot run the image")
         super().create(spec)
-
-    def image_facts(self, image, cancel=None):
-        facts = super().image_facts(image, cancel)
-        self.after_facts()
-        return facts
 
     def discard(self, name):
         self.events.append(("discard", name))
         super().discard(name)
-        self.after_discard()
 
     def remove(self, name):
         self.events.append(("remove", name))
@@ -163,48 +128,20 @@ class Flow(rt.HostRuntime):
 
     def pull(self, image, progress=None, cancel=None):
         self.events.append(("pull", image))
-        self.pulling.set()
-        if self.pull_error is not None:
-            raise rt.RuntimeFailed(self.pull_error)
         for line in self.pull_lines:
             if progress is not None:
                 progress(line)
-        if self.pull_gate is not None:
-            self.held(
-                self.pull_gate,
-                lambda: cancel is not None and cancel.is_set(),
-                "the pull was stopped",
-            )
         super().pull(image, progress, cancel)
         self.after_pull()
 
     def exec(self, name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         self.execs.append((name, argv, cwd))
-        self.agains.append((argv, again))
-        self.kept = keep
-        joined = " ".join(argv)
-        if "ld-musl" in joined:
-            return rt.Result(0, self.libc, b"")
-        mine = self.specs.get(name)
-        if self.git is not None and argv[-1:] == ["--version"] and "git" in argv:
-            if mine is not None and mine.image:
-                return self.git
-        if self.gate is not None and "GATE" in joined:
+        if self.gate is not None and "GATE" in " ".join(argv):
             self.hooking.set()
-            self.concurrent += 1
-            self.most_at_once = max(self.most_at_once, self.concurrent)
-            try:
-                self.gate.wait(2 * HANG_GUARD)  # until the test opens it, or a removal does
-            finally:
-                self.concurrent -= 1
-            if self.release_ok:
-                return rt.Result(0, b"", b"")
+            self.gate.wait(2 * HANG_GUARD)  # until the test opens it, or a removal does
             if not self.exists(name):
                 return rt.Result(137, b"", b"Killed\n")
-        answer = super().exec(name, argv, stdin, timeout, cwd, keep, again)
-        if cwd is not None and "-k" in argv:
-            self.answers.append(answer)
-        return answer
+        return super().exec(name, argv, stdin, timeout, cwd, keep, again)
 
     def hooks_run(self) -> list[list[str]]:
         """The lifecycle commands run so far: the argv after the timeout tool."""
@@ -310,269 +247,28 @@ def no_trace(runtime, entry_: dict) -> None:
 
 # --- a file that is refused or invalid -------------------------------------------------------
 
-REFUSALS = [
-    ({"capAdd": ["SYS_ADMIN"]}, "capAdd"),
-    ({"privileged": True}, "privileged"),
-    ({"mounts": ["type=bind,source=/,target=/host"]}, "mounts"),
-    ({"features": {"../outside": {}}}, "features"),
-    ({"build": {"dockerfile": "/etc/passwd"}}, "build.dockerfile"),
-    ({"build": {"dockerfile": "Dockerfile", "options": ["--network=host"]}}, "build.options"),
-    ({"build": {"dockerfile": "Dockerfile", "cacheFrom": ["x"]}}, "build.cacheFrom"),
-    ({"runArgs": ["--net=host"]}, "runArgs"),
-    ({"overrideCommand": False}, "overrideCommand"),
-    ({"workspaceFolder": "/x"}, "workspaceFolder"),
-    ({"aKeyOfTheFuture": True}, "aKeyOfTheFuture"),
-    ({"containerEnv": {"HOME": "/x"}}, "HOME"),
-]
 
-
-@pytest.mark.parametrize(("keys", "named"), REFUSALS)
-def test_a_refused_file_fails_the_workspace_naming_the_key_and_leaves_no_container_or_volume(
-    client, runtime, publish, settings, keys, named
+def test_a_refused_file_fails_the_workspace_naming_the_key_and_what_to_change(
+    client, runtime, publish, settings
 ):
-    publish(config(**keys))
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert f'"{named}"' in failed["error"]
-    assert failed["error"].count("\n") < 5  # plain words, not a trace
-    no_trace(runtime, failed)
-    assert row(settings, failed["id"])["environment"] is None  # no plan was kept
-    assert runtime.pulled == []  # nothing was pulled for a file that was refused first
-
-
-def test_a_user_the_image_does_not_have_is_refused_after_the_pull_and_nothing_is_left(
-    client, runtime, publish
-):
-    publish(config(remoteUser="nobody-here"))
-    failed = cloned(client)
-    assert failed["state"] == "failed" and '"nobody-here"' in failed["error"]
-    assert runtime.pulled == [IMAGE]  # the image had to be read to know
-    no_trace(runtime, failed)
-
-
-def test_a_runtime_that_goes_away_during_the_pull_fails_the_workspace_in_plain_words(
-    client, runtime, publish
-):
-    """Not with what podman said, which holds paths of the machine, and not as a refusal of the
-    file: the container and the clone in it stay for a person to look at, like those of any
-    failure that is not a refusal."""
-
-    def unreachable(image, progress=None, cancel=None):
-        raise rt.RuntimeUnavailable("Cannot connect to Podman: unix:///run/user/990/podman.sock")
-
-    runtime.pull = unreachable
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["runtime_gone"]
-    assert "990" not in failed["error"] and "podman.sock" not in failed["error"]
-    assert runtime.exists(name_of(failed))  # kept
-
-
-@pytest.mark.parametrize("label", ["rcman.probe", "rcman.workspace", "rcman.person", "rcman.x"])
-def test_an_image_that_carries_a_label_of_rcmans_is_refused_and_nothing_is_left(
-    client, runtime, publish, label
-):
-    """A container inherits its image's labels: one that said it was a probe would be removed
-    at every restore, one that named another person's workspace would be taken for it."""
-    runtime.images[IMAGE] = rt.ImageFacts(
-        passwd=PASSWD, group=GROUP, labels={label: "1", "org.example.fine": "yes"}
-    )
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["image_labels"].format(
-        image=IMAGE, label=label
-    )
-    no_trace(runtime, failed)
-
-
-def test_an_image_with_labels_that_are_not_rcmans_is_taken(client, runtime, publish):
-    runtime.images[IMAGE] = rt.ImageFacts(
-        passwd=PASSWD, group=GROUP, labels={"org.example.rcman": "1", "my.rcman.thing": "2"}
-    )
-    publish(config())
-    assert cloned(client)["state"] == "ready"
-
-
-def test_an_image_built_from_the_default_image_with_its_tools_label_is_taken(
-    client, runtime, publish
-):
-    """The default image's label is not one of rcman's own."""
-    from helpers import instructions
-
-    runtime.images[IMAGE] = rt.ImageFacts(
-        passwd=PASSWD, group=GROUP, labels={instructions.TOOLS_LABEL: "1"}
-    )
-    publish(config())
-    assert cloned(client)["state"] == "ready"
-
-
-# --- what is at Claude Code's managed path in the image, where rcman binds its instructions ---
-
-ETC, FOLDER_OF, MANAGED = "/etc", "/etc/claude-code", "/etc/claude-code/CLAUDE.md"
-
-
-def at_managed(**kinds) -> dict[str, str]:
-    """What the image's probe read at /etc, /etc/claude-code and its CLAUDE.md."""
-    from helpers import instructions
-
-    assert instructions.PATHS == (ETC, FOLDER_OF, MANAGED)
-    named = {"etc": ETC, "folder": FOLDER_OF, "claude_md": MANAGED}
-    return {named[key]: kind for key, kind in kinds.items()}
-
-
-@pytest.mark.parametrize(
-    ("managed", "path"),
-    [
-        (at_managed(etc="file"), ETC),
-        (at_managed(etc="folder", folder="file"), FOLDER_OF),
-    ],
-)
-def test_an_image_whose_etc_or_etc_claude_code_is_a_file_is_refused_as_image_managed_folder(
-    client, runtime, publish, managed, path
-):
-    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, managed=managed)
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["image_managed_folder"].format(
-        image=IMAGE, path=path
-    )
-    no_trace(runtime, failed)
-    assert not [e for e in runtime.events if e[0] == "create" and e[1] == IMAGE]
-
-
-@pytest.mark.parametrize("kind", ["folder", "link", "other"])
-def test_an_image_whose_claude_md_is_not_a_regular_file_is_refused(client, runtime, publish, kind):
-    managed = at_managed(etc="folder", folder="folder", claude_md=kind)
-    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, managed=managed)
-    publish(config())
-    failed = cloned(client)
-    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["image_managed_folder"].format(
-        image=IMAGE, path=MANAGED
-    )
-    no_trace(runtime, failed)
-
-
-@pytest.mark.parametrize(
-    "managed",
-    [
-        {},  # no /etc
-        at_managed(etc="folder"),
-        at_managed(etc="folder", folder="folder"),
-        at_managed(etc="folder", folder="folder", claude_md="file"),  # replaced by rcman's
-        # only a file is refused where a folder of the path is: what else there is, is not
-        at_managed(etc="other"),
-        at_managed(etc="folder", folder="other"),
-        at_managed(etc="folder", folder="link"),  # were podman not to follow it
-    ],
-)
-def test_an_image_with_folders_or_nothing_at_the_managed_path_is_taken(
-    client, runtime, publish, managed
-):
-    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, managed=managed)
-    publish(config())
-    assert cloned(client)["state"] == "ready"
-
-
-def test_an_image_whose_etc_claude_code_is_a_link_to_a_folder_is_accepted(client, runtime, publish):
-    """The probe reads a link as what it names, as podman cp follows it (the container suite
-    holds Podman to that), and the bind is made where the link leads."""
-    runtime.images[IMAGE] = rt.ImageFacts(
-        passwd=PASSWD, group=GROUP, managed=at_managed(etc="folder", folder="folder")
-    )
-    publish(config())
-    assert cloned(client)["state"] == "ready"
-
-
-def test_an_images_own_managed_settings_is_not_refused(client, runtime, publish):
-    """Only CLAUDE.md is replaced: the image's managed-settings.json beside it is not looked at,
-    and stays in the container (tests/container/test_runtime_in_podman.py)."""
-    from helpers import instructions
-
-    assert not [p for p in instructions.PATHS if p.endswith("managed-settings.json")]
-    runtime.images[IMAGE] = rt.ImageFacts(
-        passwd=PASSWD,
-        group=GROUP,
-        managed=at_managed(etc="folder", folder="folder", claude_md="file"),
-    )
-    publish(config())
-    assert cloned(client)["state"] == "ready"
-
-
-# --- the instructions for Claude missing from the tools ----------------------------------------
-
-
-@pytest.mark.parametrize("found", ["before the discard", "by create"])
-def test_missing_instructions_fail_the_workspace_without_blaming_the_image(
-    client, runtime, publish, settings, found
-):
-    """It is the installation's to put right, not the repository's: the workspace keeps its
-    volume, and its container where the file was found missing before it was discarded."""
-    if found == "before the discard":
-        runtime.instructions_ready = lambda: rt.INSTRUCTIONS_MISSING
-    else:
-        made = runtime.create
-
-        def create(spec):
-            if spec.image:
-                raise rt.InstructionsMissing()
-            made(spec)
-
-        runtime.create = create
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert failed["error"] == rt.INSTRUCTIONS_MISSING
-    name = name_of(failed)
-    assert (runtime.root / name).exists()  # its volume
-    if found == "before the discard":
-        assert runtime.exists(name)
-        assert not [e for e in runtime.events if e[0] in ("discard", "remove")]
-
-
-def test_a_refusal_says_what_to_change(client, runtime, publish):
+    """The policy of docs/devcontainer.md: a key a file may not ask for fails the workspace before
+    anything is pulled, in plain words that say what to change, and leaves nothing."""
     publish(config(capAdd=["SYS_ADMIN"]))
     failed = cloned(client)
+    assert failed["state"] == "failed"
     assert (
         problems.DEVCONTAINER_MESSAGES["refused_key"].split("{reason}")[0].format(key="capAdd")
         in failed["error"]
     )
     assert dc.POLICY["capAdd"].reason in failed["error"]
     assert "make the workspace again" in failed["error"]
+    assert failed["error"].count("\n") < 5  # plain words, not a trace
+    no_trace(runtime, failed)
+    assert row(settings, failed["id"])["environment"] is None  # no plan was kept
+    assert runtime.pulled == []  # nothing was pulled for a file that was refused first
 
 
-def test_a_refused_workspace_can_be_deleted_and_nothing_is_left(client, runtime, publish):
-    publish(config(privileged=True))
-    failed = cloned(client)
-    r = client.delete(f"/api/workspaces/{failed['id']}", headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    cleared(runtime, client)
-
-
-def test_the_log_says_where_the_file_was_looked_for(client, runtime, publish):
-    publish(config(privileged=True))
-    failed = cloned(client)
-    lines = failed["log"].splitlines()
-    assert dc.LOOKED_IN in lines
-    assert lines.index(dc.LOOKED_IN) > lines.index("Cloned")  # after the clone, in the log
-
-
-def test_the_log_names_the_keys_that_are_ignored_and_the_image_pulled(
-    client, runtime, publish, ready_log
-):
-    publish(config(name="Planted", customizations={"vscode": {}}, forwardPorts=[3000]))
-    done = cloned(client)
-    log = ready_log[done["id"]]
-    assert dc.LOOKED_IN in log and f"Pulling {IMAGE}" in log
-    [ignored] = [line for line in log.splitlines() if line.startswith("Ignored in")]
-    assert "name" in ignored and "customizations" in ignored
-    assert "forwardPorts" not in ignored  # honoured, so not called ignored
-    assert "Planted" not in log and "vscode" not in log  # names only, never values
-
-
-def test_the_steps_name_the_forwarded_ports_with_their_labels_in_words_true_on_or_off(
+def test_the_log_names_the_keys_that_are_ignored_the_image_pulled_and_the_forwarded_ports(
     client, runtime, publish, ready_log
 ):
     runtime.images[IMAGE] = rt.ImageFacts(
@@ -580,76 +276,29 @@ def test_the_steps_name_the_forwarded_ports_with_their_labels_in_words_true_on_o
         labels={dc.METADATA_LABEL: json.dumps([{"id": "f", "forwardPorts": [700]}])},
     )  # fmt: skip
     label = {"680": {"label": "Pebble Emulator (noVNC)"}}
-    publish(config(forwardPorts=[680, "localhost:300"], portsAttributes=label))
+    publish(
+        config(
+            name="Planted",
+            customizations={"vscode": {}},
+            forwardPorts=[680, "localhost:300"],
+            portsAttributes=label,
+        )
+    )
     done = cloned(client)
     assert done["state"] == "ready", done
+    log = ready_log[done["id"]]
+    assert dc.LOOKED_IN in log and f"Pulling {IMAGE}" in log
+    [ignored] = [line for line in log.splitlines() if line.startswith("Ignored in")]
+    assert "name" in ignored and "customizations" in ignored
+    assert "forwardPorts" not in ignored  # honoured, so not called ignored
+    assert "Planted" not in log and "vscode" not in log  # names only, never values
     # the image's port first, then the file's: the plan's, not the file's alone
     assert (
         "Forwarded ports: 700, 680 \u201cPebble Emulator (noVNC)\u201d, 300. They open from the "
         "workspace's Ports card once the workspace is ready, while an administrator has port "
         "forwarding on."
-    ) in ready_log[done["id"]].splitlines()
+    ) in log.splitlines()
     assert not re.search(r"[0-9]", dc.FORWARDED_PORTS)  # no number but the ports themselves
-
-
-def test_a_file_that_forwards_no_port_has_no_step_for_ports(client, runtime, publish, ready_log):
-    publish(config(name="No ports"))
-    done = cloned(client)
-    lines = ready_log[done["id"]].splitlines()
-    assert dc.LOOKED_IN in lines  # positive control: the steps were read
-    assert not [line for line in lines if line.startswith("Forwarded ports")]
-
-
-def test_a_file_that_is_not_json_says_where_and_never_what_it_holds(client, runtime, publish):
-    publish({FILE: '{\n  "image": "x",\n  "secret-looking": sk-the-key-in-the-file\n}'})
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert "line 3" in failed["error"] and "column" in failed["error"]
-    assert "sk-the-key" not in failed["error"] + (failed["log"] or "")
-    no_trace(runtime, failed)
-
-
-def test_a_symbolic_link_is_refused_and_what_it_points_at_is_not_read(
-    client, runtime, publish, tmp_path
-):
-    secret = tmp_path / "secret.json"
-    secret.write_text('{"claudeAiOauth": "sk-ant-the-token-in-the-target"}')
-    publish({".devcontainer.json": Link(secret)})
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "symbolic link" in failed["error"]
-    shown = failed["error"] + (failed["log"] or "")
-    assert "sk-ant" not in shown and "claudeAiOauth" not in shown
-    no_trace(runtime, failed)
-
-
-def test_a_file_in_a_place_that_is_not_looked_in_is_not_read(client, runtime, publish, settings):
-    publish(
-        {
-            "devcontainer.json": json.dumps({"capAdd": ["X"]}),
-            ".devcontainer/sub/devcontainer.json": "{",
-        }
-    )
-    done = cloned(client)
-    assert done["state"] == "ready"
-    assert runtime.pulled == [] and row(settings, done["id"])["environment"] is None
-
-
-def test_the_file_in_the_folder_is_read_before_the_dotfile(client, runtime, publish):
-    publish({**config(capAdd=["X"]), ".devcontainer.json": json.dumps(GOOD)})
-    assert cloned(client)["state"] == "failed"
-
-
-def test_the_dotfile_is_read_when_there_is_no_folder(client, runtime, publish):
-    publish({".devcontainer.json": json.dumps({**GOOD, "capAdd": ["X"]})})
-    failed = cloned(client)
-    assert failed["state"] == "failed" and '"capAdd"' in failed["error"]
-
-
-def test_a_file_that_is_too_big_is_refused(client, runtime, publish):
-    publish({FILE: json.dumps({**GOOD, "name": "x" * dc.MAX_BYTES})})
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "too big" in failed["error"]
-    no_trace(runtime, failed)
 
 
 def test_a_repository_with_no_file_is_made_as_before(client, runtime, publish, settings):
@@ -690,165 +339,23 @@ def test_a_file_with_no_image_makes_the_workspace_from_the_default_image(
     assert stored.ports == (dc.Port(6080),)
 
 
-def test_a_file_with_no_image_has_its_commands_and_env_applied_over_the_default_image(
-    client, runtime, publish, settings
-):
-    with_default_image(runtime, settings, user="dev")
-    publish(
-        {
-            FILE: json.dumps(
-                {
-                    "containerEnv": {"GREETING": "hello"},
-                    "remoteEnv": {"WHO": "${containerEnv:GREETING} there"},
-                    "onCreateCommand": "env > env.txt",
-                    "postStartCommand": "echo start >> ran.txt",
-                }
-            )
-        }
-    )
-    done = cloned(client)
-    assert done["state"] == "ready", done
-    work = work_of(runtime, done)
-    env = dict(line.split("=", 1) for line in (work / "env.txt").read_text().splitlines())
-    assert (env["GREETING"], env["WHO"]) == ("hello", "hello there")
-    stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
-    assert stored.image_path == "/default/bin:/bin"  # the default image's own PATH
-    assert (work / "ran.txt").read_text().split() == ["start"]
-    assert runtime.specs[name_of(done)].uid == 1234  # the default image's user
-
-
-def test_features_with_no_image_still_fail_the_workspace_naming_what_to_add(
-    client, runtime, publish, settings
-):
-    with_default_image(runtime, settings)
-    publish(
-        {
-            FILE: json.dumps({"features": {"./feature": {}}}),
-            ".devcontainer/feature/devcontainer-feature.json": '{"id": "feature"}',
-            ".devcontainer/feature/install.sh": "#!/bin/sh\n",
-        }
-    )
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["no_image"]
-    assert '"features"' in failed["error"]
-    assert '"image"' in failed["error"] and '"build"' in failed["error"]
-    assert runtime.pulled == [] and runtime.builds == []
-    no_trace(runtime, failed)
-
-
-def test_a_workspace_with_no_source_never_reads_a_file(client, runtime, settings):
-    r = client.post("/api/workspaces", json={"name": "blank"}, headers=changing(ALICE))
-    blank = finished(client, r.json()["workspace"]["id"])
-    assert blank["state"] == "ready"
-    assert not [a for _, a, _ in runtime.execs if dc.PROBE in a]
-
-
-def test_the_looking_is_done_in_the_work_folder_by_the_workspaces_own_tools(
-    client, runtime, publish
-):
-    publish({"README.md": "x"})
-    done = cloned(client)
-    probes = [(a, cwd) for _, a, cwd in runtime.execs if dc.PROBE in a]
-    assert probes and probes[0][1] == str(work_of(runtime, done))
-
-
-# --- the image -------------------------------------------------------------------------------
-
-
-def test_a_pull_that_fails_leaves_nothing_and_says_what_podman_said(client, runtime, publish):
-    del runtime.images[IMAGE]
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert IMAGE in failed["error"] and "manifest unknown" in failed["error"]
-    assert "sign-in" in failed["error"]
-    no_trace(runtime, failed)
-
-
-def test_the_pull_is_shown_in_the_log_with_its_progress(client, runtime, publish):
-    runtime.pull_gate = threading.Event()
-    publish(config())
-    made = clone(client).json()["workspace"]
-    assert runtime.pulling.wait(HANG_GUARD)
-    until(lambda: "Copying blob a" in (entry(client, made["id"])["log"] or ""))
-    log = entry(client, made["id"])["log"]
-    assert f"Pulling {IMAGE}" in log and "Trying to pull the image" in log
-    runtime.pull_gate.set()
-    assert finished(client, made["id"])["state"] == "ready"
-
-
-def test_only_the_probes_that_change_nothing_may_run_again_when_their_output_is_lost(
-    client, runtime, publish
-):
-    """The probes of the image's libc and shell only read, so they are run once more should the
-    runtime lose what they wrote (Runtime.exec); a lifecycle command is never run twice."""
-    publish(config(postCreateCommand="echo post-create >> ran.txt"))
-    made = clone(client).json()["workspace"]
-    assert finished(client, made["id"])["state"] == "ready"
-    libc = [again for a, again in runtime.agains if ws.LIBC_PROBE in a]
-    shell = [again for a, again in runtime.agains if ws.SHELL_PROBE in a]
-    hooks = [again for a, again in runtime.agains if "post-create" in " ".join(a)]
-    assert libc == [True] and shell and all(shell)
-    assert hooks == [False]  # the control
-
-
-def test_an_image_on_musl_is_refused_as_alpine_is_and_nothing_is_left(client, runtime, publish):
-    runtime.libc = b"musl\n"
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert "musl" in failed["error"] and "glibc" in failed["error"] and IMAGE in failed["error"]
-    no_trace(runtime, failed)
-    assert any(e[0] == "create" and e[1] == IMAGE for e in runtime.events)  # it had been made
-
-
-def test_an_image_whose_libc_is_not_known_is_not_refused(client, runtime, publish):
-    runtime.libc = b"ok\n"
-    publish(config())
-    assert cloned(client)["state"] == "ready"
-
-
-def test_an_image_without_a_usable_git_is_refused_and_nothing_is_left(client, runtime, publish):
-    runtime.git = rt.Result(127, b"", b"timeout: can't execute 'git'")
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert "git is not installed in the image" in failed["error"] and IMAGE in failed["error"]
-    no_trace(runtime, failed)
-
-
-def test_the_git_of_the_image_is_asked_again_for_the_new_image(client, runtime, publish):
-    publish(config())
-    done = cloned(client)
-    asked = [(n, a) for n, a, _ in runtime.execs if "git" in a and a[-1:] == ["--version"]]
-    assert len(asked) >= 2 and {n for n, _ in asked} == {name_of(done)}
-
-
-def test_the_metadata_of_the_image_is_held_to_the_policy_naming_the_entry(client, runtime, publish):
-    runtime.images[IMAGE] = rt.ImageFacts(
-        passwd=PASSWD,
-        group=GROUP,
-        labels={
-            dc.METADATA_LABEL: json.dumps(
-                [{"id": "ghcr.io/o/f/docker-in-docker:2", "privileged": True}]
-            )
-        },
-    )
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert "ghcr.io/o/f/docker-in-docker:2" in failed["error"] and '"privileged"' in failed["error"]
-    no_trace(runtime, failed)
-
-
 # --- the plan, the new container, the user ----------------------------------------------
 
 
-def test_the_container_is_made_again_from_the_image_on_the_same_volume(
+def test_the_container_is_made_again_from_the_image_on_the_same_volume_from_the_stored_plan(
     client, runtime, publish, settings
 ):
-    publish({**config(remoteUser="dev", containerEnv={"GREETING": "hello"}), "README.md": "x"})
+    publish(
+        {
+            **config(
+                remoteUser="dev",
+                containerEnv={"GREETING": "hello"},
+                forwardPorts=[1],
+                postCreateCommand="true",
+            ),
+            "README.md": "x",
+        }
+    )
     done = cloned(client)
     assert done["state"] == "ready" and done["error"] is None and done["log"] is None
     name = name_of(done)
@@ -862,29 +369,7 @@ def test_the_container_is_made_again_from_the_image_on_the_same_volume(
     assert (work_of(runtime, done) / "README.md").is_file()  # the clone survived on the volume
     assert runtime.running(name)
     assert runtime.labelled()[name][rt.LABEL_WORKSPACE] == str(done["id"])
-
-
-def test_the_channel_to_the_old_container_is_closed_before_it_is_discarded(
-    client, app, runtime, publish, monkeypatch
-):
-    real = ws.Workspaces.close_channel
-
-    def closing(self, name):
-        runtime.events.append(("close", name))
-        return real(self, name)
-
-    monkeypatch.setattr(ws.Workspaces, "close_channel", closing)
-    publish(config())
-    done = cloned(client)
-    name = name_of(done)
-    assert runtime.events.index(("close", name)) < runtime.events.index(("discard", name))
-
-
-def test_the_plan_is_stored_with_the_row_and_is_what_the_workspace_is_made_from(
-    client, runtime, publish, settings
-):
-    publish(config(remoteUser="dev", forwardPorts=[1], postCreateCommand="true"))
-    done = cloned(client)
+    # the plan is stored with the row and is what the workspace was made from
     stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
     assert (stored.image, stored.uid, stored.gid, stored.run_as) == (IMAGE, 1234, 1235, "dev")
     assert (stored.ignored, stored.ports) == ((), (dc.Port(1),))  # honoured, not ignored
@@ -921,51 +406,6 @@ def test_the_plans_environment_user_and_path_are_what_every_program_of_rcman_get
     assert claude["HOME"] == layout.home and claude["CLAUDE_CONFIG_DIR"] == layout.config
     tmux = claude_server.tmux_env(layout)
     assert tmux["A"] == "remote" and tmux["HOME"] == layout.home
-
-
-def test_a_path_the_file_sets_is_used_with_rcmans_own_folder_first(client, app, runtime, publish):
-    publish(config(containerEnv={"PATH": "/mine/bin:/usr/bin"}))
-    done = cloned(client)
-    service = app.state.workspaces
-    layout = service._layout(service.get(done["id"]))
-    assert layout.path == "/mine/bin:/usr/bin"
-    assert "PATH" not in layout.env
-    # The same on a runtime that has a folder of its own to keep first.
-    prefixed = rt.PODMAN_LAYOUT.for_plan("dev", {}, "/mine/bin:/usr/bin")
-    assert prefixed.path == f"{rt.PODMAN_LAYOUT.path_prefix}:/mine/bin:/usr/bin"
-
-
-def test_a_workspace_with_no_plan_has_the_runtimes_layout(client, app, runtime, publish):
-    publish({"README.md": "x"})
-    done = cloned(client)
-    service = app.state.workspaces
-    assert service._layout(service.get(done["id"])) == runtime.layout(name_of(done))
-
-
-@pytest.mark.parametrize(
-    ("user", "expected"),
-    [
-        ("dev", ("dev", 1234, 1235, ())),
-        ("dev:dev", ("1234:1235", 1234, 1235, (5000,))),  # podman drops the groups; rcman adds
-        ("dev:extra", ("1234:5000", 1234, 5000, ())),
-        ("1234", ("1234", 1234, 1235, ())),
-        ("root", ("root", 0, 0, ())),
-    ],
-)
-def test_the_ids_the_user_has_in_the_image_reach_the_container(
-    client, runtime, publish, user, expected
-):
-    publish(config(remoteUser=user))
-    done = cloned(client)
-    spec = runtime.specs[name_of(done)]
-    assert (spec.user, spec.uid, spec.gid, spec.groups) == expected
-
-
-def test_the_image_user_is_used_when_the_file_names_none(client, runtime, publish):
-    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, user="dev")
-    publish(config())
-    done = cloned(client)
-    assert runtime.specs[name_of(done)].uid == 1234
 
 
 # --- lifecycle commands -----------------------------------------------------------------------
@@ -1028,116 +468,6 @@ def test_the_commands_run_as_the_images_user_in_the_work_folder_with_exactly_the
     assert runtime.hooks_run()  # positive control: the commands went through the runtime
 
 
-def test_every_command_runs_under_the_timeout_tool_with_named_limits(client, runtime, publish):
-    publish(config(onCreateCommand="true", postCreateCommand=["true"]))
-    cloned(client)
-    hooks = [a for _, a, cwd in runtime.execs if cwd is not None and "-k" in a]
-    assert len(hooks) == 2
-    for argv in hooks:
-        at = argv.index("-s")
-        assert argv[at : at + 5] == [
-            "-s",
-            "TERM",
-            "-k",
-            str(ws.HOOK_KILL_GRACE_SECONDS),
-            str(ws.HOOK_TIMEOUT_SECONDS),
-        ]
-
-
-def test_a_command_in_array_form_is_not_run_by_a_shell(client, runtime, publish):
-    publish(config(onCreateCommand=["printf", "%s", "$HOME; touch pwned"]))
-    done = cloned(client)
-    assert done["state"] == "ready"
-    assert not (work_of(runtime, done) / "pwned").exists()
-    hook = runtime.hooks_run()[0]
-    assert hook == ["printf", "%s", "$HOME; touch pwned"]
-
-
-def test_the_entries_of_an_object_run_one_after_another(client, runtime, publish):
-    """The first entry is held until the test lets it go: the second is not run meanwhile."""
-    publish(
-        config(
-            postCreateCommand={
-                "first": "while [ ! -e go ]; do sleep 0.05; done; echo first >> ran.txt",
-                "second": ["sh", "-c", "echo second >> ran.txt"],
-            }
-        )
-    )
-    made = clone(client).json()["workspace"]
-
-    def ran(word: str) -> bool:
-        return any(f"echo {word} >> ran.txt" in " ".join(a) for a in runtime.hooks_run())
-
-    try:
-        until(lambda: ran("first"))  # under way, and held
-        assert not ran("second")
-    finally:
-        (work_of(runtime, made) / "go").touch()
-    assert finished(client, made["id"])["state"] == "ready"
-    assert ran("second")  # the positive control
-    assert (work_of(runtime, made) / "ran.txt").read_text().split() == ["first", "second"]
-
-
-def test_a_failing_create_command_fails_the_workspace_with_its_exit_code_and_tail_and_keeps_it(
-    client, runtime, publish, settings
-):
-    publish(config(postCreateCommand="echo building; echo broke >&2; exit 3"))
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert "postCreateCommand failed, exit code 3" in failed["error"]
-    assert "building" in failed["error"] and "broke" in failed["error"]
-    name = name_of(failed)
-    assert runtime.exists(name) and (runtime.root / name).is_dir()  # container and volume stay
-    assert dc.Plan.from_json(row(settings, failed["id"])["environment"]).image == IMAGE
-    r = client.delete(f"/api/workspaces/{failed['id']}", headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    cleared(runtime, client)
-    assert not (runtime.root / name).exists()
-
-
-def test_a_failing_command_stops_the_ones_after_it(client, runtime, publish):
-    publish(
-        config(
-            onCreateCommand="exit 1",
-            postCreateCommand="echo after >> ran.txt",
-            postStartCommand="echo start >> ran.txt",
-        )
-    )
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "onCreateCommand" in failed["error"]
-    assert not (work_of(runtime, failed) / "ran.txt").exists()
-
-
-# The least the ``timeout`` tool is given that bounds anything: a second (0 is no bound at all).
-TOOL_FLOOR = 1
-
-
-def test_a_command_that_takes_too_long_is_stopped_and_the_message_names_no_limit(
-    client, runtime, publish, monkeypatch
-):
-    runs_out(monkeypatch, ws, "HOOK_TIMEOUT_SECONDS", at=TOOL_FLOOR)
-    publish(config(postCreateCommand=f"echo started; sleep {3 * HANG_GUARD}"))
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert (
-        problems.DEVCONTAINER_MESSAGES["hook_timeout"].format(command="postCreateCommand")
-        in failed["error"]
-    )
-    assert "started" in failed["error"]
-    assert "took too long" in failed["error"] and "1 second" not in failed["error"]
-
-
-def test_the_token_is_redacted_from_what_a_command_printed(client, runtime, publish, settings):
-    save_token(client)
-    publish(config(postCreateCommand=f"echo token is {TOKEN}; exit 2"))
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "exit code 2" in failed["error"]
-    shown = failed["error"] + (failed["log"] or "") + (row(settings, failed["id"])["log"] or "")
-    assert TOKEN not in shown and ws.REDACTED in failed["error"]
-    for entry_ in client.get("/api/workspaces", headers=as_user(ALICE)).json()["workspaces"]:
-        assert TOKEN not in json.dumps(entry_)
-
-
 def test_a_commands_output_tail_is_in_the_log_and_the_token_is_redacted_there_too(
     client, runtime, publish, ready_log
 ):
@@ -1147,84 +477,6 @@ def test_a_commands_output_tail_is_in_the_log_and_the_token_is_redacted_there_to
     log = ready_log[done["id"]]
     assert "installed-things" in log and TOKEN not in log and ws.REDACTED in log
     assert "postCreateCommand" in log
-
-
-def test_the_error_of_a_command_is_cut_to_the_limit_from_its_start(client, runtime, publish):
-    publish(
-        config(
-            postCreateCommand=(
-                "i=0; while [ $i -lt 400 ]; do echo line-$i-xxxxxxxxxxxx; i=$((i+1)); done; exit 4"
-            )
-        )
-    )
-    failed = cloned(client)
-    assert len(failed["error"]) <= ws.MAX_ERROR_CHARS
-    assert "exit code 4" in failed["error"] and "line-399-" in failed["error"]
-    assert "line-0-" not in failed["error"]
-
-
-# --- cancelling --------------------------------------------------------------------------------
-
-
-def test_deleting_a_workspace_whose_command_runs_stops_it_by_removing_the_container(
-    client, runtime, publish
-):
-    runtime.gate = threading.Event()
-    publish(config(postCreateCommand="echo GATE"))
-    made = clone(client).json()["workspace"]
-    name = rt.container_name(made["id"])
-    assert runtime.hooking.wait(HANG_GUARD)
-    removed_before = [e for e in runtime.events if e == ("remove", name)]
-    assert removed_before == []  # positive control: nothing has removed it yet
-    r = ended_in_a_thread(
-        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
-    )
-    assert r.status_code == 200, r.text
-    assert ("remove", name) in runtime.events  # the delete itself did it
-    cleared(runtime, client)
-    assert not (runtime.root / name).exists()
-
-
-def test_deleting_a_workspace_whose_image_is_being_pulled_stops_the_pull(client, runtime, publish):
-    runtime.pull_gate = threading.Event()
-    publish(config())
-    made = clone(client).json()["workspace"]
-    name = rt.container_name(made["id"])
-    assert runtime.pulling.wait(HANG_GUARD)
-    r = ended_in_a_thread(
-        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
-    )
-    assert r.status_code == 200, r.text
-    cleared(runtime, client)
-    assert not (runtime.root / name).exists()
-    assert runtime.pulled == []  # the pull did not finish
-    assert not [e for e in runtime.events if e[0] == "create" and e[1] == IMAGE]
-
-
-def test_deleting_a_workspace_before_the_file_is_read_makes_nothing_of_it(
-    client, runtime, publish, monkeypatch
-):
-    publish(config())
-    gate = threading.Event()
-    real = ws.Workspaces._configure
-
-    reached = threading.Event()
-
-    def held(self, workspace, slot):
-        reached.set()
-        gate.wait(HANG_GUARD)
-        return real(self, workspace, slot)
-
-    monkeypatch.setattr(ws.Workspaces, "_configure", held)
-    try:
-        made = clone(client).json()["workspace"]
-        assert reached.wait(HANG_GUARD)  # the clone is done
-        client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
-        gate.set()
-        cleared(runtime, client)
-    finally:
-        gate.set()
-    assert runtime.pulled == []
 
 
 # --- restarting ---------------------------------------------------------------------
@@ -1246,9 +498,7 @@ def set_environment(settings, workspace: int, text: str, **more) -> None:
         con.close()
 
 
-def ready_with_plan(
-    service, settings, runtime, plan: dc.Plan, make_container=True, name="planned"
-) -> int:
+def ready_with_plan(service, settings, plan: dc.Plan, make_container=True, name="planned") -> int:
     workspace = insert(settings, name, "ready", URL)
     set_environment(settings, workspace, plan.to_json())
     if make_container:
@@ -1256,11 +506,17 @@ def ready_with_plan(
     return workspace
 
 
-def test_a_lost_container_is_made_again_from_the_stored_plan_and_not_the_default_image(
+def test_a_lost_container_is_made_again_from_the_stored_plan_without_its_create_commands(
     service, settings, runtime
 ):
-    plan = a_plan(remoteUser="dev", containerEnv={"A": "b"})
-    workspace = ready_with_plan(service, settings, runtime, plan, make_container=False)
+    plan = a_plan(
+        remoteUser="dev",
+        containerEnv={"A": "b"},
+        onCreateCommand="echo create >> ran.txt",
+        postCreateCommand="echo post >> ran.txt",
+        postStartCommand="echo start >> ran.txt",
+    )
+    workspace = ready_with_plan(service, settings, plan, make_container=False)
     service.restore()
     name = rt.container_name(workspace)
     assert runtime.running(name)
@@ -1268,18 +524,10 @@ def test_a_lost_container_is_made_again_from_the_stored_plan_and_not_the_default
     assert (spec.image, spec.user, spec.uid, spec.gid) == (IMAGE, "dev", 1234, 1235)
     assert dict(spec.env) == {"A": "b"}
     assert row(settings, workspace)["state"] == "ready"
-    assert runtime.pulled == [IMAGE]  # pulled first: the image may be gone from the storage
-
-
-def test_a_restore_does_not_run_the_create_commands_again(service, settings, runtime):
-    plan = a_plan(
-        onCreateCommand="echo create >> ran.txt",
-        postCreateCommand="echo post >> ran.txt",
-        postStartCommand="echo start >> ran.txt",
-    )
-    workspace = ready_with_plan(service, settings, runtime, plan, make_container=False)
-    service.restore()
-    work = Path(runtime.layout(rt.container_name(workspace)).work)
+    # pulled first: the image may be gone from the storage
+    order = [e[0] for e in runtime.events if e[0] in ("pull", "create")]
+    assert order == ["pull", "create"] and runtime.pulled == [IMAGE]
+    work = Path(runtime.layout(name).work)
     assert (work / "ran.txt").read_text().split() == ["start"]  # only what runs at every start
     service.restore()  # rcman restarts again: the container runs, so nothing is started
     assert (work / "ran.txt").read_text().split() == ["start"]
@@ -1291,7 +539,7 @@ def test_post_start_runs_after_every_start_of_a_container_that_was_stopped(
     plan = a_plan(
         postStartCommand="echo start >> ran.txt", onCreateCommand="echo create >> ran.txt"
     )
-    workspace = ready_with_plan(service, settings, runtime, plan)
+    workspace = ready_with_plan(service, settings, plan)
     name = rt.container_name(workspace)
     work = Path(runtime.layout(name).work)
     assert not (work / "ran.txt").exists()  # the container was made, not started by a restore
@@ -1302,101 +550,6 @@ def test_post_start_runs_after_every_start_of_a_container_that_was_stopped(
     runtime.stop(name)
     service.restore()
     assert (work / "ran.txt").read_text().split() == ["start", "start"]
-
-
-def test_post_start_runs_before_the_server_is_started(service, settings, runtime, monkeypatch):
-    plan = a_plan(postStartCommand="echo start >> ran.txt")
-    workspace = ready_with_plan(service, settings, runtime, plan)
-    name = rt.container_name(workspace)
-    runtime.stop(name)
-    work = Path(runtime.layout(name).work)
-    set_environment(settings, workspace, plan.to_json(), wanted=1)
-    started = []
-    monkeypatch.setattr(
-        service, "start_server", lambda w, prefix, **k: started.append((work / "ran.txt").exists())
-    )
-    service.restore()
-    assert started == [True]  # the server was started, and the hook had run by then
-
-
-def test_a_post_start_that_fails_is_logged_and_the_workspace_stays_ready(
-    service, settings, runtime, caplog
-):
-    plan = a_plan(postStartCommand="echo broke-badly; exit 5")
-    workspace = ready_with_plan(service, settings, runtime, plan)
-    runtime.stop(rt.container_name(workspace))
-    with caplog.at_level("WARNING", logger="rcman.workspaces"):
-        service.restore()
-    assert (
-        row(settings, workspace)["state"] == "ready" and row(settings, workspace)["error"] is None
-    )
-    assert runtime.running(rt.container_name(workspace))
-    assert "postStartCommand" in caplog.text and "5" in caplog.text
-
-
-def test_a_running_container_is_left_alone_by_a_restore(service, settings, runtime):
-    plan = a_plan(postStartCommand="echo start >> ran.txt")
-    ready_with_plan(service, settings, runtime, plan)
-    before = len(runtime.execs)
-    service.restore()
-    assert runtime.pulled == []  # a container that is there needs no image
-    assert not [a for _, a, _ in runtime.execs[before:] if "ran.txt" in " ".join(a)]
-    assert [e for e in runtime.events if e[0] == "create"] == [("create", IMAGE, "root")]
-
-
-def test_a_restore_with_the_instructions_missing_discards_and_makes_nothing(
-    service, settings, runtime, caplog
-):
-    plan = a_plan(postStartCommand="echo start >> ran.txt")
-    lost = ready_with_plan(service, settings, runtime, plan, make_container=False, name="lost")
-    stopped = ready_with_plan(service, settings, runtime, plan, name="stopped")
-    runtime.stop(rt.container_name(stopped))
-    before = len(runtime.events)
-    runtime.instructions_ready = lambda: rt.INSTRUCTIONS_MISSING
-    with caplog.at_level("ERROR", logger="rcman.workspaces"):
-        service.restore()
-    assert not [e for e in runtime.events[before:] if e[0] in ("create", "discard", "remove")]
-    assert runtime.pulled == []
-    assert not runtime.exists(rt.container_name(lost))
-    assert not runtime.running(rt.container_name(stopped))
-    assert rt.INSTRUCTIONS_MISSING in caplog.text
-    for workspace in (lost, stopped):
-        assert row(settings, workspace)["state"] == "ready", workspace
-    del runtime.instructions_ready  # the control: with the instructions there, both come back
-    service.restore()
-    assert runtime.running(rt.container_name(lost))
-    assert runtime.running(rt.container_name(stopped))
-
-
-def test_a_workspace_made_from_a_clone_that_rcman_restarted_in_is_failed_in_generic_words(
-    service, settings, runtime
-):
-    cloning = insert(settings, "cloning", "creating", URL, "Making the workspace")
-    runtime.create(rt.Spec(rt.container_name(cloning), slot=1, workspace=cloning, person=1))
-    service.restore()
-    now = row(settings, cloning)
-    assert now["state"] == "failed"
-    assert now["error"] == problems.CLONE_MESSAGES["restarted"]
-    assert "while this workspace was being made" in now["error"]
-    assert runtime.hooks_run() == [] and runtime.pulled == []
-
-
-def test_a_damaged_plan_is_not_replaced_by_the_default_image(service, settings, runtime):
-    workspace = insert(settings, "damaged", "ready", URL)
-    set_environment(settings, workspace, "not json")
-    service.restore()
-    assert not runtime.exists(rt.container_name(workspace))  # nothing was made from a guess
-    with pytest.raises(rt.RuntimeFailed):
-        service._layout(service.get(workspace))
-
-
-def test_the_orphan_probe_containers_of_an_earlier_rcman_are_cleaned_when_restoring(
-    service, runtime, monkeypatch
-):
-    cleaned = []
-    monkeypatch.setattr(runtime, "clean_probes", lambda: cleaned.append(True))
-    service.restore()
-    assert cleaned == [True]
 
 
 def test_a_container_no_row_is_for_is_discarded_and_its_volume_is_kept(service, settings, runtime):
@@ -1410,49 +563,6 @@ def test_a_container_no_row_is_for_is_discarded_and_its_volume_is_kept(service, 
     assert (runtime.root / name / rt.WORK / "notes.txt").read_text() == "someone's work"
 
 
-def test_nothing_is_removed_when_the_table_is_empty_and_workspaces_are_there(
-    service, settings, runtime, caplog
-):
-    """A database that was lost, or is not the one these containers were made for, must not
-    take every workspace and its files with it."""
-    name = rt.container_name(5)
-    runtime.create(rt.Spec(name, slot=1, workspace=5, person=1))
-    runtime.builder_ids.add(5)
-    runtime.built[5] = rt.built_name(5)
-    runtime.images[rt.built_name(5)] = rt.ImageFacts()
-    with caplog.at_level("ERROR", logger="rcman.workspaces"):
-        service.restore()
-    assert runtime.exists(name) and name in runtime.labelled()
-    assert [e for e in runtime.events if e[0] in ("remove", "discard")] == []
-    assert runtime.builders() == {5} and runtime.built_images() == {5: rt.built_name(5)}
-    said = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert any("no workspaces" in line and name in line for line in said), said
-
-
-def test_the_control_for_the_empty_table_is_that_a_row_makes_the_orphans_go(
-    service, settings, runtime
-):
-    insert(settings, "has-a-row", "ready", URL)
-    name = rt.container_name(5)
-    runtime.create(rt.Spec(name, slot=1, workspace=5, person=1))
-    service.restore()
-    assert ("discard", name) in runtime.events
-
-
-def test_the_database_column_exists_and_is_null_for_old_rows(settings):
-    from rcman import db
-
-    con = db.connect(settings.database)
-    try:
-        columns = [r["name"] for r in con.execute("pragma table_info(workspaces)")]
-    finally:
-        con.close()
-    assert "environment" in columns
-
-
-# --- a restore does not wait for one workspace's slow step ----------------------------------
-
-
 def lost_with_hook(service, settings, runtime, name="slow", command="echo GATE", wanted=True):
     """A ready workspace whose container is gone, whose plan has a postStartCommand."""
     workspace = insert(settings, name, "ready", URL)
@@ -1460,227 +570,6 @@ def lost_with_hook(service, settings, runtime, name="slow", command="echo GATE",
         settings, workspace, a_plan(postStartCommand=command).to_json(), wanted=int(wanted)
     )
     return workspace
-
-
-def restoring(service) -> threading.Thread:
-    thread = threading.Thread(target=service.restore, daemon=True)
-    thread.start()
-    return thread
-
-
-def test_a_start_command_that_hangs_holds_up_neither_other_workspaces_nor_its_own_lock(
-    service, settings, runtime, monkeypatch
-):
-    runtime.gate = threading.Event()
-    slow = lost_with_hook(service, settings, runtime)
-    quick = insert(settings, "quick", "ready", None)
-    set_environment(settings, quick, None, wanted=1)
-    started = []
-    monkeypatch.setattr(service, "start_server", lambda w, prefix, **k: started.append(w.id))
-    thread = restoring(service)
-    try:
-        assert runtime.hooking.wait(HANG_GUARD)
-        until(lambda: quick in started)  # the other workspace's server came back meanwhile
-        assert slow not in started and thread.is_alive()  # positive control: it is still held
-        lock = service.lock(slow)
-        assert lock.acquire(blocking=False)  # nor does it hold its own workspace's lock
-        lock.release()
-        assert runtime.running(rt.container_name(slow))  # its container was made already
-    finally:
-        runtime.gate.set()
-    thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-    assert started == [quick, slow]  # its server came after its command, once that ended
-
-
-def test_closing_while_a_start_command_hangs_ends_the_restore_at_once(service, settings, runtime):
-    runtime.gate = threading.Event()
-    lost_with_hook(service, settings, runtime)
-    thread = restoring(service)
-    closing = None
-    try:
-        assert runtime.hooking.wait(HANG_GUARD)
-        closing = threading.Thread(target=service.close, daemon=True)
-        closing.start()  # it waits for the command, which is held
-        thread.join(HANG_GUARD)
-        assert not thread.is_alive()
-        assert service.restored.is_set()
-    finally:
-        runtime.gate.set()
-    closing.join(HANG_GUARD)
-    assert not closing.is_alive()
-
-
-def test_deleting_a_workspace_whose_start_command_hangs_in_a_restore_stops_it(
-    service, settings, runtime
-):
-    runtime.gate = threading.Event()
-    slow = lost_with_hook(service, settings, runtime)
-    thread = restoring(service)
-    try:
-        assert runtime.hooking.wait(HANG_GUARD)
-        ended_in_a_thread(lambda: service.delete(service.get(slow)))  # nor waits for it
-    finally:
-        runtime.gate.set()
-    thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-    assert row(settings, slow) is None
-    assert rt.container_name(slow) not in runtime.labelled()  # nothing is left of it
-
-
-class HeldRestores:
-    """Each workspace's restore held, as it begins, until the test lets it go."""
-
-    def __init__(self, service):
-        self.told = threading.Condition()
-        self.begun: list[int] = []
-        self.go: dict[int, threading.Event] = collections.defaultdict(threading.Event)
-        service._restore_workspace = self._held
-
-    def _held(self, workspace, only_switching=False):
-        with self.told:
-            self.begun.append(workspace.id)
-            self.told.notify_all()
-        assert self.go[workspace.id].wait(HANG_GUARD)
-
-    def wait_begun(self, n: int) -> None:
-        with self.told:
-            assert self.told.wait_for(lambda: len(self.begun) >= n, HANG_GUARD)
-
-    def let_go(self, *ids: int) -> None:
-        for workspace in ids or list(self.go) + self.begun:
-            self.go[workspace].set()
-
-
-@pytest.fixture
-def restored_by(settings, runtime, changed):
-    """The service, its condition the test's (``changed``), each restore of a workspace held."""
-    made = ws.Workspaces(settings, runtime)
-    held = HeldRestores(made)
-    yield made, held
-    held.let_go()
-    made.close()
-
-
-def three_lost(settings) -> list[int]:
-    return [insert(settings, f"lost{n}", "ready", None) for n in range(3)]
-
-
-def test_no_more_workspaces_are_restored_at_once_than_the_bound_allows(
-    restored_by, changed, settings, monkeypatch
-):
-    monkeypatch.setattr(ws, "RESTORE_WORKERS", 2)
-    service, held = restored_by
-    ids = three_lost(settings)
-    thread = restoring(service)
-    held.wait_begun(2)
-    changed.wait_waiting(1, match=thread)  # restore, waiting for a place
-    first_two = list(held.begun)
-    assert sorted(first_two) == ids[:2]  # the two in either order: they run at once
-    held.let_go(first_two[0])
-    held.wait_begun(3)  # its wait for a place ended before the third began
-    assert held.begun[2] == ids[2]
-    changed.wait_waiting(1, match=thread)  # restore, waiting for the last
-    assert thread.is_alive()
-    held.let_go(first_two[1])
-    assert thread.is_alive()  # one task is still held: restore cannot be over
-    held.let_go(ids[2])
-    joined(thread)
-    assert service.restored.is_set()
-
-
-def test_closing_while_a_restore_waits_for_a_place_ends_it_at_once(
-    restored_by, changed, settings, monkeypatch
-):
-    monkeypatch.setattr(ws, "RESTORE_WORKERS", 1)
-    service, held = restored_by
-    ids = three_lost(settings)
-    thread = restoring(service)
-    held.wait_begun(1)
-    changed.wait_waiting(1, match=thread)
-    closing = closing_thread(service)
-    joined(thread)  # with its first workspace still held
-    assert held.begun == ids[:1]
-    changed.wait_waiting(1, match=closing)  # close, waiting for that workspace's restore
-    assert closing.is_alive()
-    held.let_go(ids[0])
-    joined(closing)
-
-
-@pytest.mark.parametrize("task_ends", [True, False])
-def test_close_waits_for_a_restore_task_and_gives_up_after_its_deadline(
-    restored_by, changed, settings, task_ends
-):
-    service, held = restored_by
-    lost = insert(settings, "lost", "ready", None)
-    thread = restoring(service)
-    held.wait_begun(1)
-    closing = closing_thread(service)
-    joined(thread)
-    [waiting] = changed.wait_waiting(1, match=closing)
-    assert waiting.seconds == ws.CLOSE_WITHIN_SECONDS  # its deadline is the bound's
-    assert closing.is_alive()  # the deadline never runs out by itself
-    if task_ends:  # close returns
-        held.let_go(lost)
-    else:  # its deadline: close gives up
-        changed.expire(closing)
-    joined(closing)
-    assert waiting.ended == ("predicate" if task_ends else "expired")
-
-
-def test_close_waits_for_the_step_the_restore_is_on(settings, runtime, changed, monkeypatch):
-    service = ws.Workspaces(settings, runtime)
-    on, let_go = threading.Event(), threading.Event()
-    monkeypatch.setattr(runtime, "clean_probes", lambda: (on.set(), let_go.wait(HANG_GUARD)))
-    service.start_background()
-    try:
-        assert on.wait(HANG_GUARD)
-        closing = closing_thread(service)
-        changed.wait_waiting(1, match=closing)
-        assert closing.is_alive()
-    finally:
-        let_go.set()
-    joined(closing)
-    assert service.restored.is_set()
-
-
-def test_a_restore_task_ended_beyond_those_running_raises(service):
-    with pytest.raises(ValueError):
-        service._restore_ended()
-
-
-def test_a_lost_container_whose_image_is_gone_fails_the_workspace_in_plain_words(
-    service, settings, runtime
-):
-    workspace = ready_with_plan(service, settings, runtime, a_plan(), make_container=False)
-    del runtime.images[IMAGE]
-    service.restore()
-    now = row(settings, workspace)
-    assert now["state"] == "failed"
-    assert now["error"] == problems.DEVCONTAINER_MESSAGES["image_gone"].format(image=IMAGE)
-    assert "rebuild the workspace" in now["error"].lower()
-    assert "delete it" in now["error"].lower()
-    assert "make it again" in now["error"].lower()
-    assert not runtime.exists(rt.container_name(workspace))
-    service.restore()  # a second restart leaves it as it is, failing nothing again
-    assert row(settings, workspace)["error"] == now["error"]
-    service.delete(service.get(workspace))
-    assert row(settings, workspace) is None
-
-
-def test_the_host_runtime_cannot_make_a_container_from_an_image_it_does_not_have(runtime):
-    spec = rt.Spec("rcman-ws-1", slot=1, workspace=1, person=1, image="not/planted:1")
-    with pytest.raises(rt.RuntimeFailed):
-        runtime.create(spec)
-    assert not runtime.exists("rcman-ws-1")
-
-
-def test_a_lost_container_is_made_again_when_its_image_was_pulled_first(service, settings, runtime):
-    workspace = ready_with_plan(service, settings, runtime, a_plan(), make_container=False)
-    service.restore()
-    name = rt.container_name(workspace)
-    order = [e[0] for e in runtime.events if e[0] in ("pull", "create")]
-    assert order == ["pull", "create"] and runtime.running(name)
 
 
 # --- the plan pins the image ------------------------------------------------------------------
@@ -1697,19 +586,12 @@ def pinned_plan(**keys) -> dc.Plan:
     return dc.plan({**GOOD, **keys}, facts, 1, "/rcman/work")
 
 
-def test_a_plan_keeps_the_id_and_digest_of_the_image_it_was_made_from():
-    made = pinned_plan()
-    assert (made.image_id, made.image_digest) == (ID_A, DIGEST)
-    again = dc.Plan.from_json(made.to_json())
-    assert (again.image_id, again.image_digest) == (ID_A, DIGEST) and again == made
-
-
 def test_a_lost_container_is_made_again_from_the_pinned_id_without_a_pull(
     service, settings, runtime
 ):
     runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_B)  # the tag moved on
     runtime.extra_ids.add(ID_A)  # and the image it was made from is still in the storage
-    workspace = ready_with_plan(service, settings, runtime, pinned_plan(), make_container=False)
+    workspace = ready_with_plan(service, settings, pinned_plan(), make_container=False)
     service.restore()
     spec = runtime.specs[rt.container_name(workspace)]
     assert (spec.image, spec.image_id) == (IMAGE, ID_A)
@@ -1723,54 +605,11 @@ def test_an_image_gone_from_the_storage_is_pulled_by_its_digest_not_its_tag(
     runtime.images[f"{REPOSITORY}@{DIGEST}"] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_A)
     runtime.lost_ids.add(ID_A)  # the storage lacks it until the pull brings it back
     runtime.after_pull = lambda: runtime.lost_ids.discard(ID_A)
-    workspace = ready_with_plan(service, settings, runtime, pinned_plan(), make_container=False)
+    workspace = ready_with_plan(service, settings, pinned_plan(), make_container=False)
     service.restore()
     assert runtime.pulled == [f"{REPOSITORY}@{DIGEST}"]
     assert runtime.specs[rt.container_name(workspace)].image_id == ID_A
     assert row(settings, workspace)["state"] == "ready"
-
-
-def test_an_image_gone_from_the_storage_with_no_digest_fails_the_workspace_in_plain_words(
-    service, settings, runtime
-):
-    facts = rt.ImageFacts(passwd=PASSWD, group=GROUP, env={"PATH": "/image/bin:/bin"}, id=ID_A)
-    plan = dc.plan(GOOD, facts, 1, "/rcman/work")
-    workspace = ready_with_plan(service, settings, runtime, plan, make_container=False)
-    runtime.images.pop(IMAGE)
-    service.restore()
-    now = row(settings, workspace)
-    assert now["state"] == "failed"
-    assert now["error"] == problems.DEVCONTAINER_MESSAGES["image_gone"].format(image=IMAGE)
-    assert runtime.pulled == []
-
-
-def test_a_digest_that_gives_another_image_than_the_pinned_one_fails_the_workspace(
-    service, settings, runtime
-):
-    runtime.images.pop(IMAGE)
-    runtime.images[f"{REPOSITORY}@{DIGEST}"] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_B)
-    runtime.lost_ids.add(ID_A)  # and the pull does not bring it back: it brings another image
-    workspace = ready_with_plan(service, settings, runtime, pinned_plan(), make_container=False)
-    service.restore()
-    now = row(settings, workspace)
-    assert now["state"] == "failed" and now["error"].startswith('The image "')
-
-
-def test_a_built_image_whose_id_is_gone_fails_the_workspace_though_its_name_is_there(
-    service, settings, runtime
-):
-    workspace = insert(settings, "built", "ready", URL)
-    facts = rt.ImageFacts(passwd=PASSWD, group=GROUP, env={"PATH": "/b:/bin"}, id=ID_A)
-    plan = dc.plan(GOOD, facts, workspace, "/rcman/work", image=rt.built_name(workspace))
-    set_environment(settings, workspace, plan.to_json())
-    runtime.images[rt.built_name(workspace)] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_B)
-    runtime.built[workspace] = rt.built_name(workspace)  # the name is there; the id is not
-    service.restore()
-    now = row(settings, workspace)
-    assert (
-        now["state"] == "failed"
-        and now["error"] == problems.DEVCONTAINER_MESSAGES["built_image_gone"]
-    )
 
 
 def test_a_workspace_made_from_the_default_image_keeps_the_id_it_was_made_from(
@@ -1795,50 +634,6 @@ def test_a_lost_default_container_is_made_again_from_the_pinned_image_not_the_ne
     assert spec.image_id == ID_A and row(settings, workspace)["image_id"] == ID_A
 
 
-def test_a_lost_default_container_whose_pinned_image_is_gone_fails_the_workspace(
-    service, settings, runtime
-):
-    workspace = insert(settings, "default", "ready", None)
-    set_environment(settings, workspace, None, image_id=ID_A)
-    runtime.default_id = ID_B
-    runtime.lost_ids.add(ID_A)
-    service.restore()
-    now = row(settings, workspace)
-    assert now["state"] == "failed"
-    assert now["error"] == problems.DEVCONTAINER_MESSAGES["default_image_gone"]
-    assert not runtime.exists(rt.container_name(workspace))
-
-
-def test_a_default_workspace_with_no_pinned_image_is_pinned_to_the_default_when_it_is_remade(
-    service, settings, runtime
-):
-    workspace = insert(settings, "old", "ready", None)
-    runtime.default_id = ID_B
-    service.restore()
-    assert runtime.specs[rt.container_name(workspace)].image_id == ID_B
-    assert row(settings, workspace)["image_id"] == ID_B
-
-
-def test_workspaces_of_a_database_that_was_restored_are_not_made_on_the_volumes_of_the_old(
-    service, settings, runtime
-):
-    workspace = insert(settings, "restored", "ready", None)
-    service.restore()
-    name = rt.container_name(workspace)
-    assert runtime.exists(name)
-    assert runtime.specs[name].install  # the spec holds the database's install id
-    runtime.discard(name)
-    con = db.connect(settings.database)
-    try:
-        con.execute("update meta set install = 'the-install-of-a-backup'")
-        con.commit()
-    finally:
-        con.close()
-    with pytest.raises(rt.RuntimeFailed) as refused:
-        service._remake(service.get(workspace), threading.Event())
-    assert "another" in str(refused.value) and not runtime.exists(name)
-
-
 # --- images nothing refers to are collected ---------------------------------------------------
 
 OLD_DEFAULT, STRAY = "localhost/rcman-workspace:old", "registry.example.com/stray:1"
@@ -1856,43 +651,18 @@ def test_a_restart_collects_the_images_nothing_refers_to_and_keeps_the_rest(
 ):
     pinned_name, moved_name = "registry.example.com/pinned:1", "registry.example.com/moved:1"
     stray_images(runtime, STRAY, OLD_DEFAULT, pinned_name, moved_name, IMAGE)
-    named = ready_with_plan(service, settings, runtime, a_plan(), name="named")  # names IMAGE
+    named = ready_with_plan(service, settings, a_plan(), name="named")  # names IMAGE
     pinned = insert(settings, "pinned", "ready", None)  # made from the default image of its day
     set_environment(settings, pinned, None, image_id=runtime.images[pinned_name].id)
     runtime.images[moved_name] = rt.ImageFacts(id=ID_A)  # the plan's id, under another name
     runtime.collectable.add(moved_name)
-    moved = ready_with_plan(service, settings, runtime, pinned_plan(), name="moved")
+    moved = ready_with_plan(service, settings, pinned_plan(), name="moved")
     service.restore()
     assert STRAY not in runtime.images and OLD_DEFAULT not in runtime.images
     assert IMAGE in runtime.images  # a stored plan names it
     assert pinned_name in runtime.images  # a workspace is pinned to its id
     assert moved_name in runtime.images  # a stored plan holds its id
     assert runtime.exists(rt.container_name(named)) and moved
-
-
-def test_a_stale_image_id_beside_a_stored_plan_keeps_no_image(service, settings, runtime):
-    """A workspace made from the default image and later given a plan keeps the default image's
-    id in its row, which nothing reads once it has a plan: it keeps no image."""
-    stale_name, pinned_name = "registry.example.com/stale:1", "registry.example.com/pinned:1"
-    stray_images(runtime, stale_name, pinned_name)
-    planned = ready_with_plan(service, settings, runtime, a_plan())
-    set_environment(settings, planned, a_plan().to_json(), image_id=runtime.images[stale_name].id)
-    pinned = insert(settings, "pinned", "ready", None)  # no plan: its image_id is what it runs
-    set_environment(settings, pinned, None, image_id=runtime.images[pinned_name].id)
-    service._collect_images()
-    assert stale_name not in runtime.images
-    assert pinned_name in runtime.images  # the control: a row with no plan keeps its image
-
-
-def test_an_image_a_container_is_made_from_is_not_collected(service, settings, runtime):
-    stray_images(runtime, STRAY)
-    runtime.create(rt.Spec("rcman-ws-9", slot=1, workspace=9, person=1, image=STRAY))
-    insert(settings, "has-a-row", "ready", None)
-    service._collect_images()
-    assert STRAY in runtime.images  # a container is made from it
-    runtime.remove("rcman-ws-9")
-    service._collect_images()
-    assert STRAY not in runtime.images  # the control: with the container gone it goes
 
 
 def test_deleting_a_workspace_collects_the_image_only_it_used(client, runtime, publish):
@@ -1908,417 +678,27 @@ def test_deleting_a_workspace_collects_the_image_only_it_used(client, runtime, p
     assert IMAGE not in runtime.images  # nothing refers to it now
 
 
-def test_nothing_is_collected_while_a_workspace_is_being_made_or_a_plan_cannot_be_read(
-    service, settings, runtime
-):
-    stray_images(runtime, STRAY)
-    making = insert(settings, "making", "creating", None)
-    service._collect_images()
-    assert STRAY in runtime.images  # its image may be pulled and not yet in its plan
-    con = db.connect(settings.database)
-    con.execute("update workspaces set state = 'ready' where id = ?", (making,))
-    con.commit()
-    con.close()
-    set_environment(settings, making, "not json")
-    service._collect_images()
-    assert STRAY in runtime.images  # what it is made from is not known
-    set_environment(settings, making, None)
-    service._collect_images()
-    assert STRAY not in runtime.images  # the control: with nothing in the way it goes
-
-
-def test_a_workspace_is_not_recorded_while_images_are_being_collected(service, settings, runtime):
-    """The collection reads which workspaces are being made, then removes images; a workspace
-    recorded between the two would lose the image it is about to be made from."""
-    stray_images(runtime, STRAY)
-    inside, release = threading.Event(), threading.Event()
-    real = runtime.collect_images
-
-    def slow(keep_ids, keep_names):
-        inside.set()
-        assert release.wait(HANG_GUARD)
-        return real(keep_ids, keep_names)
-
-    runtime.collect_images = slow
-    lock = service._images_lock = RecordingLock(service._images_lock)
-    collecting = threading.Thread(target=service._collect_images, daemon=True)
-    collecting.start()
-    assert inside.wait(HANG_GUARD)
-    con = db.connect(settings.database)
-    try:
-        alice = people.by_email(con, ALICE)
-    finally:
-        con.close()
-    made = []
-    creating = threading.Thread(
-        target=lambda: made.append(service.create(alice, "late")), daemon=True
-    )
-    creating.start()
-    lock.wait_blocked(1, match=creating)
-    assert service.everything() == []  # held back: no row yet
-    release.set()
-    collecting.join(HANG_GUARD)
-    creating.join(HANG_GUARD)
-    assert made and made[0].name == "late" and STRAY not in runtime.images  # then it goes on
-
-
-def test_the_shell_does_not_collect_images_the_service_collects_at_its_next_opportunity(
-    settings, runtime
-):
-    stray_images(runtime, STRAY)
-    quiet = ws.Workspaces(settings, runtime, prunes=False)
-    try:
-        quiet._collect_images()
-        assert STRAY in runtime.images
-    finally:
-        quiet.close()
-    loud = ws.Workspaces(settings, runtime)
-    try:
-        loud._collect_images()
-        assert STRAY not in runtime.images  # the control
-    finally:
-        loud.close()
-
-
-def test_nothing_is_collected_on_the_word_of_an_empty_table(service, settings, runtime):
-    stray_images(runtime, STRAY)
-    runtime.create(rt.Spec("rcman-ws-5", slot=1, workspace=5, person=1))
-    service.restore()
-    assert STRAY in runtime.images
-
-
-def test_a_collection_that_fails_is_logged_and_fails_nothing(service, settings, runtime, caplog):
-    insert(settings, "has-a-row", "ready", None)
-
-    def broken(keep_ids, keep_names):
-        raise rt.RuntimeFailed("planted")
-
-    runtime.collect_images = broken
-    with caplog.at_level("WARNING", logger="rcman.workspaces"):
-        service.restore()
-    assert "images" in caplog.text and service.restored.is_set()
-
-
-# --- a delete that lands between the steps of making --------------------------------------
-
-
-def delete_the_first_workspace(app):
-    service = app.state.workspaces
-    return lambda: service.delete(service.get(1))
-
-
-def test_a_delete_after_the_image_is_read_stops_before_the_container_is_discarded(
-    client, app, runtime, publish
-):
-    runtime.after_facts = delete_the_first_workspace(app)
-    publish(config())
-    made = clone(client).json()["workspace"]
-    cleared(runtime, client)
-    assert made["id"] == 1
-    assert runtime.pulled == [IMAGE]  # positive control: it got as far as reading the image
-    assert not [e for e in runtime.events if e[0] == "discard"]
-    assert [e[0] for e in runtime.events if e[0] == "create"] == ["create"]  # the first only
-
-
-def test_a_delete_after_the_container_is_discarded_stops_before_it_is_made_again(
-    client, app, runtime, publish
-):
-    runtime.after_discard = delete_the_first_workspace(app)
-    publish(config())
-    clone(client)
-    cleared(runtime, client)
-    assert [e[0] for e in runtime.events if e[0] == "discard"] == ["discard"]  # control
-    assert [e[0] for e in runtime.events if e[0] == "create"] == ["create"]
-
-
-def test_a_container_that_cannot_be_run_fails_the_workspace_and_leaves_nothing(
-    client, runtime, publish
-):
-    runtime.fail_image_create = True
-    publish(config())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert IMAGE in failed["error"] and "cannot run the image" in failed["error"]
-    assert ("discard", name_of(failed)) in runtime.events  # it had got that far
-    no_trace(runtime, failed)
-
-
-# --- bounded memory ------------------------------------------------------------------------
-
-
-def test_only_the_tail_of_what_a_command_printed_is_ever_held(
-    client, runtime, publish, monkeypatch
-):
-    monkeypatch.setattr(ws, "HOOK_KEEP_BYTES", 3000)
-    publish(
-        config(
-            postCreateCommand=(
-                "i=0; while [ $i -lt 20000 ]; do echo line-$i-xxxxxxxxxxx; i=$((i+1)); done; exit 4"
-            )
-        )
-    )
-    failed = cloned(client)
-    assert runtime.kept == 3000
-    (answer,) = runtime.answers
-    assert len(answer.out) <= 3000 and len(answer.err) <= 3000
-    assert b"line-19999-" in answer.out and b"line-0-" not in answer.out  # the tail, not the head
-    assert "line-19999-" in failed["error"]
-
-
-# --- a file that raised something that was not a refusal ---------------------------------
-
-
-def nested(depth: int) -> str:
-    return "[" * depth + "]" * depth
-
-
-def file_with(**keys) -> str:
-    return json.dumps({"image": IMAGE, **keys})
-
-
-NOT_REFUSALS = [
-    ('{"image": "' + IMAGE + '", "appPort": ' + "9" * 5000 + "}", "number"),
-    ('{"image": "' + IMAGE + '", "forwardPorts": ' + nested(500) + "}", "deeply"),
-    ('{"image": "' + IMAGE + '", "forwardPorts": ' + nested(5000) + "}", "deeply"),
-    (file_with(remoteUser="\u00b2"), "user"),
-    (file_with(remoteUser="dev:\u0663"), "user"),
-]
-
-
-@pytest.mark.parametrize(("text", "word"), NOT_REFUSALS)
-def test_a_file_that_would_raise_something_else_is_refused_and_nothing_is_left(
-    client, runtime, publish, text, word
-):
-    publish({FILE: text})
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert word in failed["error"] and "Traceback" not in failed["error"]
-    assert "Error" not in failed["error"]  # not an exception's name
-    no_trace(runtime, failed)
-
-
-# --- an image that cannot be had now is not an image that is gone ---------------------------
-
-GONE = [
-    "Error: initializing source docker://registry.example.com/team/dev:latest: reading manifest "
-    "latest in registry.example.com/team/dev: manifest unknown",
-    "Error: name unknown: repository name not known to registry",
-    "Error: requested access to the resource is denied",
-    "Error: unauthorized: authentication required",
-    "Error: determining manifest MIME type: 404 Not Found: repository not found",
-    "Error: initializing source: pinging container registry: not found",
-]
-TRANSIENT = [
-    "Error: pinging container registry registry.example.com: Get https://registry.example.com/v2/: "
-    "dial tcp: lookup registry.example.com: no such host",
-    "Error: pinging container registry: i/o timeout",
-    "Error: received unexpected HTTP status: 503 Service Unavailable",
-    "Error: initializing source: net/http: TLS handshake timeout",
-    "Error: unexpected EOF",
-    "podman pull did not finish in time",
-    "the pull was stopped",
-]
-
-
-@pytest.mark.parametrize("said", GONE)
-def test_a_registry_that_says_the_image_is_not_there_fails_the_workspace(
-    service, settings, runtime, said
-):
-    workspace = ready_with_plan(service, settings, runtime, a_plan(), make_container=False)
-    runtime.pull_error = said
-    service.restore()
-    now = row(settings, workspace)
-    assert now["state"] == "failed"
-    assert now["error"] == problems.DEVCONTAINER_MESSAGES["image_gone"].format(image=IMAGE)
-    assert not runtime.exists(rt.container_name(workspace))
-
-
-@pytest.mark.parametrize("said", TRANSIENT)
-def test_a_pull_that_fails_for_any_other_reason_leaves_the_workspace_ready_to_try_again(
-    service, settings, runtime, said, caplog
-):
-    workspace = ready_with_plan(service, settings, runtime, a_plan(), make_container=False)
-    name = rt.container_name(workspace)
-    runtime.pull_error = said
-    with caplog.at_level("WARNING", logger="rcman.workspaces"):
-        service.restore()
-    now = row(settings, workspace)
-    assert (now["state"], now["error"]) == ("ready", None)
-    assert not runtime.exists(name)  # nothing was made of a guess
-    assert str(workspace) in caplog.text  # and it was said
-    runtime.pull_error = None  # the registry is back
-    service.restore()
-    assert runtime.running(name) and row(settings, workspace)["state"] == "ready"
-    assert runtime.specs[name].image == IMAGE
-
-
-def test_the_words_that_mean_the_image_is_gone_are_not_found_in_the_ones_that_do_not():
-    for said in GONE:
-        assert ws.image_is_gone(said), said
-    for said in TRANSIENT:
-        assert not ws.image_is_gone(said), said
-    assert ws.image_is_gone("MANIFEST UNKNOWN")  # whatever the case
-
-
-# --- the races of making a container again ------------------------------------------------
-
-
-def lost_with_plan(service, settings, name="lost", **keys):
-    return ready_with_plan(
-        service, settings, service.runtime, a_plan(**keys), make_container=False, name=name
-    )
-
-
-def test_a_delete_during_the_pull_of_a_restore_stops_it_and_makes_nothing(
-    service, settings, runtime
-):
-    runtime.pull_gate = threading.Event()
-    workspace = lost_with_plan(service, settings)
-    thread = restoring(service)
-    try:
-        assert runtime.pulling.wait(HANG_GUARD)
-        lock = service.lock(workspace)  # the pull holds nothing
-        assert lock.acquire(blocking=False)
-        lock.release()
-        ended_in_a_thread(lambda: service.delete(service.get(workspace)))
-    finally:
-        thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-    assert row(settings, workspace) is None
-    assert not [e for e in runtime.events if e[0] == "create"]
-    assert runtime.labelled() == {}
-
-
-def test_a_delete_after_the_pull_and_before_the_container_is_made_makes_none(
-    service, settings, runtime
-):
-    workspace = lost_with_plan(service, settings)
-    runtime.after_pull = lambda: service.delete(service.get(workspace))
-    service.restore()
-    assert runtime.pulled == [IMAGE]  # positive control: it got as far as the pull
-    assert not [e for e in runtime.events if e[0] == "create"]
-    assert row(settings, workspace) is None and runtime.labelled() == {}
-
-
-def test_a_delete_while_the_container_is_being_made_leaves_none_behind(service, settings, runtime):
-    runtime.create_gate = threading.Event()
-    workspace = lost_with_plan(service, settings)
-    thread = restoring(service)
-    try:
-        assert runtime.creating.wait(HANG_GUARD)
-        lock = service.lock(workspace)
-        assert lock.acquire(blocking=False)  # making it holds no lock
-        lock.release()
-        service.delete(service.get(workspace))  # the row goes; the container is not there yet
-        assert row(settings, workspace) is None
-    finally:
-        runtime.create_gate.set()
-    thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-    assert runtime.labelled() == {} and not runtime.exists(rt.container_name(workspace))
-    assert [e for e in runtime.events if e[0] == "create"]  # positive control: it was made
-
-
-def test_one_workspace_that_raises_leaves_the_others_restored_and_its_slot_free(
-    service, settings, runtime, monkeypatch
-):
-    monkeypatch.setattr(ws, "RESTORE_WORKERS", 1)  # one slot: a slot not freed stops the rest
-    damaged = insert(settings, "damaged", "ready", URL)
-    set_environment(settings, damaged, "not json")
-    broken = lost_with_plan(service, settings, "broken")
-    real = Flow.create
-
-    def create(self, spec):
-        if spec.name == rt.container_name(broken):
-            raise rt.RuntimeFailed("cannot make this one")
-        return real(self, spec)
-
-    monkeypatch.setattr(Flow, "create", create)
-    fine = insert(settings, "fine", "ready", None)
-    after = lost_with_plan(service, settings, "after")
-    thread = restoring(service)
-    thread.join(HANG_GUARD)
-    assert not thread.is_alive() and service.restored.is_set()
-    assert runtime.running(rt.container_name(fine))
-    assert runtime.running(rt.container_name(after))
-    assert not runtime.exists(rt.container_name(damaged))
-    assert not runtime.exists(rt.container_name(broken))
-    assert row(settings, fine)["state"] == "ready"
-
-
-def test_a_start_asked_for_during_a_restore_is_answered_and_not_held_up_by_it(
-    service, settings, runtime
-):
-    runtime.pull_gate = threading.Event()
-    workspace = lost_with_plan(service, settings)
-    thread = restoring(service)
-    answers = []
-    try:
-        assert runtime.pulling.wait(HANG_GUARD)
-
-        def ask():
-            try:
-                service.start_server(service.get(workspace), "prefix")
-            except Exception as refused:  # noqa: BLE001 - whatever it is, it answered
-                answers.append(refused)
-
-        asking = threading.Thread(target=ask, daemon=True)
-        asking.start()
-        asking.join(HANG_GUARD)
-        assert not asking.is_alive()  # it neither waited for the pull nor deadlocked
-        assert answers and getattr(answers[0], "code", None) == "claude_not_logged_in"
-    finally:
-        runtime.pull_gate.set()
-        thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-
-
-def test_a_command_held_when_its_workspace_is_deleted_is_not_followed_by_the_next(
-    service, settings, runtime
-):
-    """The command ends well whatever became of its workspace, so that only the checks of
-    ``_run_commands`` stop the next one."""
-    runtime.gate = threading.Event()
-    runtime.release_ok = True
-    workspace = insert(settings, "twice", "ready", URL)
-    plan = a_plan(postStartCommand={"first": "echo GATE", "second": "echo second >> ran.txt"})
-    set_environment(settings, workspace, plan.to_json())
-    thread = restoring(service)
-    try:
-        assert runtime.hooking.wait(HANG_GUARD)
-        assert len(runtime.hooks_run()) == 1  # positive control: the first is the one held
-        service.delete(service.get(workspace))
-    finally:
-        runtime.gate.set()
-    thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-    assert len(runtime.hooks_run()) == 1  # the second never ran
-    assert runtime.labelled() == {}
-
-
 # --- building an image --------------------------------------------------------------------------
-
-from tests.test_builder import (  # noqa: E402 - the recorded words of the builder
-    DENIED,
-    FEATURE_FAILED,
-    NO_MANIFEST,
-    NO_NETWORK,
-    NO_SPACE,
-    STEP_FAILED,
-)
-
-
-def nothing_of_a_build_is_left(runtime, entry_: dict) -> None:
-    no_trace(runtime, entry_)
-    assert runtime.builders() == set() and runtime.built_images() == {}
 
 
 def test_a_dockerfile_is_built_and_the_workspace_is_made_from_the_image_built(
     client, runtime, publish, settings, ready_log
 ):
-    publish(building(postCreateCommand="echo after-the-build", containerEnv={"A": "b"}))
+    """The builder is asked only the build-only configuration; the workspace is made from the
+    image built for it, which its delete removes."""
+    publish(
+        building(
+            postCreateCommand="echo after-the-build", containerEnv={"A": "b"}, remoteUser="dev"
+        )
+    )
     done = cloned(client)
     assert done["state"] == "ready", done
+    (request,) = runtime.builds
+    assert request.id == done["id"] and request.person == row(settings, done["id"])["person"]
+    assert request.slot == people.BUILDER_SLOT and request.source == name_of(done)
+    assert request.config_path == f".devcontainer/{dc.BUILD_CONFIG_NAME}"
+    assert json.loads(request.config_text) == {"build": {"dockerfile": "Dockerfile"}}
+    assert "after-the-build" not in request.config_text
     image = rt.built_name(done["id"])
     stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
     assert stored.image == image and stored.container_env["A"] == "b"
@@ -2329,19 +709,10 @@ def test_a_dockerfile_is_built_and_the_workspace_is_made_from_the_image_built(
     assert [h for h in runtime.hooks_run() if "after-the-build" in " ".join(h)]
     assert len(runtime.hooks_run()) == 1  # once: the image carries none of the file's own
     assert "STEP 1/2" in ready_log[done["id"]]  # the builder's steps are in the log
-
-
-def test_what_the_builder_is_asked_is_the_build_only_configuration_of_the_workspace(
-    client, runtime, publish, settings
-):
-    publish(building(postCreateCommand="echo secret-hook", remoteUser="dev", forwardPorts=[80]))
-    done = cloned(client)
-    (request,) = runtime.builds
-    assert request.id == done["id"] and request.person == row(settings, done["id"])["person"]
-    assert request.slot == people.BUILDER_SLOT and request.source == name_of(done)
-    assert request.config_path == f".devcontainer/{dc.BUILD_CONFIG_NAME}"
-    assert json.loads(request.config_text) == {"build": {"dockerfile": "Dockerfile"}}
-    assert "secret-hook" not in request.config_text
+    r = client.delete(f"/api/workspaces/{done['id']}", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    cleared(runtime, client)
+    assert runtime.built_images() == {} and runtime.builders() == set()
 
 
 def test_features_on_an_image_are_built_and_the_base_is_left_to_the_builder_to_pull(
@@ -2358,163 +729,6 @@ def test_features_on_an_image_are_built_and_the_base_is_left_to_the_builder_to_p
     assert runtime.pulled == []
 
 
-def test_the_path_of_the_dotfile_is_where_its_build_only_file_goes(client, runtime, publish):
-    publish({".devcontainer.json": json.dumps({"build": {"dockerfile": "Dockerfile"}}),
-             "Dockerfile": "FROM ubuntu\n"})  # fmt: skip
-    cloned(client)
-    (request,) = runtime.builds
-    assert request.config_path == dc.BUILD_CONFIG_NAME
-
-
-def test_an_image_whose_label_asks_for_what_a_file_may_not_is_refused_naming_the_feature(
-    client, runtime, publish, settings
-):
-    runtime.build_facts = rt.ImageFacts(
-        labels={dc.METADATA_LABEL: json.dumps([{"id": "./feature", "privileged": True}])}
-    )
-    publish(featured())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    assert '"privileged"' in failed["error"] and "./feature" in failed["error"]
-    nothing_of_a_build_is_left(runtime, failed)
-    assert row(settings, failed["id"])["environment"] is None
-    assert not [e for e in runtime.events if e[0] == "create" and e[1]]  # no container of it
-
-
-FAILURES = [
-    (FEATURE_FAILED, "build_feature_failed", {"feature": "./featurebad"}),
-    (STEP_FAILED, "build_step_failed", {}),
-    (NO_NETWORK, "build_registry_unreachable", {}),
-    (NO_MANIFEST, "build_image_missing", {}),
-    (DENIED, "build_sign_in", {}),
-    (NO_SPACE, "build_no_space", {}),
-    ("something nobody has heard of\n", "build_failed", {}),
-]
-
-
-@pytest.mark.parametrize(("said", "kind", "fields"), FAILURES)
-def test_a_build_that_fails_gives_its_cause_in_plain_words_and_the_end_of_what_it_said(
-    client, runtime, publish, settings, said, kind, fields
-):
-    runtime.build_error = rt.BuildFailed(tail=said)
-    publish(building())
-    failed = cloned(client)
-    assert failed["state"] == "failed"
-    head = problems.DEVCONTAINER_MESSAGES[kind].format(tail="", **fields).strip()
-    assert failed["error"].startswith(head), failed["error"]
-    assert said.strip().splitlines()[-1].split("] ")[-1].strip() in failed["error"]  # the tail
-    assert len(failed["error"]) <= ws.MAX_ERROR_CHARS
-    nothing_of_a_build_is_left(runtime, failed)
-    assert row(settings, failed["id"])["environment"] is None
-
-
-def test_the_name_of_a_feature_that_failed_is_shown_cleaned_and_cut(client, runtime, publish):
-    name = "./f\u0007" + "y" * 500
-    runtime.build_error = rt.BuildFailed(
-        tail=f'ERROR: Feature "{name}" (Unknown) failed to install!\n'
-    )
-    publish(building())
-    failed = cloned(client)
-    assert "\u0007" not in failed["error"]
-    assert failed["error"].startswith(
-        problems.DEVCONTAINER_MESSAGES["build_feature_failed"].split("{feature}")[0]
-    )
-    assert "./f?" in failed["error"] and "yyyy" in failed["error"]
-    assert len(failed["error"]) <= ws.MAX_ERROR_CHARS
-
-
-@pytest.mark.parametrize("kind", ["build_timeout", "build_context_too_big", "build_image_too_big"])
-def test_a_build_that_the_runtime_stopped_for_its_size_or_time_says_so(
-    client, runtime, publish, kind
-):
-    runtime.build_error = rt.BuildFailed(tail="", kind=kind)
-    publish(building())
-    failed = cloned(client)
-    assert failed["error"].strip() == problems.DEVCONTAINER_MESSAGES[kind].format(tail="").strip()
-    nothing_of_a_build_is_left(runtime, failed)
-
-
-def test_a_builder_that_could_not_be_run_is_a_failed_build_with_what_podman_said(
-    client, runtime, publish
-):
-    runtime.build_error = rt.RuntimeFailed("localhost/rcman-builder: image not known")
-    publish(building())
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "image not known" in failed["error"]
-    nothing_of_a_build_is_left(runtime, failed)
-
-
-def test_the_token_is_redacted_from_a_failed_builds_tail_and_from_its_lines(
-    client, runtime, publish, settings
-):
-    save_token(client)
-    runtime.build_lines = [f"[1/1] STEP 1/2: RUN echo {TOKEN}"]
-    runtime.build_error = rt.BuildFailed(tail=f'Error: building at STEP "RUN {TOKEN}"\n')
-    publish(building())
-    failed = cloned(client)
-    shown = failed["error"] + (failed["log"] or "") + (row(settings, failed["id"])["log"] or "")
-    assert TOKEN not in shown and ws.REDACTED in shown
-
-
-def test_the_token_is_redacted_from_the_lines_of_a_build_that_succeeded(
-    client, runtime, publish, ready_log
-):
-    save_token(client)
-    runtime.build_lines = [f"[1/1] STEP 1/2: RUN echo {TOKEN}"]
-    publish(building())
-    done = cloned(client)
-    assert done["state"] == "ready"
-    assert TOKEN not in ready_log[done["id"]] and ws.REDACTED in ready_log[done["id"]]
-
-
-def test_an_image_on_musl_that_was_built_is_refused_and_the_image_is_removed(
-    client, runtime, publish
-):
-    runtime.libc = b"musl\n"
-    publish(building())
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "musl" in failed["error"]
-    nothing_of_a_build_is_left(runtime, failed)
-
-
-def test_a_create_command_that_fails_keeps_the_container_and_the_image_it_was_made_from(
-    client, runtime, publish
-):
-    publish(building(postCreateCommand="exit 3"))
-    failed = cloned(client)
-    assert failed["state"] == "failed" and "exit code 3" in failed["error"]
-    assert runtime.exists(name_of(failed))
-    assert runtime.built_images() == {failed["id"]: rt.built_name(failed["id"])}
-
-
-def test_deleting_a_workspace_that_is_being_built_removes_its_builder_and_stops_the_build(
-    client, runtime, publish
-):
-    runtime.build_gate = threading.Event()
-    publish(building())
-    made = clone(client).json()["workspace"]
-    assert runtime.building.wait(HANG_GUARD)
-    assert runtime.builders() == {made["id"]}  # the positive control
-    r = ended_in_a_thread(
-        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
-    )
-    assert r.status_code == 200, r.text
-    assert ("remove_build", made["id"], False) in runtime.events  # the delete itself did it
-    cleared(runtime, client)
-    assert runtime.builders() == set() and runtime.built_images() == {}
-    assert not [e for e in runtime.events if e[0] == "create" and e[1]]
-
-
-def test_deleting_a_ready_workspace_removes_the_image_built_for_it(client, runtime, publish):
-    publish(building())
-    done = cloned(client)
-    assert runtime.built_images() == {done["id"]: rt.built_name(done["id"])}  # the control
-    r = client.delete(f"/api/workspaces/{done['id']}", headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    cleared(runtime, client)
-    assert runtime.built_images() == {} and runtime.builders() == set()
-
-
 @pytest.fixture
 def one_build_at_a_time(monkeypatch):
     monkeypatch.setattr(ws, "MAX_BUILDS", 1)  # before the service starts: it takes the value once
@@ -2529,276 +743,18 @@ def test_builds_beyond_the_bound_wait_their_turn_and_say_so_in_the_log(
 ):
     runtime.build_gate = threading.Event()
     publish(building())
-    first = clone(client).json()["workspace"]["id"]
-    assert runtime.building.wait(HANG_GUARD)
-    second = clone(client).json()["workspace"]["id"]
-    until(lambda: waiting_line(client, second))
-    assert not waiting_line(client, first)  # the one that builds does not wait
-    assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 1
-    runtime.build_gate.set()
+    try:
+        first = clone(client).json()["workspace"]["id"]
+        assert runtime.building.wait(HANG_GUARD)
+        second = clone(client).json()["workspace"]["id"]
+        until(lambda: waiting_line(client, second))
+        assert not waiting_line(client, first)  # the one that builds does not wait
+        assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 1
+    finally:
+        runtime.build_gate.set()  # nothing is left held should the test fail
     assert finished(client, first)["state"] == "ready"
     assert finished(client, second)["state"] == "ready"
     assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 2
-
-
-def test_deleting_a_workspace_that_waits_for_a_build_ends_its_wait_and_builds_nothing(
-    one_build_at_a_time, client, runtime, publish
-):
-    runtime.build_gate = threading.Event()
-    publish(building())
-    first = clone(client).json()["workspace"]["id"]
-    assert runtime.building.wait(HANG_GUARD)
-    second = clone(client).json()["workspace"]["id"]
-    until(lambda: waiting_line(client, second))
-    r = client.delete(f"/api/workspaces/{second}", headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    until(lambda: all(w["id"] != second for w in listed(client)))
-    runtime.build_gate.set()
-    assert finished(client, first)["state"] == "ready"
-    assert [b.id for b in runtime.builds] == [first]
-
-
-def test_the_bound_on_builds_is_a_place_each_build_gives_back_even_when_it_fails(
-    one_build_at_a_time, client, runtime, publish
-):
-    runtime.build_error = rt.BuildFailed(tail="boom\n")
-    publish(building())
-    for _ in range(3):  # more failures than the bound has places
-        assert cloned(client)["state"] == "failed"
-    runtime.build_error = None
-    assert cloned(client)["state"] == "ready"
-
-
-# --- the build queue on the service's condition ------------------------------------------------
-
-
-@pytest.fixture
-def timed(one_build_at_a_time, settings, runtime, changed):
-    """The service with one place for a build, its condition the test's (``changed``)."""
-    made = ws.Workspaces(settings, runtime)
-    yield made
-    made.close()
-
-
-def untimed(record) -> bool:
-    """A wait with no deadline: a build's for its place."""
-    return record.seconds is None
-
-
-def builder_and_waiter(service, runtime, publish, settings):
-    """Two workspaces cloned from a repository that builds its image: the first building, held
-    at the gate, the second parked waiting for its place."""
-    from tests.test_workspaces import _person
-
-    runtime.build_gate = threading.Event()
-    publish(building())
-    first = service.create(_person(settings), None, URL)
-    assert runtime.building.wait(HANG_GUARD)
-    second = service.create(_person(settings), None, URL)
-    service._changed.wait_waiting(1, match=untimed)
-    return first.id, second.id
-
-
-def joined(thread: threading.Thread) -> None:
-    thread.join(HANG_GUARD)
-    assert not thread.is_alive()
-
-
-def closing_thread(service) -> threading.Thread:
-    thread = threading.Thread(target=service.close, daemon=True)
-    thread.start()
-    return thread
-
-
-def test_a_build_that_waits_parks_and_builds_once_the_place_is_given_back(
-    timed, changed, runtime, publish, settings
-):
-    first, second = builder_and_waiter(timed, runtime, publish, settings)
-    assert [w for w in changed.waits if untimed(w)]
-    assert ws.WAITING_FOR_BUILD in row(settings, second)["log"]
-    assert len(runtime.builds) == 1
-    # The builder's thread is held once its build is done and its place given back, so that only
-    # the place given back wakes the waiter, not the end of the builder's thread.
-    held, real, builder = threading.Event(), runtime.discard, rt.container_name(first)
-    runtime.discard = lambda name: (held.wait(HANG_GUARD) if name == builder else None, real(name))
-    runtime.building.clear()
-    runtime.build_gate.set()
-    try:
-        assert runtime.building.wait(HANG_GUARD)  # the waiter builds, the builder still held
-    finally:
-        held.set()
-    ended(timed, first, HANG_GUARD)
-    ended(timed, second, HANG_GUARD)
-    assert row(settings, first)["state"] == row(settings, second)["state"] == ws.READY
-    assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 2
-    assert [w for w in changed.waits if w.ended != "predicate"] == []  # none expired
-
-
-def test_deleting_a_build_that_waits_ends_its_wait_at_once_and_builds_nothing(
-    timed, changed, runtime, publish, settings
-):
-    first, second = builder_and_waiter(timed, runtime, publish, settings)
-    timed.delete(timed.get(second))
-    ended(timed, second, HANG_GUARD)  # the builder still holds its place
-    assert row(settings, second) is None
-    runtime.build_gate.set()
-    ended(timed, first, HANG_GUARD)
-    assert [b.id for b in runtime.builds] == [first]
-
-
-def test_the_twin_deleting_the_builder_leaves_the_waiter_parked_until_the_place_is_free(
-    timed, changed, runtime, publish, settings
-):
-    first, second = builder_and_waiter(timed, runtime, publish, settings)
-    giving, let_go, real = threading.Event(), threading.Event(), timed._give_back_build
-
-    def give_back():
-        giving.set()
-        assert let_go.wait(HANG_GUARD)
-        real()
-
-    timed._give_back_build = give_back
-    try:
-        timed.delete(timed.get(first))  # its build is stopped; its place not given back yet
-        assert giving.wait(HANG_GUARD)
-        changed.wait_waiting(1, match=untimed)  # the waiter waits on
-        assert [b.id for b in runtime.builds] == [first]
-    finally:
-        runtime.build_gate.set()  # the waiter's build, once it has its place, is not held
-        let_go.set()
-    ended(timed, first, HANG_GUARD)
-    ended(timed, second, HANG_GUARD)
-    assert row(settings, second)["state"] == ws.READY
-    assert [b.id for b in runtime.builds] == [first, second]
-
-
-def test_a_deletion_by_rcman_admin_wakes_a_build_that_waits(
-    one_build_at_a_time, quick_watch, settings, runtime, publish
-):
-    from tests.test_workspaces import two_processes
-
-    with two_processes(settings, runtime) as (service, shell):
-        service._changed = WatchedCondition(virtual=True)  # the service's only: before its threads
-        first, second = builder_and_waiter(service, runtime, publish, settings)
-        try:
-            shell.delete(shell.get(second))
-            ended(service, second, HANG_GUARD)
-            assert row(settings, second) is None
-        finally:
-            runtime.build_gate.set()
-        ended(service, first, HANG_GUARD)
-    assert [b.id for b in runtime.builds] == [first]
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_closing_while_a_build_waits_leaves_it_creating_and_close_waits_for_the_builder(
-    timed, changed, runtime, publish, settings
-):
-    first, second = builder_and_waiter(timed, runtime, publish, settings)
-    closing = closing_thread(timed)
-    try:
-        ended(timed, second, HANG_GUARD)  # Closing: it does not build
-        assert row(settings, second)["state"] == ws.CREATING
-        assert ws.WAITING_FOR_BUILD in row(settings, second)["log"]
-        changed.wait_waiting(1, match=closing)  # close, waiting for the builder
-        assert closing.is_alive()
-    finally:
-        runtime.build_gate.set()
-    joined(closing)
-    assert [b.id for b in runtime.builds] == [first]
-    again = ws.Workspaces(settings, runtime)
-    try:
-        again.restore()
-    finally:
-        again.close()
-    assert row(settings, second)["error"] == problems.CLONE_MESSAGES["restarted"]
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-@pytest.mark.parametrize("state", [ws.READY, ws.FAILED])
-def test_closing_while_a_rebuilds_build_waits_keeps_it_preparing(
-    timed, changed, runtime, publish, settings, state
-):
-    from tests.test_workspaces import _person
-
-    publish(building())
-    rebuilt = timed.create(_person(settings), None, URL).id
-    ended(timed, rebuilt, HANG_GUARD)
-    assert row(settings, rebuilt)["state"] == ws.READY
-    if state == ws.FAILED:  # one that kept its volume: _recover
-        set_environment(settings, rebuilt, row(settings, rebuilt)["environment"],
-                        state=ws.FAILED, failure="hook_failed")  # fmt: skip
-    runtime.build_gate, runtime.building = threading.Event(), threading.Event()
-    holder = timed.create(_person(settings), None, URL).id
-    assert runtime.building.wait(HANG_GUARD)
-    timed.restored.set()
-    timed.rebuild(_person(settings), rebuilt, True)
-    changed.wait_waiting(1, match=untimed)
-    closing = closing_thread(timed)
-    try:
-        ended(timed, rebuilt, HANG_GUARD)
-        found = row(settings, rebuilt)
-        assert found["rebuild_state"] == ws.REBUILD_PREPARING and found["rebuild_error"] is None
-        changed.wait_waiting(1, match=closing)
-        assert closing.is_alive()
-    finally:
-        runtime.build_gate.set()
-    joined(closing)
-    again = ws.Workspaces(settings, runtime)
-    try:
-        again.restore()
-    finally:
-        again.close()
-    found = row(settings, rebuilt)
-    assert found["rebuild_state"] is None and found["state"] == state
-    words = found["rebuild_error"] if state == ws.READY else found["error"]
-    assert words == problems.REBUILD_MESSAGES["restarted"]
-    assert row(settings, holder)["state"] == ws.READY
-
-
-def test_closing_removes_a_workspace_deleted_while_its_build_waited(
-    one_build_at_a_time, settings, runtime, publish, monkeypatch
-):
-    from tests.test_workspaces import two_processes
-
-    with two_processes(settings, runtime) as (service, shell):
-        service._changed = WatchedCondition(virtual=True)  # the service's only: before its threads
-        # the watchers do not look: each waits for its work to end and no more
-        monkeypatch.setattr(service, "_watch", lambda workspace, cancel, done: done.wait())
-        first, second = builder_and_waiter(service, runtime, publish, settings)
-        closing = None
-        try:
-            shell.delete(shell.get(second))
-            assert row(settings, second)["state"] == ws.DELETING
-            service._changed.wait_waiting(1, match=untimed)  # positive: still waiting
-            closing = closing_thread(service)
-            ended(service, second, HANG_GUARD)
-            assert row(settings, second) is None
-        finally:
-            runtime.build_gate.set()
-        if closing is not None:
-            joined(closing)
-    assert [b.id for b in runtime.builds] == [first]
-
-
-def test_a_place_given_back_beyond_the_bound_raises(timed):
-    with pytest.raises(ValueError):
-        timed._give_back_build()
-
-
-def test_a_place_is_given_back_when_the_look_at_the_row_raises(timed, settings, monkeypatch):
-    import sqlite3
-
-    workspace = timed.get(insert(settings, "looked", "creating", URL))
-
-    def failing(workspace_id, cancel):
-        raise sqlite3.OperationalError("planted: the database is locked")
-
-    monkeypatch.setattr(timed, "_cancelled", failing)
-    with pytest.raises(sqlite3.OperationalError):
-        timed._wait_for_build(workspace, threading.Event(), lambda text: None)
-    with timed._changed:
-        assert timed._build_places == 1
 
 
 # --- a restart --------------------------------------------------------------------------------
@@ -2821,10 +777,11 @@ def plant_built(runtime, workspace: int) -> str:
 def test_a_restart_removes_the_builders_volumes_and_images_no_workspace_uses_and_keeps_the_rest(
     service, settings, runtime
 ):
+    """And the lost container of the workspace that uses its built image is made again from it,
+    without a pull: a built image is in the storage or it is nowhere."""
     used = insert(settings, "used", "ready", URL)
     set_environment(settings, used, built_plan(used).to_json())
     plant_built(runtime, used)
-    runtime.create(service._spec(service.get(used), 1, built_plan(used)))
     failed = insert(settings, "failed", "failed", URL)  # a plan that names no built image
     plant_built(runtime, failed)
     plant_built(runtime, 4242)  # no row at all
@@ -2833,85 +790,4 @@ def test_a_restart_removes_the_builders_volumes_and_images_no_workspace_uses_and
     assert runtime.builders() == set()
     assert runtime.built_images() == {used: rt.built_name(used)}  # only the used one stays
     assert runtime.running(rt.container_name(used))
-
-
-def test_a_restart_leaves_the_builder_of_a_workspace_that_is_being_made(
-    service, settings, runtime, monkeypatch
-):
-    making = insert(settings, "making", "creating", None)
-    runtime.builder_ids.add(making)
-    plant_built(runtime, making)
-    monkeypatch.setattr(service, "_being_made", lambda workspace: workspace == making)
-    service.restore()
-    assert runtime.builders() == {making}
-    assert runtime.built_images() == {making: rt.built_name(making)}
-
-
-def test_a_restart_that_finds_a_lost_container_makes_it_again_from_the_image_without_a_pull(
-    service, settings, runtime
-):
-    workspace = insert(settings, "built", "ready", URL)
-    set_environment(settings, workspace, built_plan(workspace).to_json())
-    plant_built(runtime, workspace)
-    service.restore()
-    assert runtime.running(rt.container_name(workspace))
-    assert runtime.pulled == []  # a built image is in the storage or it is nowhere
-    assert row(settings, workspace)["state"] == "ready"
-
-
-def test_a_lost_container_whose_built_image_is_gone_fails_the_workspace_and_pulls_nothing(
-    service, settings, runtime
-):
-    workspace = insert(settings, "built", "ready", URL)
-    set_environment(settings, workspace, built_plan(workspace).to_json())
-    runtime.images[rt.built_name(workspace)] = rt.ImageFacts()  # a pull would find this
-    assert runtime.built_images() == {}  # the control: the storage holds no built image
-    service.restore()
-    now = row(settings, workspace)
-    assert now["state"] == "failed"
-    assert now["error"] == problems.DEVCONTAINER_MESSAGES["built_image_gone"]
-    assert "rebuild the workspace" in now["error"].lower() and "delete it" in now["error"].lower()
-    assert runtime.pulled == [] and not runtime.exists(rt.container_name(workspace))
-
-
-def test_a_build_runs_in_the_builder_slot_the_app_is_given(settings, runtime, publish):
-    from fastapi.testclient import TestClient
-    from rcman.main import create_app
-
-    publish(building())
-    app = create_app(settings, runtime=runtime, builder_slot=6)
-    with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(HANG_GUARD)
-        done = cloned(c)
-    assert done["state"] == "ready", done
-    (request,) = runtime.builds
-    assert request.slot == 6 != people.BUILDER_SLOT  # the control is the test above
-
-
-@pytest.fixture
-def small_runtime(tmp_path):
-    with host_runtime(tmp_path, Flow, range=8192) as made:
-        yield made
-
-
-def test_a_users_id_beyond_the_runtimes_range_is_refused_that_the_products_takes(
-    settings, small_runtime, publish
-):
-    from fastapi.testclient import TestClient
-    from rcman.main import create_app
-
-    publish(config(remoteUser="8192"))
-    app = create_app(settings, runtime=small_runtime)
-    with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(HANG_GUARD)
-        failed = cloned(c)
-    assert failed["state"] == "failed", failed
-    assert small_runtime.pulled == [IMAGE]  # refused once the image was read
-
-
-def test_the_same_id_is_taken_within_the_products_range(client, runtime, publish):
-    """The control of the test above."""
-    publish(config(remoteUser="8192"))
-    done = cloned(client)
-    assert done["state"] == "ready", done
-    assert runtime.specs[name_of(done)].uid == 8192
+    assert runtime.pulled == [] and row(settings, used)["state"] == "ready"

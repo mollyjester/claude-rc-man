@@ -49,8 +49,8 @@ and keep iterating with them until you are satisfied with the outcome.
 - A runner's brief names the commands, the log files and the lines to report:
   each part's totals, collected count, each failing test with its first error
   line, and each exit code. A foreground command is cut off at ten minutes,
-  shorter than `make check`, and a background command is stopped when the
-  runner hands back, however far the run has got. So
+  and a background command is stopped when the runner hands back, however far
+  the run has got. So
   a run that can last longer than ten minutes is started in the background
   with a timeout long enough for it, its exit code appended to its log. The
   runner waits for the background command's own completion notice, and hands

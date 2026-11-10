@@ -10,8 +10,6 @@ handed, the tier's guard from its start, and the run itself is ended by ``timeou
 the guard, so that a run whose test was itself killed ends too. Those two bounds only end a run
 nothing killed or released (the timing guard's named pattern "killed run",
 tests/test_timing_guard.py).
-FirstThreadEnded runs a process whose first thread has ended while another runs, which
-counts as running (held_folders.running).
 
 Everything read from a report is checked before it is used: a report is read only
 once it is complete, and a path in it only if it lies under the test's own tmp_path or
@@ -33,7 +31,6 @@ import sys
 import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import IO
 
 from devtools import held_folders as hf
 from tests.collected import child_env
@@ -63,17 +60,6 @@ def report(name: str, data: dict) -> None:
     partial = folder / f".{name}{PARTIAL}"
     partial.write_text(json.dumps(data), encoding="utf-8")
     os.rename(partial, folder / f"{name}.json")
-
-
-def shell_reporter(folder: Path) -> str:
-    """A shell function, ``report NAME JSON``, for a script a test plants, that writes
-    as report() does."""
-    q = shlex.quote(str(folder))
-    return (
-        "report() {\n"
-        f'  printf "%s" "$2" > {q}/."$1"{PARTIAL} && mv -f {q}/."$1"{PARTIAL} {q}/"$1".json\n'
-        "}\n"
-    )
 
 
 def hold() -> None:
@@ -216,92 +202,6 @@ def stem() -> Iterator[str]:
     killed test's are cleared by the next stem."""
     with hf.held(STEM, remover=_remove_stem) as folder:
         yield folder.name + "-"
-
-
-# --- a process whose first thread has ended ---------------------------------------------
-
-# Run with ``python -I``: a second thread waits on the read end the first argument names, and
-# the first thread then ends, as a multi-threaded process's first thread can while the others
-# are still exiting.
-_FIRST_THREAD_ENDS = """\
-import ctypes, os, sys, threading
-threading.Thread(target=os.read, args=(int(sys.argv[1]), 1)).start()
-ctypes.CDLL(None).pthread_exit(None)
-"""
-
-# How a process reads (held_folders.state_and_threads) once its first thread has ended while
-# another thread runs, and once all its threads have ended.
-FIRST_THREAD_ENDED = ("Z", 2)
-ENDED = ("Z", 1)
-
-
-def wait_for_state(pid: int, wanted: tuple[str, int]) -> None:
-    """Wait until ``pid`` reads ``wanted`` (held_folders.state_and_threads)."""
-    until(lambda: hf.state_and_threads(pid) == wanted)
-
-
-class FirstThreadEnded:
-    """A process whose first thread has ended while its second waits: its stat reads
-    FIRST_THREAD_ENDED, and it holds its open files, ``holding`` among them, until release()
-    lets the second thread end too. ``argv`` runs it, with ``read_end`` given to it as that same
-    descriptor; start() runs it in a session of its own, closes this process's ``holding``, and
-    waits until its first thread has ended. Leaving the ``with`` releases it, and ends and reaps
-    what start() ran."""
-
-    def __init__(self, tmp_path: Path, holding: IO | None = None):
-        script = tmp_path / "first_thread_ends.py"
-        script.write_text(_FIRST_THREAD_ENDS, encoding="utf-8")
-        self.read_end, self._write_end = os.pipe()
-        self.argv = [sys.executable, "-I", str(script), str(self.read_end)]
-        self._holding = holding
-        self.proc: subprocess.Popen | None = None
-
-    def __enter__(self) -> FirstThreadEnded:
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.release()
-        os.close(self.read_end)
-        if self._holding is not None:
-            self._holding.close()
-        if self.proc is not None:
-            try:
-                self.proc.communicate(timeout=tier_guard())
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.communicate()
-
-    def start(self) -> int:
-        """Run it in a session of its own; its pid, once its first thread has ended. One that
-        ends instead fails at once, with what it said."""
-        kept = () if self._holding is None else (self._holding.fileno(),)
-        self.proc = subprocess.Popen(
-            self.argv,
-            pass_fds=(self.read_end, *kept),
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        if self._holding is not None:
-            self._holding.close()  # the process holds it now
-            self._holding = None
-
-        def first_thread_ended() -> bool:
-            found = hf.state_and_threads(self.proc.pid)
-            if found in (None, ENDED):
-                said = self.proc.communicate()[1].decode(errors="replace")
-                code = self.proc.returncode
-                raise RuntimeError(f"the process ended instead, with {code}:\n{said}")
-            return found == FIRST_THREAD_ENDED
-
-        until(first_thread_ended)
-        return self.proc.pid
-
-    def release(self) -> None:
-        """Let its second thread end, by closing the pipe's write end."""
-        if self._write_end is not None:
-            os.close(self._write_end)
-            self._write_end = None
 
 
 # --- the run -----------------------------------------------------------------------------

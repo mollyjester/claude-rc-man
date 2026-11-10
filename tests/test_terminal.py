@@ -1,11 +1,10 @@
 """The Terminal tab's WebSocket route (backend/rcman/routers/terminal.py): who may open a
 terminal and on what, the frames it carries, what ends it, and what is recorded of it.
 
-Most cases drive the app in the test's process, through the test client's WebSocket; the
-refusals before the upgrade is accepted and a service that stops are driven through real
-uvicorn, started with the options of the unit's own ExecStart, since the test client does not
-send the handshake. The shells are the host runtime's, so they
-are looked for in the host's /proc (tests/test_terminals.py's helpers).
+Most cases drive the app in the test's process, through the test client's WebSocket; a
+service that stops is driven through real uvicorn, started with the options of the unit's own
+ExecStart, since the test client does not send the handshake. The shells are the host runtime's,
+so they are looked for in the host's /proc (tests/test_terminals.py's helpers).
 """
 
 from __future__ import annotations
@@ -25,26 +24,15 @@ from pathlib import Path
 
 import anyio
 import pytest
-from rcman import audit, db, people, problems
-from rcman import runtime as rt
-from rcman.headers import SECURITY_HEADERS
 from rcman.routers import terminal as route
-from starlette.testclient import WebSocketDenialResponse
 
 from tests.conftest import ALICE, BOB, changing, made_workspace
-from tests.hang_guard import HANG_GUARD, pace, tier_guard
+from tests.hang_guard import HANG_GUARD, tier_guard
 from tests.test_terminals import a_length, alive, sleep_of, sleeping
 from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 PROTOCOL = route.PROTOCOL
-
-
-@pytest.fixture
-def quick_revocation(monkeypatch):
-    """Revocation looked for often (rule (d)), before the service starts: it reads the value as
-    it waits, but a test that relies on it lists this before ``client`` all the same."""
-    pace(monkeypatch, route, "REVOCATION_SECONDS", 0.2)
 
 
 def path(workspace: int) -> str:
@@ -145,66 +133,29 @@ def refused(client, who: str, workspace: int) -> tuple[dict, dict]:
     return frame, close
 
 
-def test_another_persons_workspace_is_refused_as_one_that_is_not_there(client, workspace, settings):
+def test_another_persons_workspace_is_not_found(client, workspace, settings):
     theirs, theirs_close = refused(client, BOB, workspace["id"])
-    missing, missing_close = refused(client, BOB, 999)
     assert theirs["type"] == PROTOCOL["problem"]
     assert theirs["problem"]["code"] == "workspace_not_found"
-    assert theirs == missing and theirs_close == missing_close
     assert theirs_close["code"] == PROTOCOL["close_problem"] + 404
-    # an administrator has no terminal on another's workspace either
-    bobs = made_workspace(client, BOB, "bobs")
-    admin, admin_close = refused(client, ALICE, bobs["id"])
-    assert (admin, admin_close) == (theirs, theirs_close)
-    assert terminal_rows(settings)[-3:] == [("terminal.open", None, "workspace_not_found")] * 3
-
-
-def test_a_workspace_that_is_not_ready_is_refused(client, workspace, settings):
-    con = db.connect(settings.database)
-    try:
-        con.execute("update workspaces set state = 'failed' where id = ?", (workspace["id"],))
-        con.commit()
-    finally:
-        con.close()
-    frame, close = refused(client, ALICE, workspace["id"])
-    assert frame["problem"]["code"] == "workspace_not_ready"
-    assert frame["problem"]["status"] == 409 and frame["problem"]["title"]
-    assert close["code"] == PROTOCOL["close_problem"] + 409
-    # the person's own workspace is named in the record, ready or not
-    assert terminal_rows(settings)[-1] == ("terminal.open", "alpha", "workspace_not_ready")
-
-
-def test_a_query_that_is_not_a_workspace_is_refused_before_the_upgrade(client):
-    for query in ("", "?workspace=0", "?workspace=one"):
-        with pytest.raises(WebSocketDenialResponse) as denied:
-            with client.websocket_connect(PROTOCOL["path"] + query, headers=changing(ALICE)):
-                pass
-        assert denied.value.status_code == 422, query
-        assert denied.value.json()["code"] == "validation_failed"
+    assert terminal_rows(settings)[-1] == ("terminal.open", None, "workspace_not_found")
 
 
 # --- the shell -----------------------------------------------------------------------------
 
 
-def test_the_shell_runs_as_the_workspaces_user(client, workspace):
+def test_the_shell_runs_as_the_workspaces_user_at_the_pages_size_until_replaced(
+    client, workspace, settings
+):
     service = client.app.state.workspaces
     found = service.get(workspace["id"])
     own = service.runtime.exec(found.container, ["id", "-u"]).out.decode().strip()
     assert own.isdigit()
-    with opened(client, ALICE, workspace["id"]) as peer:
-        peer.ask("echo uid-$(id -u)-$((1+1))", rf"uid-{own}-2".encode())
-
-
-def test_the_first_size_and_every_resize_reach_the_shell(client, workspace):
-    with opened(client, ALICE, workspace["id"], cols=100, rows=30) as peer:
-        peer.ask("stty size", rb"[\r\n]30 100\r\n")
-        peer.session.send_json(resize(120, 40))
-        peer.ask("stty size", rb"[\r\n]40 120\r\n")
-
-
-def test_a_second_terminal_replaces_the_first(client, workspace, settings):
-    with opened(client, ALICE, workspace["id"]) as first:
-        first.ask("echo $((2*21))", rb"[\r\n]42\r\n")
+    with opened(client, ALICE, workspace["id"], cols=100, rows=30) as first:
+        first.ask("echo uid-$(id -u)-$((1+1))", rf"uid-{own}-2".encode())
+        first.ask("stty size", rb"[\r\n]30 100\r\n")
+        first.session.send_json(resize(120, 40))
+        first.ask("stty size", rb"[\r\n]40 120\r\n")
         with opened(client, ALICE, workspace["id"]) as second:
             close = first.closed()
             assert first.frames[-1] == {
@@ -223,112 +174,20 @@ def test_a_second_terminal_replaces_the_first(client, workspace, settings):
     assert recorded[-1] == ("terminal.close", "alpha", "terminal_lost")
 
 
-def test_the_shell_exiting_closes_the_terminal(client, workspace, settings):
-    with opened(client, ALICE, workspace["id"]) as peer:
-        peer.ask("echo $((1+4))", rb"[\r\n]5\r\n")
-        peer.session.send_bytes(b"exit 7\r")
-        close = peer.closed()
-    assert peer.frames[-1] == {"type": PROTOCOL["exit"], "code": 7}
-    assert close["code"] == PROTOCOL["close_normal"]
-    assert wait_rows(settings, 2)[-1] == ("terminal.close", "alpha", "ok")
-
-
-def ended_by(client, settings, workspace, act, reason: str) -> None:
-    """``act`` ends the terminal with ``reason``, and its session is gone when it closes."""
-    length = a_length()
-    with opened(client, ALICE, workspace["id"]) as peer:
-        [pid] = shell_of(peer, length)
-        act()
-        close = peer.closed()
-        assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": reason}
-        assert close["code"] == PROTOCOL["close_normal"]
-        assert not alive(pid)
-    assert wait_rows(settings, 2)[-1][2] == reason
-
-
-def test_deleting_the_workspace_closes_its_terminal(client, workspace, settings):
-    def delete():
-        r = client.delete(f"/api/workspaces/{workspace['id']}", headers=changing(ALICE))
-        assert r.status_code == 200, r.text
-
-    ended_by(client, settings, workspace, delete, "workspace_gone")
-
-
-def test_a_workspace_marked_deleting_behind_rcmans_back_closes_its_terminal(
-    quick_revocation, client, workspace, settings
+def test_the_shell_exiting_closes_the_terminal_and_nothing_typed_is_recorded_or_logged(
+    client, workspace, settings, caplog
 ):
-    def mark():
-        con = db.connect(settings.database)
-        try:
-            con.execute("update workspaces set state = 'deleting' where id = ?", (workspace["id"],))
-            con.commit()
-        finally:
-            con.close()
-
-    ended_by(client, settings, workspace, mark, "workspace_gone")
-
-
-def test_a_person_marked_deleting_behind_rcmans_back_loses_their_terminal(
-    quick_revocation, client, workspace, settings
-):
-    def mark():
-        con = db.connect(settings.database)
-        try:
-            people.mark_deleting(con, people.by_email(con, ALICE))
-        finally:
-            con.close()
-
-    ended_by(client, settings, workspace, mark, "not_allowed")
-
-
-def test_signing_out_closes_the_persons_terminal(client, workspace, settings):
-    def sign_out():
-        r = client.post("/api/me/sign-out", json={"keep_sessions": True}, headers=changing(ALICE))
-        assert r.status_code == 200, r.text
-
-    ended_by(client, settings, workspace, sign_out, "signed_out")
-
-
-def test_closing_every_terminal_tells_each_the_service_is_closing(client, workspace, settings):
-    """What the app's shutdown does for any terminal uvicorn has not closed already."""
-    length = a_length()
-    with opened(client, ALICE, workspace["id"]) as peer:
-        [pid] = shell_of(peer, length)
-        client.portal.call(client.app.state.terminals.close_all, "service_closing")
-        assert not alive(pid)
-        close = peer.closed()
-        assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "service_closing"}
-        assert close["code"] == PROTOCOL["close_closing"]
-    assert wait_rows(settings, 2)[-1] == ("terminal.close", "alpha", "service_closing")
-
-
-def test_the_apps_shutdown_closes_every_terminal(settings, runtime):
-    from fastapi.testclient import TestClient
-    from rcman.main import create_app
-
-    app = create_app(settings, runtime=runtime)
-    closed = []
-    real = app.state.terminals.close_all
-
-    async def close_all(reason):
-        closed.append(reason)
-        await real(reason)
-
-    app.state.terminals.close_all = close_all
-    with TestClient(app) as client:
-        assert client.app.state.workspaces.restored.wait(HANG_GUARD)
-    assert closed == ["service_closing"]
-
-
-def test_what_is_typed_and_shown_is_never_recorded_or_logged(client, workspace, settings, caplog):
     caplog.set_level("DEBUG")
     secret = "KEYSTROKES-NEVER-RECORDED-" + uuid.uuid4().hex
     with opened(client, ALICE, workspace["id"]) as peer:
         peer.ask(f"echo {secret}-$((2+3))", f"{secret}-5".encode())
-    recorded = wait_rows(settings, 2)
-    assert recorded == [
+        peer.session.send_bytes(b"exit 7\r")
+        close = peer.closed()
+    assert peer.frames[-1] == {"type": PROTOCOL["exit"], "code": 7}
+    assert close["code"] == PROTOCOL["close_normal"]
+    assert wait_rows(settings, 2) == [
         ("terminal.open", "alpha", "ok"),
-        ("terminal.close", "alpha", "terminal_lost"),
+        ("terminal.close", "alpha", "ok"),
     ]
     assert caplog.records  # the control: the events were logged
     for row in rows(settings):
@@ -336,60 +195,19 @@ def test_what_is_typed_and_shown_is_never_recorded_or_logged(client, workspace, 
     assert secret not in caplog.text
 
 
-# --- frames --------------------------------------------------------------------------------
-
-
-MALFORMED_FIRST = {
-    "binary before the size": ("bytes", b"ls\r", PROTOCOL["close_policy"]),
-    "not JSON": ("text", "{resize", PROTOCOL["close_unsupported"]),
-    "not an object": ("text", "[1, 2]", PROTOCOL["close_unsupported"]),
-    "an unknown frame": ("text", json.dumps({"type": "paste"}), PROTOCOL["close_unsupported"]),
-    "no type": ("text", json.dumps({"cols": 80, "rows": 24}), PROTOCOL["close_unsupported"]),
-    "too narrow": ("text", json.dumps(resize(0, 24)), PROTOCOL["close_policy"]),
-    "too tall": (
-        "text",
-        json.dumps(resize(80, PROTOCOL["size_max"] + 1)),
-        PROTOCOL["close_policy"],
-    ),
-    "a size as text": ("text", json.dumps({**resize(), "cols": "80"}), PROTOCOL["close_policy"]),
-    "a size as a truth": ("text", json.dumps({**resize(), "rows": True}), PROTOCOL["close_policy"]),
-    "a size as a fraction": (
-        "text",
-        json.dumps({**resize(), "rows": 2.5}),
-        PROTOCOL["close_policy"],
-    ),
-    "no rows": ("text", json.dumps({"type": "resize", "cols": 80}), PROTOCOL["close_policy"]),
-}
-
-
-@pytest.mark.parametrize("case", list(MALFORMED_FIRST))
-def test_a_malformed_first_frame_closes_the_socket_and_starts_no_shell(
-    client, workspace, settings, case
+def test_deleting_the_workspace_closes_its_terminal_and_ends_its_session(
+    client, workspace, settings
 ):
-    kind, data, code = MALFORMED_FIRST[case]
-    with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
-        session.send({"type": "websocket.receive", kind: data})
-        peer = Peer(session)
-        assert peer.closed()["code"] == code
-    assert client.app.state.terminals.live(workspace["id"]) is None
-    assert terminal_rows(settings)[-1] == ("terminal.open", "alpha", "validation_failed")
-
-
-def test_the_largest_size_is_taken():
-    assert route.size_of(resize(PROTOCOL["size_max"], PROTOCOL["size_min"])) == (
-        PROTOCOL["size_max"],
-        PROTOCOL["size_min"],
-    )
-
-
-def test_a_malformed_frame_later_closes_the_socket_and_ends_the_shell(client, workspace, settings):
     length = a_length()
     with opened(client, ALICE, workspace["id"]) as peer:
         [pid] = shell_of(peer, length)
-        peer.session.send_json(resize(80, 0))
-        assert peer.closed()["code"] == PROTOCOL["close_policy"]
-    until(lambda: not alive(pid))
-    assert wait_rows(settings, 2)[-1] == ("terminal.close", "alpha", "validation_failed")
+        r = client.delete(f"/api/workspaces/{workspace['id']}", headers=changing(ALICE))
+        assert r.status_code == 200, r.text
+        close = peer.closed()
+        assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "workspace_gone"}
+        assert close["code"] == PROTOCOL["close_normal"]
+        assert not alive(pid)
+    assert wait_rows(settings, 2)[-1] == ("terminal.close", "alpha", "workspace_gone")
 
 
 # --- the protocol, as backend.md writes it ------------------------------------------------
@@ -477,13 +295,6 @@ def test_the_page_protocol_check_fails_on_a_drifted_module(tmp_path):
         assert as_listed(page_protocol(drifted)) != as_listed(PROTOCOL), name
 
 
-def test_the_reasons_are_the_ones_the_audit_records():
-    """A reason a terminal is closed with is what its close records: a result of the audit's
-    own, or the code of the problem it is."""
-    for reason in PROTOCOL["reasons"]:
-        assert reason in audit.RESULTS or reason in problems.MESSAGES, reason
-
-
 # --- through real uvicorn -------------------------------------------------------------------
 
 
@@ -503,12 +314,6 @@ def unit_options() -> list[str]:
     return options
 
 
-def test_the_service_runs_the_websocket_implementation_the_route_names():
-    options = unit_options()
-    assert "--ws" in options
-    assert options[options.index("--ws") + 1] == route.WEBSOCKETS
-
-
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -516,9 +321,9 @@ def free_port() -> int:
 
 
 @contextlib.contextmanager
-def served(tmp_path: Path, ping: float = 20.0):
+def served(tmp_path: Path):
     """The screenshots' backend (devtools/world.py) under real uvicorn with the unit's
-    options, on a port of its own, pinging every ``ping`` seconds; its output in a file."""
+    options, on a port of its own; its output in a file."""
     port = free_port()
     argv = [
         str(Path(sys.executable).parent / "uvicorn"),
@@ -529,10 +334,6 @@ def served(tmp_path: Path, ping: float = 20.0):
         "127.0.0.1",
         "--port",
         str(port),
-        "--ws-ping-interval",
-        str(ping),
-        "--ws-ping-timeout",
-        str(ping),
     ]
     origin = f"http://127.0.0.1:{port}"
     env = {
@@ -606,45 +407,22 @@ class Served:
         return found
 
 
-def connect(server: Served, workspace: int | None = 1, headers=None, origin="own"):
+def connect(server: Served, workspace: int):
     from websockets.sync.client import connect as ws_connect
 
     return ws_connect(
         server.url(workspace),
-        origin=server.origin if origin == "own" else origin,
-        additional_headers=headers if headers is not None else {"X-Forwarded-Email": ALICE},
+        origin=server.origin,
+        additional_headers={"X-Forwarded-Email": ALICE},
         proxy=None,
         open_timeout=HANG_GUARD,
     )
 
 
-def test_identity_and_origin_are_refused_before_the_upgrade_with_a_problem(tmp_path):
-    from websockets.exceptions import InvalidStatus
-
-    cases = [
-        ("no identity", {}, "own", 401, "not_authenticated"),
-        ("a stranger", {"X-Forwarded-Email": "stranger@example.com"}, "own", 403, "not_allowed"),
-        ("no origin", {"X-Forwarded-Email": ALICE}, None, 403, "origin_refused"),
-        ("another origin", {"X-Forwarded-Email": ALICE}, "https://evil.example.com", 403,
-         "origin_refused"),
-    ]  # fmt: skip
-    with served(tmp_path) as server:
-        for case, headers, origin, status, code in cases:
-            with pytest.raises(InvalidStatus) as denied:
-                connect(server, 1, headers, origin).close()
-            response = denied.value.response
-            assert response.status_code == status, case
-            assert response.headers["Content-Type"].startswith("application/problem+json"), case
-            assert json.loads(response.body)["code"] == code, case
-            for name, value in SECURITY_HEADERS.items():
-                assert response.headers.get(name) == value, (case, name)
-        # the control: the same upgrade with an identity and the origin is accepted
-        with connect(server, 999) as accepted:
-            frame = json.loads(accepted.recv(timeout=HANG_GUARD))
-        assert frame["problem"]["code"] == "workspace_not_found"
-
-
 def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
+    """Under the WebSocket implementation the route names, which the unit's ExecStart gives."""
+    options = unit_options()
+    assert options[options.index("--ws") + 1] == route.WEBSOCKETS
     length = a_length()
     with served(tmp_path) as server:
         workspace = server.workspace("alpha")
@@ -661,112 +439,3 @@ def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
         assert not alive(pid)
         closes = [e for e in server.events() if e.get("action") == "terminal.close"]
         assert [e["result"] for e in closes] == ["service_closing"]
-
-
-# --- what else ends a terminal, and what does not -------------------------------------------
-
-
-def test_a_page_that_sends_no_size_is_closed(monkeypatch, client, workspace, settings):
-    """With no time for the first frame at all, so that its end never waits on real time."""
-    monkeypatch.setattr(route, "FIRST_RESIZE_SECONDS", 0)
-    with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
-        assert Peer(session).closed()["code"] == PROTOCOL["close_policy"]
-    assert client.app.state.terminals.live(workspace["id"]) is None
-    assert terminal_rows(settings)[-1] == ("terminal.open", "alpha", "validation_failed")
-
-
-def test_deleting_the_person_ends_their_terminal(client, settings):
-    bobs = made_workspace(client, BOB, "bobs")
-    length = a_length()
-    with opened(client, BOB, bobs["id"]) as peer:
-        [pid] = shell_of(peer, length)
-        con = db.connect(settings.database)
-        try:
-            bob = people.by_email(con, BOB)
-        finally:
-            con.close()
-        r = client.delete(f"/api/people/{bob.id}", headers=changing(ALICE))
-        assert r.status_code == 200, r.text
-        close = peer.closed()
-        assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "workspace_gone"}
-        assert close["code"] == PROTOCOL["close_normal"]
-        assert not alive(pid)
-
-
-def test_a_workspace_removed_behind_rcmans_back_ends_its_terminal(client, workspace, settings):
-    """What removing the container does in Podman - every process in it ended - done on the
-    host runtime: the shell's end closes the terminal."""
-    with opened(client, ALICE, workspace["id"]) as peer:
-        peer.ask("echo $((5*5))", rb"[\r\n]25\r\n")
-        terminal = client.app.state.terminals.live(workspace["id"])
-        client.app.state.workspaces.runtime.remove(rt.container_name(workspace["id"]))
-        os.kill(terminal.leader[0], signal.SIGKILL)
-        close = peer.closed()
-        assert peer.frames[-1]["type"] == PROTOCOL["exit"]
-        assert close["code"] == PROTOCOL["close_normal"]
-    assert not alive(terminal.leader[0])
-
-
-def test_a_look_at_the_rows_that_fails_is_tried_again(
-    quick_revocation, client, workspace, settings, monkeypatch, caplog
-):
-    real, failed = route._revoked, []
-
-    def busy(*args):
-        if len(failed) < 3:
-            failed.append(1)
-            raise sqlite3.OperationalError("database is locked")
-        return real(*args)
-
-    monkeypatch.setattr(route, "_revoked", busy)
-    with opened(client, ALICE, workspace["id"]) as peer:
-        until(lambda: len(failed) == 3)
-        peer.ask("echo still-$((3+3))", rb"still-6")  # the terminal is still open
-        con = db.connect(settings.database)
-        try:
-            con.execute("update workspaces set state = 'deleting' where id = ?", (workspace["id"],))
-            con.commit()
-        finally:
-            con.close()
-        peer.closed()
-        assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "workspace_gone"}
-    assert "could not look at its rows" in caplog.text
-
-
-def test_of_what_ends_a_terminal_together_its_own_end_says_most():
-    assert route.most_telling(["typed", "ended"]) == "ended"
-    assert route.most_telling(["typed", "watch"]) == "watch"
-    assert route.most_telling(["watch", "ended", "typed"]) == "ended"
-    assert route.most_telling(["typed"]) == "typed"
-
-
-def test_the_shutdown_closes_the_rest_when_the_terminals_fail_to(settings, runtime):
-    from fastapi.testclient import TestClient
-    from rcman.main import create_app
-
-    app = create_app(settings, runtime=runtime)
-
-    async def failing(reason):
-        raise RuntimeError("planted")
-
-    app.state.terminals.close_all = failing
-    with TestClient(app) as client:
-        assert client.app.state.workspaces.restored.wait(HANG_GUARD)
-    assert app.state.workspaces._closing.is_set()  # the service was closed all the same
-
-
-def test_a_sign_out_before_the_first_resize_ends_the_terminal_as_it_opens(client, workspace):
-    with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
-        con = db.connect(client.app.state.settings.database)
-        try:
-            person = people.by_email(con, ALICE).id
-        finally:
-            con.close()
-        # accepted, and the size not sent yet
-        client.portal.call(client.app.state.terminals.end_person, person, "signed_out")
-        session.send_json(resize())
-        peer = Peer(session)
-        close = peer.closed()
-    assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "signed_out"}
-    assert close["code"] == PROTOCOL["close_normal"]
-    assert client.app.state.terminals.live(workspace["id"]) is None

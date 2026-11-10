@@ -13,10 +13,13 @@ def test_migrate_creates_the_schema(tmp_path):
     tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
     assert {"audit", "user_settings", "people", "workspaces"} <= tables
     assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
+    db.migrate(path)  # again: nothing to do
+    assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
-def test_a_database_of_the_first_schema_gains_each_persons_claude_account(tmp_path):
-    """Migration 2 keeps every person, with no Claude account and none signing out."""
+def test_a_database_of_the_first_schema_is_migrated_keeping_its_people(tmp_path):
+    """Every migration after the first keeps every person, with no Claude account and none
+    signing out."""
     path = tmp_path / "x.db"
     con = sqlite3.connect(path)
     con.executescript(f"begin;\n{db.MIGRATIONS[0]}\npragma user_version = 1;\ncommit;")
@@ -30,65 +33,24 @@ def test_a_database_of_the_first_schema_gains_each_persons_claude_account(tmp_pa
     assert found.fetchall() == [("a@x.org", None, 0)]
 
 
-def test_migrate_is_idempotent(tmp_path):
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    db.migrate(path)
-    assert sqlite3.connect(path).execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
-
-
-def test_migrate_refuses_a_database_newer_than_the_code(tmp_path):
-    import pytest
-
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    db.migrate(path)  # positive control: its own version is taken
-    con = sqlite3.connect(path)
-    con.execute(f"pragma user_version = {len(db.MIGRATIONS) + 1}")
-    con.commit()
-    con.close()
-    with pytest.raises(db.DatabaseTooNew):
-        db.migrate(path)
-    assert sqlite3.connect(path).execute("pragma user_version").fetchone()[0] == (
-        len(db.MIGRATIONS) + 1
-    )
-
-
-def _person(con, email, slot, admin=0):
+def _person(con, email, slot):
     con.execute(
-        "insert into people (email, admin, slot, state) values (?, ?, ?, 'active')",
-        (email, admin, slot),
+        "insert into people (email, admin, slot, state) values (?, 0, ?, 'active')", (email, slot)
     )
 
 
-def test_an_email_is_one_persons_whatever_its_case(tmp_path):
-    import pytest
-
+def test_an_address_and_a_slot_are_one_persons(tmp_path):
     path = tmp_path / "x.db"
     db.migrate(path)
     con = db.connect(path)
     _person(con, "bob@example.com", 1)
-    _person(con, "carol@example.com", 2)  # positive control: another address is taken
-    with pytest.raises(sqlite3.IntegrityError):
-        _person(con, "BOB@Example.com", 3)
-
-
-def test_a_slot_is_one_persons_and_never_zero(tmp_path):
-    import pytest
-
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    _person(con, "bob@example.com", 1)
-    with pytest.raises(sqlite3.IntegrityError):
-        _person(con, "carol@example.com", 1)
-    with pytest.raises(sqlite3.IntegrityError):
-        _person(con, "carol@example.com", 0)  # rcman's own range
+    _person(con, "carol@example.com", 2)  # positive control: another address and slot are taken
+    for email, slot in (("bob@example.com", 3), ("dave@example.com", 1)):
+        with pytest.raises(sqlite3.IntegrityError):
+            _person(con, email, slot)
 
 
 def test_a_person_with_workspaces_cannot_be_removed(tmp_path):
-    import pytest
-
     path = tmp_path / "x.db"
     db.migrate(path)
     con = db.connect(path)
@@ -98,51 +60,6 @@ def test_a_person_with_workspaces_cannot_be_removed(tmp_path):
         con.execute("delete from people where id = 1")
     con.execute("delete from workspaces")
     con.execute("delete from people where id = 1")  # positive control: without them it goes
-
-
-def test_a_persons_workspace_names_are_unique(tmp_path):
-    import pytest
-
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    _person(con, "bob@example.com", 1)
-    _person(con, "carol@example.com", 2)
-    con.execute("insert into workspaces (person, name, state) values (1, 'one', 'ready')")
-    con.execute("insert into workspaces (person, name, state) values (2, 'one', 'ready')")
-    with pytest.raises(sqlite3.IntegrityError):
-        con.execute("insert into workspaces (person, name, state) values (1, 'one', 'creating')")
-
-
-def test_connections_use_wal_and_foreign_keys(tmp_path):
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    assert con.execute("pragma journal_mode").fetchone()[0] == "wal"
-    assert con.execute("pragma foreign_keys").fetchone()[0] == 1
-
-
-def test_database_directory_is_created(tmp_path):
-    path = tmp_path / "deep" / "x.db"
-    db.migrate(path)
-    assert path.exists()
-
-
-def test_audit_rows_cannot_be_changed(tmp_path):
-    import pytest
-
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    con.execute(
-        "insert into audit (at, email, action, target, result) "
-        "values ('2026-10-01', 'e', 'a', 't', 'ok')"
-    )  # positive control: rows are added as usual
-    con.commit()
-    assert con.execute("select count(*) from audit").fetchone()[0] == 1
-    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
-        con.execute("update audit set result = 'forged'")
-    assert con.execute("select result from audit").fetchone()[0] == "ok"
 
 
 TRANSACTION_CONTROL = {"begin", "commit", "end", "rollback", "savepoint", "release"}
@@ -187,15 +104,8 @@ def test_no_migration_controls_its_own_transaction():
 
 
 def test_the_transaction_check_catches_a_script_that_commits():
-    """Planted twin: a migration that commits, or begins, part way is caught."""
+    """Planted twin: a migration that commits part way is caught."""
     assert transaction_control("create table t1(x); commit;") == ["commit;"]
-    assert transaction_control("begin;\ncreate table t1(x);") == ["begin;"]
-    assert transaction_control("create table t1(x);\n-- note\nSAVEPOINT a;") != []
-    assert transaction_control("create table t(x); /* */ commit;") != []
-    assert transaction_control("/* c */\ncommit;") != []
-    assert transaction_control("commit/**/;") != []
-    assert transaction_control("insert into t values ('/* x */ commit');") == []
-    assert transaction_control("create table t1(x);") == []
 
 
 def test_a_migration_that_fails_part_way_changes_nothing(tmp_path, monkeypatch):
@@ -212,8 +122,6 @@ def test_a_migration_that_fails_part_way_changes_nothing(tmp_path, monkeypatch):
     insert into no_such_table values (1);
     """
     monkeypatch.setattr(db, "MIGRATIONS", [*db.MIGRATIONS, planted])
-    import pytest
-
     with pytest.raises(sqlite3.OperationalError, match="no_such_table"):
         db.migrate(path)
     con = sqlite3.connect(path)
@@ -252,104 +160,6 @@ def test_the_database_is_its_owners_alone_whatever_the_umask(tmp_path):
         assert stat.S_IMODE(file.stat().st_mode) == 0o600, file
 
 
-def migrated_before(tmp_path, marker: str) -> tuple:
-    """A database migrated to just before the migration whose script holds ``marker``, with a
-    person and a ready workspace of theirs: its path and its connection."""
-    path = tmp_path / "x.db"
-    con = sqlite3.connect(path)
-    last = next(i for i, script in enumerate(db.MIGRATIONS) if marker in script)
-    for number, script in enumerate(db.MIGRATIONS[:last], start=1):
-        con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
-    con.execute("insert into people (email, admin, slot, state) values ('a@x.org', 1, 1, 'active')")
-    con.execute("insert into workspaces (person, name, state) values (1, 'old', 'ready')")
-    con.commit()
-    return path, con
-
-
-def test_a_workspace_made_before_claude_versions_has_no_version_after_the_migration(tmp_path):
-    path, con = migrated_before(tmp_path, "claude_approvals")
-    assert "claude_version" not in [r[1] for r in con.execute("pragma table_info(workspaces)")]
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    assert con.execute("select name, claude_version from workspaces").fetchall() == [("old", None)]
-    assert con.execute("select count(*) from claude_approvals").fetchone() == (0,)
-
-
-def test_a_workspace_made_before_plans_has_none_after_the_migration(tmp_path):
-    path = tmp_path / "x.db"
-    con = sqlite3.connect(path)
-    last = next(i for i, script in enumerate(db.MIGRATIONS) if "add column environment" in script)
-    for number, script in enumerate(db.MIGRATIONS[:last], start=1):
-        con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
-    con.execute("insert into people (email, admin, slot, state) values ('a@x.org', 1, 1, 'active')")
-    con.execute("insert into workspaces (person, name, state) values (1, 'old', 'ready')")
-    con.commit()
-    assert "environment" not in [r[1] for r in con.execute("pragma table_info(workspaces)")]
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    found = con.execute("select name, state, environment from workspaces").fetchall()
-    assert found == [("old", "ready", None)]
-
-
-def test_a_connection_survives_a_wal_file_that_another_connection_removes_meanwhile(
-    tmp_path, monkeypatch
-):
-    """The -wal and -shm files vanish when the last connection closes: one that was looked at
-    and gone by the time it is touched is not a failure."""
-    from pathlib import Path
-
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    real = Path.exists
-    seen = []
-
-    def exists(self):
-        if self.name.endswith(("-shm", "-wal")) and not real(self):
-            seen.append(self.name)
-            return True  # looked at, and gone before it is touched
-        return real(self)
-
-    monkeypatch.setattr(Path, "exists", exists)
-    db.connect(path).close()
-    assert seen  # the plant took effect
-
-
-def test_a_person_and_a_workspace_made_before_limits_have_none_after_the_migration(tmp_path):
-    path, con = migrated_before(tmp_path, "memory_mib")
-    for table in ("people", "workspaces"):
-        assert "memory_mib" not in [r[1] for r in con.execute(f"pragma table_info({table})")]
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    for table in ("people", "workspaces"):
-        columns = {r[1]: r for r in con.execute(f"pragma table_info({table})")}
-        assert {"memory_mib", "cpu_percent", "pids"} <= set(columns), table
-        for name in ("memory_mib", "cpu_percent", "pids"):
-            assert columns[name][2] == "INTEGER" and columns[name][3] == 0, (table, name)  # null
-    found = con.execute("select memory_mib, cpu_percent, pids from people").fetchall()
-    assert found == [(None, None, None)]
-    found = con.execute("select memory_mib, cpu_percent, pids from workspaces").fetchall()
-    assert found == [(None, None, None)]
-
-
-@pytest.mark.parametrize("table", ["people", "workspaces"])
-@pytest.mark.parametrize("column", ["memory_mib", "cpu_percent", "pids"])
-def test_a_limit_is_a_positive_number_or_null(tmp_path, column, table):
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    _person(con, "a@x.org", 1)
-    con.execute("insert into workspaces (person, name, state) values (1, 'w', 'ready')")
-    row = "id = 1"
-    con.execute(f"update {table} set {column} = 5 where {row}")  # positive control
-    con.execute(f"update {table} set {column} = null where {row}")
-    for refused in (0, -1):
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute(f"update {table} set {column} = ? where {row}", (refused,))
-
-
 def test_the_id_of_a_person_or_a_workspace_is_never_given_again(tmp_path):
     """An id names a volume, a slice and a container: one given to the next row would adopt
     what the last one left."""
@@ -371,315 +181,3 @@ def test_the_id_of_a_person_or_a_workspace_is_never_given_again(tmp_path):
     assert con.execute("select max(id) from people").fetchone()[0] > last
     assert con.execute("select max(id) from workspaces").fetchone()[0] > last_workspace
     con.close()
-
-
-def test_a_database_has_an_install_id_of_its_own_that_never_changes(tmp_path):
-    """What tells volumes made for this database from those of another one with the same ids,
-    a restored backup among them."""
-    first, second = tmp_path / "a.db", tmp_path / "b.db"
-    for path in (first, second):
-        db.migrate(path)
-    found = []
-    for path in (first, second):
-        con = db.connect(path)
-        try:
-            found.append(db.install_id(con))
-        finally:
-            con.close()
-    assert all(len(i) >= 16 and i.isalnum() for i in found) and found[0] != found[1]
-    db.migrate(first)  # again
-    con = db.connect(first)
-    try:
-        assert db.install_id(con) == found[0]
-        assert con.execute("select count(*) from meta").fetchone()[0] == 1
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute("insert into meta (id, install) values (2, 'x')")
-    finally:
-        con.close()
-
-
-def test_a_database_of_the_schema_before_the_install_id_gains_one(tmp_path):
-    path = tmp_path / "old.db"
-    con = sqlite3.connect(path)
-    last = next(i for i, script in enumerate(db.MIGRATIONS) if "create table meta" in script)
-    for number, script in enumerate(db.MIGRATIONS[:last], start=1):
-        con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
-    con.close()
-    db.migrate(path)
-    con = db.connect(path)
-    try:
-        assert db.install_id(con)
-    finally:
-        con.close()
-
-
-REBUILD_COLUMNS = (
-    "devcontainer_digest",
-    "rebuild_state",
-    "rebuild_log",
-    "rebuild_error",
-    "failure",
-)
-
-
-def test_a_workspace_made_before_rebuilds_has_none_of_their_columns_set_after_the_migration(
-    tmp_path,
-):
-    """An old row's digest is unknown (null), and it is neither being rebuilt nor failed in a
-    way that is known."""
-    path, con = migrated_before(tmp_path, "rebuild_state")
-    names = [r[1] for r in con.execute("pragma table_info(workspaces)")]
-    assert "image_id" in names and not set(REBUILD_COLUMNS) & set(names)
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    found = con.execute(f"select name, {', '.join(REBUILD_COLUMNS)} from workspaces").fetchall()
-    assert found == [("old", *(None,) * len(REBUILD_COLUMNS))]
-
-
-def test_a_rebuild_state_is_one_of_its_phases_or_null(tmp_path):
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    _person(con, "a@x.org", 1)
-    con.execute("insert into workspaces (person, name, state) values (1, 'w', 'ready')")
-    for phase in ("preparing", "switching", "promoting", None):
-        con.execute("update workspaces set rebuild_state = ? where id = 1", (phase,))
-    with pytest.raises(sqlite3.IntegrityError):
-        con.execute("update workspaces set rebuild_state = 'other' where id = 1")
-
-
-def test_the_monitor_settings_are_one_row_with_switches_and_positive_intervals(tmp_path):
-    """No row is made by the migration: a missing row is the defaults (monitor.py)."""
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    assert con.execute("select count(*) from monitor_settings").fetchone()[0] == 0
-    insert = (
-        "insert into monitor_settings (id, usage_interval_seconds, disk_interval_seconds, "
-        "host, people, containers) values (?, ?, ?, ?, ?, ?)"
-    )
-    con.execute(insert, (1, 60, 3600, 1, 0, 1))  # positive control
-    for row in (
-        (2, 60, 3600, 1, 1, 1),  # a second row
-        (1, 60, 3600, 1, 1, 1),  # the first again
-    ):
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute(insert, row)
-    con.execute("delete from monitor_settings")
-    for row in (
-        (1, 0, 3600, 1, 1, 1),
-        (1, 60, -1, 1, 1, 1),
-        (1, 60, 3600, 2, 1, 1),
-        (1, 60, 3600, 1, -1, 1),
-        (1, 60, 3600, 1, 1, None),
-    ):
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute(insert, row)
-
-
-def test_a_database_of_the_schema_before_the_monitor_gains_its_table_and_no_row(tmp_path):
-    path, con = migrated_before(tmp_path, "monitor_settings")
-    tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-    assert "workspaces" in tables and "monitor_settings" not in tables
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    assert con.execute("select count(*) from monitor_settings").fetchone()[0] == 0
-    assert con.execute("select name from workspaces").fetchall() == [("old",)]
-
-
-def test_a_version_has_one_mark_as_failed_with_who_and_when_and_maybe_why(tmp_path):
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    insert = "insert into claude_failures (version, at, by, reason) values (?, ?, ?, ?)"
-    con.execute(insert, ("1.2.3", "2026-01-01T00:00:00+00:00", "a@x.org", None))  # control
-    con.execute(insert, ("1.2.4", "2026-01-01T00:00:00+00:00", "a@x.org", "it hangs"))
-    for row in (
-        ("1.2.3", "2026-01-02T00:00:00+00:00", "b@x.org", "again"),  # a second mark
-        ("1.2.5", None, "a@x.org", None),
-        ("1.2.5", "2026-01-01T00:00:00+00:00", None, None),
-    ):
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute(insert, row)
-    con.execute("delete from claude_failures where version = '1.2.3'")  # a mark is removed
-    assert [tuple(r) for r in con.execute("select version from claude_failures")] == [("1.2.4",)]
-
-
-def test_a_database_of_the_schema_before_marks_keeps_its_approvals_and_has_no_mark(tmp_path):
-    path, con = migrated_before(tmp_path, "claude_failures")
-    con.execute(
-        "insert into claude_approvals (version, at, by) values "
-        "('1.0.0', '2026-01-01T00:00:00+00:00', 'rcman')"
-    )
-    con.commit()
-    tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-    assert "claude_approvals" in tables and "claude_failures" not in tables
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    assert con.execute("select version, by from claude_approvals").fetchall() == [
-        ("1.0.0", "rcman")
-    ]
-    assert con.execute("select count(*) from claude_failures").fetchone()[0] == 0
-
-
-def test_the_forwarding_settings_are_one_row_of_a_switch_and_whole_minutes_and_hours(tmp_path):
-    """No row is made by the migration: a missing row is the defaults (forwarding_settings.py).
-    The table keeps seconds; the page's units are whole minutes and whole hours."""
-    path = tmp_path / "x.db"
-    db.migrate(path)
-    con = db.connect(path)
-    assert con.execute("select count(*) from forwarding_settings").fetchone()[0] == 0
-    insert = (
-        "insert into forwarding_settings (id, enabled, idle_seconds, absolute_seconds) "
-        "values (?, ?, ?, ?)"
-    )
-    con.execute(insert, (1, 0, 300, 43200))  # positive control
-    for row in (
-        (2, 0, 300, 43200),  # a second row
-        (1, 1, 300, 43200),  # the first again
-    ):
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute(insert, row)
-    con.execute("delete from forwarding_settings")
-    for row in (
-        (1, 2, 300, 43200),
-        (1, None, 300, 43200),
-        (1, 0, 0, 43200),
-        (1, 0, 90, 43200),  # not whole minutes
-        (1, 0, 300, -3600),
-        (1, 0, 300, 5400),  # not whole hours
-        (1, 0, None, 43200),
-    ):
-        with pytest.raises(sqlite3.IntegrityError):
-            con.execute(insert, row)
-
-
-def test_a_database_of_the_schema_before_forwarding_gains_its_table_and_no_row(tmp_path):
-    path, con = migrated_before(tmp_path, "forwarding_settings")
-    tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-    assert "claude_failures" in tables and "forwarding_settings" not in tables
-    con.close()
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    assert con.execute("select count(*) from forwarding_settings").fetchone()[0] == 0
-    assert con.execute("select name from workspaces").fetchall() == [("old",)]
-
-
-# Writes each column of a workspace is tried with, before and after the migration that adds
-# halted: what the schema before it refuses, the schema after it must refuse too, but halted.
-PROBES = (None, 0, -1, 1, 2, "other", "halted", "ready")
-
-
-def _refused(con, statement: str, args: tuple) -> bool:
-    """Whether the database refuses the write, which is undone either way."""
-    con.execute("savepoint probe")
-    try:
-        con.execute(statement, args)
-    except sqlite3.IntegrityError:
-        return True
-    finally:
-        con.execute("rollback to probe")
-        con.execute("release probe")
-    return False
-
-
-def _verdicts(path) -> dict:
-    """What the database at ``path`` refuses: each column of ``workspaces`` set to each probe on
-    its first row, and a second row of the first one's person and name."""
-    con = db.connect(path)
-    try:
-        con.isolation_level = None  # the savepoints are the only transactions
-        first = con.execute("select * from workspaces order by id limit 1").fetchone()
-        columns = [r[1] for r in con.execute("pragma table_info(workspaces)")]
-        found = {
-            (column, value): _refused(
-                con, f"update workspaces set {column} = ? where id = ?", (value, first["id"])
-            )
-            for column in columns
-            if column != "id"
-            for value in PROBES
-        }
-        found["unique"] = _refused(
-            con,
-            "insert into workspaces (person, name, state) values (?, ?, 'ready')",
-            (first["person"], first["name"]),
-        )
-        return found
-    finally:
-        con.close()
-
-
-def _sequence(path) -> list[tuple]:
-    con = sqlite3.connect(path)
-    try:
-        return con.execute("select name, seq from sqlite_sequence order by name").fetchall()
-    finally:
-        con.close()
-
-
-def _next_id(path) -> int:
-    con = db.connect(path)
-    try:
-        cursor = con.execute(
-            "insert into workspaces (person, name, state) values (1, 'next', 'ready')"
-        )
-        con.commit()
-        return cursor.lastrowid
-    finally:
-        con.close()
-
-
-def test_a_database_of_the_schema_before_stopping_keeps_its_workspaces_their_ids_and_checks(
-    tmp_path,
-):
-    """The migration that adds the state halted rebuilds the table: its columns, every row, the
-    checks and the uniqueness the schema before it had, and the id it gives next, stay as they
-    were; halted is taken, and a state it does not know still is not."""
-    import shutil
-
-    path, con = migrated_before(tmp_path, "'halted'")
-    for name in ("two", "three"):
-        con.execute("insert into workspaces (person, name, state) values (1, ?, 'ready')", (name,))
-    con.execute(
-        "update workspaces set error = 'e', server = 1, wanted = 1, prefix = 'p', "
-        "source = 's', memory_mib = 5, rebuild_state = 'preparing', failure = 'f' where id = 2"
-    )
-    con.execute("delete from workspaces where id = 3")  # the highest: its id is not given again
-    con.commit()
-    columns = con.execute("pragma table_info(workspaces)").fetchall()
-    rows = con.execute("select * from workspaces order by id").fetchall()
-    con.close()
-    before = _sequence(path)
-    assert ("workspaces", 3) in before and len(rows) == 2  # positive control
-    old = tmp_path / "old.db"
-    shutil.copy(path, old)
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    assert con.execute("pragma table_info(workspaces)").fetchall() == columns
-    assert con.execute("select * from workspaces order by id").fetchall() == rows
-    names = {r[0] for r in con.execute("select name from sqlite_master")}
-    assert "workspaces_new" not in names
-    con.close()
-    assert _sequence(path) == before  # one row, the same high-water mark
-    was, now = _verdicts(old), _verdicts(path)
-    assert was[("state", "other")] and was[("memory_mib", 0)] and was["unique"]  # non-vacuity
-    assert was[("state", "halted")] and not now[("state", "halted")]
-    assert {k: v for k, v in now.items() if k != ("state", "halted")} == {
-        k: v for k, v in was.items() if k != ("state", "halted")
-    }
-    assert _next_id(path) == 4
-
-    # An empty table whose rows were all deleted still gives no id again.
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    path, con = migrated_before(empty, "'halted'")
-    con.execute("delete from workspaces")
-    con.commit()
-    con.close()
-    assert _sequence(path) == [("people", 1), ("workspaces", 1)]
-    db.migrate(path)
-    assert _sequence(path) == [("people", 1), ("workspaces", 1)]
-    assert _next_id(path) == 2

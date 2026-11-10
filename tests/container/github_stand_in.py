@@ -1,37 +1,20 @@
-"""The tests' GitHub: its certificates, the workspace image that trusts them and finds it, and a
-service that serves it.
-
-Not a test module, and the standard library only, so that the whole stack's container can run it
-as it is from the checkout's files at /src. Shared by tests/container/test_builder_in_podman.py,
-which serves tests/github_server.py as https://github.com itself, and by
-tests/container/stack.py, which serves it behind Caddy
-(``serve`` below).
+"""The certificates of the tests' GitHub, and the build file of a workspace image that trusts
+them and finds it, for tests/container/test_builder_in_podman.py; its ``github_com`` fixture
+serves tests/github_server.py, reached as https://github.com through network.Relay.
 
 - ``mint`` makes a certificate authority and a certificate it signed for github.com;
 - ``dockerfile`` derives a workspace image from a base image that trusts that authority and
   whose git finds github.com at the network's own loopback (RESOLVE: a workspace that joins
   another container's network gets no hosts file of that container's), and, for a base that is
-  not rcman's own, has git and python3;
-- run as a program, ``serve`` serves the bare repositories under a folder with the token,
-  after making the public repository the whole stack's checks clone.
+  not rcman's own, has git and python3.
 """
 
 from __future__ import annotations
 
 import subprocess
-import sys
-import tempfile
-import threading
 from pathlib import Path
 
 CA_NAME = "rcman-test-github-ca"
-# The token the stand-in serves the stack with.
-STACK_TOKEN = "github_pat_stack-test-token"
-# The public repository the stand-in is made with for the stack: owner, name and its one file.
-STACK_OWNER = "octo"
-STACK_PUBLIC = "stack-public"
-STACK_FILE = "README.md"
-
 PACKAGES = """\
 RUN apt-get update -qq \\
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \\
@@ -79,44 +62,3 @@ def mint(folder: Path) -> Path:
             "-CAcreateserial", "-days", "2", "-extfile", "san.ext", "-out", "leaf.crt",
             cwd=folder)  # fmt: skip
     return folder
-
-
-def seed(server) -> None:
-    """The public repository the whole stack's checks clone, on ``server``, with one commit on
-    main."""
-    with tempfile.TemporaryDirectory(prefix="rcman-github-seed-") as scratch:
-        bare = server.bare(STACK_OWNER, STACK_PUBLIC, private=False)
-        work = Path(scratch) / STACK_PUBLIC
-        git = [
-            "git",
-            "-C",
-            str(work),
-            "-c",
-            "user.name=Octo",
-            "-c",
-            "user.email=octo@example.com",
-        ]
-        subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
-        (work / STACK_FILE).write_text(f"# {STACK_PUBLIC}\n")
-        subprocess.run([*git, "add", STACK_FILE], check=True)
-        subprocess.run([*git, "commit", "-q", "-m", f"First commit of {STACK_PUBLIC}"], check=True)
-        subprocess.run([*git, "push", "-q", str(bare), "main"], check=True)
-
-
-def serve(root: str, host: str, port: str) -> None:
-    """Serve the stand-in with the stack's token, plain http, until the process ends: Caddy
-    is what speaks TLS for it."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from tests.github_server import GitHubServer
-
-    server = GitHubServer()
-    server.start(Path(root), STACK_TOKEN, host=host, port=int(port))
-    seed(server)
-    print("SERVING", flush=True)
-    threading.Event().wait()
-
-
-if __name__ == "__main__":
-    verb, *arguments = sys.argv[1:]
-    run = {"serve": serve}[verb]
-    run(*arguments)

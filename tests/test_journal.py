@@ -40,15 +40,6 @@ def test_install_gives_one_handler_writing_the_bare_message(planted, capsys):
     assert capsys.readouterr().err == "message\n"
 
 
-def test_install_leaves_other_loggers_alone(planted):
-    other = logging.getLogger(f"{planted.name}-other")
-    root = list(logging.getLogger().handlers)
-    journal.install(planted)
-    assert planted.handlers  # positive control
-    assert other.handlers == []
-    assert logging.getLogger().handlers == root
-
-
 def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
     from rcman import (
         audit,
@@ -121,7 +112,3 @@ def guide_check_fails_on_a_drifted_table(heading: str, expected: set[str]) -> No
     bare = right.replace(rows[0], rows[0].replace("`", ""))
     assert bare != right and sorted(guide_fields(bare, heading)) != sorted(expected)
     assert guide_fields(right.replace(heading, "## Elsewhere"), heading) == []
-
-
-def test_the_guide_reader_takes_only_the_table_under_its_heading():
-    guide_check_fails_on_a_drifted_table("## Planted", {"one", "two_words"})

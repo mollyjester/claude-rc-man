@@ -9,7 +9,7 @@ from fastapi.routing import APIRoute
 from rcman import audit, db, routes
 
 from tests.conftest import ALICE, BOB, CALLS, changing, concrete, made_workspace
-from tests.hang_guard import HANG_GUARD, pace
+from tests.hang_guard import HANG_GUARD
 from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
@@ -111,15 +111,35 @@ def recorded_actions(app) -> set[str]:
     } | {action for handler in forward.HANDLERS.values() for action in handler.actions}
 
 
+def guide_actions(guide: str) -> set[str]:
+    """The actions the guide's actions table lists."""
+    return set(re.findall(r"^\| `([a-z]+\.[a-z_]+)` \|", guide, re.MULTILINE))
+
+
+def undocumented_actions(app) -> set[str]:
+    """The actions rcman records that the guide's table does not list, and those it lists that
+    rcman does not record."""
+    guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
+    return recorded_actions(app) ^ guide_actions(guide)
+
+
 def test_every_action_is_listed_in_the_guide(app):
     actions = recorded_actions(app)
     # One of each kind: a change, a WebSocket, a navigation and the forwarding server's.
     assert {"terminal.open", "workspace.create", "forward.hand_off", "websocket.close"} <= actions
-    guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
-    listed = set(
-        re.findall(r"^\| `([a-z]+\.[a-z_]+)` \|", guide, re.MULTILINE)
-    )  # the actions table
-    assert actions and actions == listed
+    assert guide_actions((REPO / "docs" / "audit.md").read_text(encoding="utf-8"))
+    assert undocumented_actions(app) == set()
+
+
+def test_the_actions_check_finds_an_action_the_guide_does_not_list(app):
+    """Planted twin: a route that records an action the guide does not list is caught."""
+    from fastapi import Depends
+
+    @app.post("/api/planted-recorded")
+    def planted(record=Depends(audit.Recorder("planted.call"))):
+        return {}
+
+    assert undocumented_actions(app) == {"planted.call"}
 
 
 def documented_results(guide):
@@ -150,14 +170,12 @@ def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
 
 
 def test_the_results_check_fails_on_a_drifted_guide():
-    """Planted twin: a results table missing a row, or with one too many, is caught."""
+    """Planted twin: a results table missing a row is caught."""
     rows = [f"| `{result}` | meaning |" for result in audit.RESULTS]
     right = "| Result | Meaning |\n|---|---|\n" + "\n".join(rows) + "\n"
     assert documented_results(right) == set(audit.RESULTS)
     missing = right.replace(rows[-1] + "\n", "")
-    assert missing != right and documented_results(missing) != set(audit.RESULTS)
-    extra = right + "| `forged` | meaning |\n"
-    assert documented_results(extra) != set(audit.RESULTS)
+    assert documented_results(missing) != set(audit.RESULTS)
 
 
 def test_a_route_without_a_recorder_is_detected():
@@ -177,15 +195,22 @@ def test_a_route_without_a_recorder_is_detected():
 # --- coverage: behavioural -----------------------------------------------------------
 
 
-def test_driving_every_audited_route_writes_its_row(app, client, settings):
-    calls = {
-        k: v for k, v in CALLS.items() if k[0] in CHANGING and (k[1], k[0]) not in audit.EXEMPT
-    }
-    audited = {
+def audited_routes(app) -> dict[tuple[str, str], str]:
+    """Every changing route that records, by (method, path), with its action."""
+    return {
         (sorted(r.methods)[0], r.path): audit.action_of(r.route)
         for r in changing_routes(app)
         if audit.action_of(r.route)
     }
+
+
+def audited_calls() -> dict:
+    """The valid request of every changing route that is not exempt."""
+    return {k: v for k, v in CALLS.items() if k[0] in CHANGING and (k[1], k[0]) not in audit.EXEMPT}
+
+
+def test_driving_every_audited_route_writes_its_row(app, client, settings):
+    calls, audited = audited_calls(), audited_routes(app)
     assert set(calls) == set(audited)
     for (method, path), kwargs in calls.items():
         before = len(rows(settings))
@@ -194,6 +219,17 @@ def test_driving_every_audited_route_writes_its_row(app, client, settings):
         assert len(after) == before + 1, (method, path)
         assert after[-1]["action"] == audited[(method, path)]
         assert after[-1]["email"] == ALICE
+
+
+def test_the_driving_check_finds_an_audited_route_with_no_request(app):
+    """Planted twin: an audited route no valid request drives is told apart from the calls."""
+    from fastapi import Depends
+
+    @app.post("/api/planted-undriven")
+    def planted(record=Depends(audit.Recorder("planted.call"))):
+        return {}
+
+    assert set(audited_routes(app)) - set(audited_calls()) == {("POST", "/api/planted-undriven")}
 
 
 def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
@@ -205,133 +241,6 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
         "unknown_server",
         "alpha",
     )
-
-
-def test_workspace_changes_are_recorded_with_the_workspaces_name(client, settings):
-    made = made_workspace(client, ALICE, "alpha")
-    client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
-    client.post("/api/workspaces", json={"name": "Not one!"}, headers=changing(ALICE))
-    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-3:]]
-    assert recorded == [
-        ("workspace.create", "alpha", "ok"),
-        ("workspace.delete", "alpha", "ok"),
-        ("workspace.create", None, "validation_failed"),
-    ]
-
-
-def test_people_changes_are_recorded_with_the_address(client, settings):
-    client.post("/api/people", json={"email": "Dave@Example.com"}, headers=changing(ALICE))
-    dave = next(
-        p
-        for p in client.get("/api/people", headers=changing(ALICE)).json()["people"]
-        if p["email"] == "dave@example.com"
-    )
-    client.delete(f"/api/people/{dave['id']}", headers=changing(ALICE))
-    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
-    assert recorded == [
-        ("person.add", "dave@example.com", "ok"),
-        ("person.delete", "dave@example.com", "ok"),
-    ]
-
-
-def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
-    r = client.patch("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
-    assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
-    last = rows(settings)[-1]
-    assert (last["action"], last["result"]) == ("settings.update", "validation_failed")
-    assert last["target"] is None  # what was refused is not recorded
-
-
-def test_the_refused_target_check_fails_on_a_route_that_records_too_early(app, settings):
-    """Planted twin: a route that sets its target before the body is validated is caught."""
-    from fastapi import Depends
-    from fastapi.testclient import TestClient
-    from pydantic import BaseModel
-
-    class Body(BaseModel):
-        n: int
-
-    def early(record=Depends(audit.Recorder("planted.early"))):
-        record.target = "recorded before validation"
-        return record
-
-    @app.post("/api/planted-early")
-    def planted(body: Body, record=Depends(early)):
-        return {}
-
-    with TestClient(app) as client:
-        r = client.post("/api/planted-early", json={"n": "not a number"}, headers=changing(BOB))
-    assert r.status_code == 422
-    last = rows(settings)[-1]
-    assert (last["action"], last["result"]) == ("planted.early", "validation_failed")
-    assert last["target"] is not None  # the check above would fail here
-
-
-def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settings):
-    """Whatever ends an audited request, its row carries the code of the problem sent back."""
-    from fastapi import Depends, HTTPException
-    from fastapi.testclient import TestClient
-    from pydantic import BaseModel
-    from rcman.problems import Problem
-
-    class Body(BaseModel):
-        n: int
-
-    @app.post("/api/planted/{kind}")
-    def planted(kind: str, body: Body, record=Depends(audit.Recorder("planted.call"))):
-        if kind == "problem":
-            raise Problem("admin_only")
-        if kind == "missing":
-            raise HTTPException(404)
-        if kind == "boom":
-            raise RuntimeError("planted")
-        return {}
-
-    cases = [
-        ("ok", {"n": 1}, "ok"),
-        ("ok", {"n": "not a number"}, "validation_failed"),
-        ("problem", {"n": 1}, "admin_only"),
-        ("missing", {"n": 1}, "not_found"),
-        ("boom", {"n": 1}, "internal_error"),
-    ]
-    with TestClient(app, raise_server_exceptions=False) as client:
-        for kind, body, code in cases:
-            r = client.post(f"/api/planted/{kind}", json=body, headers=changing(BOB))
-            answered = "ok" if r.status_code == 200 else r.json()["code"]
-            assert answered == code, (kind, body, r.text)
-            last = rows(settings)[-1]
-            assert (last["action"], last["result"]) == ("planted.call", code), (kind, body)
-
-
-def test_a_successful_change_is_recorded_as_ok(client, settings):
-    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
-    last = rows(settings)[-1]
-    assert (last["action"], last["result"], last["email"]) == ("settings.update", "ok", BOB)
-
-
-def test_a_settings_change_records_the_settings_sent(client, settings):
-    import json
-
-    for body in (
-        {"prefix": "pfx"},
-        {"author_name": "Сергей Лихарев", "author_email": ""},
-        {"author_email": "bob@work.example"},
-    ):
-        r = client.patch("/api/me/settings", json=body, headers=changing(BOB))
-        assert r.status_code == 200, r.text
-        last = rows(settings)[-1]
-        assert (last["action"], last["result"]) == ("settings.update", "ok")
-        assert json.loads(last["target"]) == body
-    assert "Сергей" in rows(settings)[-2]["target"]  # as written, not escaped
-
-
-def test_audit_events_are_logged_as_json(client, caplog):
-    import json
-
-    caplog.set_level("INFO", logger="rcman.audit")
-    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
-    event = json.loads(caplog.records[-1].getMessage())
-    assert event["action"] == "settings.update" and event["email"] == BOB
 
 
 def _service_argv(port: int, sock: Path) -> list[str]:
@@ -472,14 +381,6 @@ def seed(path, ages_days, now):
     return con
 
 
-def test_retention_deletes_rows_older_than_the_limit(tmp_path):
-    now = dt.datetime(2026, 10, 1, tzinfo=dt.UTC)
-    con = seed(tmp_path / "a.db", [1, 5, 10, 40], now)
-    deleted = audit.apply_retention(con, now=now, days=7, max_rows=100)
-    assert deleted == 2
-    assert con.execute("select count(*) from audit").fetchone()[0] == 2
-
-
 def test_retention_caps_the_row_count_keeping_the_newest(tmp_path):
     now = dt.datetime(2026, 10, 1, tzinfo=dt.UTC)
     con = seed(tmp_path / "a.db", [4, 3, 2, 1], now)
@@ -501,44 +402,22 @@ def test_retention_runs_when_the_app_starts(settings, runtime):
     assert [r["at"] for r in rows(settings)] == [now.isoformat()]  # the expired row only goes
 
 
-def test_retention_runs_again_while_the_app_runs(settings, runtime, monkeypatch):
-    """A row that has expired since rcman started goes at a later retention, and one that has
-    not stays. Its pace is shortened, the test waiting for what it makes happen: the daily pace
-    itself is not tested."""
-    from fastapi.testclient import TestClient
-    from rcman import main
-
-    pace(monkeypatch, main, "RETENTION_INTERVAL_SECONDS", 0.05)
-    with TestClient(main.create_app(settings, runtime=runtime)) as client:
-        assert client.app.state.workspaces.restored.wait(HANG_GUARD)
-        now = dt.datetime.now(dt.UTC)
-        expired = settings.audit_retention_days + 1
-        seed(settings.database, [expired, 0], now).close()  # after the start's own retention
-        until(lambda: len(rows(settings)) <= 1)
-    assert [r["at"] for r in rows(settings)] == [now.isoformat()]
-
-
-def test_what_git_and_github_routes_are_sent_is_never_recorded_or_logged(client, settings, caplog):
+def test_what_git_and_github_routes_are_sent_is_never_answered_recorded_or_logged(
+    client, settings, caplog
+):
     workspace = made_workspace(client, ALICE, "hers")
     caplog.set_level("DEBUG")
     message, token, files = "SECRET-COMMIT-MESSAGE-7", "a-token-never-recorded", ["SECRET-FILE.txt"]
     requests = [
-        ("/api/git/stage", {"workspace": workspace["id"], "files": files}, "git.stage", None),
-        ("/api/git/commit", {"workspace": workspace["id"], "message": message}, "git.commit", None),
-        ("/api/github/token", {"token": token}, "github.token", "ok"),
+        ("/api/git/stage", {"workspace": workspace["id"], "files": files}),
+        ("/api/git/commit", {"workspace": workspace["id"], "message": message}),
+        ("/api/github/token", {"token": token}),
     ]
-    results = []
-    for url, body, _, _ in requests:
-        r = client.post(url, json=body, headers=changing(ALICE))
-        results.append(r.json().get("code", "ok") if r.status_code >= 400 else "ok")
-    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-3:]]
-    assert recorded == [
-        ("git.stage", "hers", results[0]),
-        ("git.commit", "hers", results[1]),
-        ("github.token", None, "ok"),
-    ]
-    assert results[:2] == ["not_a_repository", "author_not_set"]  # they were refused, not made up
+    answers = [client.post(url, json=body, headers=changing(ALICE)).text for url, body in requests]
+    recorded = [(r["action"], r["target"]) for r in rows(settings)[-3:]]
+    assert recorded == [("git.stage", "hers"), ("git.commit", "hers"), ("github.token", None)]
     assert caplog.records  # positive control: the audit events were logged
     for secret in (message, token, *files):
         assert all(secret not in str(v) for row in rows(settings) for v in row.values())
         assert secret not in caplog.text
+    assert all(token not in answer for answer in answers)

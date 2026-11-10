@@ -123,9 +123,9 @@ start.
 
 | Tests | What they prove |
 |---|---|
-| `tests/test_db.py` | The schema: one address and one slot per person, no slot 0, no person removed while workspaces are theirs, no id given again |
-| `tests/test_accounts.py` | A person's sign-in removed before their row, a leftover one never reaching the next person given the same slot, nothing of a person being deleted made again, and a deletion waiting for the person's lock |
-| `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them, and their limits |
-| `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
-| `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, `delete` waiting for a workspace the service is making and leaving it to restore when the service is down, its words, running itself again as rcman, and the installed script |
-| `tests/container/test_install_in_container.py` | The installed thing: the first administrator, `rcman-admin` by name as root, and the allowed list's owner and mode |
+| `tests/test_db.py` | The schema: one address and one slot per person, no person removed while workspaces are theirs, no id given again |
+| `tests/test_accounts.py` | A person's sign-in removed with them |
+| `tests/test_people.py` | The lowest free slot, the allowed list, and the People page's routes, deleting a person's workspaces and settings among them, and their limits |
+| `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed |
+| `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, running itself again as rcman, and the installed script |
+| `tests/test_install.py` | What the installer does of it: the first administrator added by `rcman-admin` as rcman, and the allowed list made by rcman only where there is none |

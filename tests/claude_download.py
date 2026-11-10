@@ -34,11 +34,11 @@ FAKE = "devtools/fake_claude.py"
 DATA = ("tests/fakes/claude", "tests/fakes/fixtures", "tests/fakes/observed")
 
 
-def python_parts(root: Path = REPO, start: str = FAKE) -> tuple[str, ...]:
+def python_parts() -> tuple[str, ...]:
     """The fake and every module of the repository it imports, followed through their own
     imports, with the ``__init__.py`` of each package on the way: what the fake needs to run
     from the bundle alone."""
-    found, todo = set(), [start]
+    root, found, todo = REPO, set(), [FAKE]
     while todo:
         rel = todo.pop()
         if rel in found:
@@ -69,8 +69,6 @@ def python_parts(root: Path = REPO, start: str = FAKE) -> tuple[str, ...]:
 PARTS = (*python_parts(), *DATA)
 MARK = "__BUNDLE__"
 KINDS = ("good", "broken", "failing")
-# What a ``broken`` release reports for its version: not the one it is released as.
-BROKEN_VERSION = "0.0.1"
 # The file a candidate is in a folder the canary is given (runtime.CANDIDATE).
 CANDIDATE = "claude"
 
@@ -114,9 +112,10 @@ exec python3 "$d/tests/fakes/claude" "$@"
     return script.encode() + base64.encodebytes(archive)
 
 
-def broken(version: str = BROKEN_VERSION) -> bytes:
-    """A program that is not Claude Code: it reports ``version`` for everything it is asked."""
-    return f"#!/bin/sh\necho '{version} (Claude Code)'\n".encode()
+def broken() -> bytes:
+    """A program that is not Claude Code: for everything it is asked it reports a version that is
+    not the one it is released as."""
+    return b"#!/bin/sh\necho '0.0.1 (Claude Code)'\n"
 
 
 def binary(version: str, kind: str = "good") -> bytes:
@@ -126,18 +125,12 @@ def binary(version: str, kind: str = "good") -> bytes:
     return broken() if kind == "broken" else bundle(version)
 
 
-def release(
-    folder: Path,
-    version: str,
-    kind: str = "good",
-    platform: str | None = None,
-    latest: bool = True,
-) -> None:
-    """The fake as Claude Code ``version``'s release, of ``kind``, under ``folder``; with
-    ``latest``, the folder's ``latest`` names it."""
+def release(folder: Path, version: str, kind: str = "good") -> None:
+    """The fake as Claude Code ``version``'s release, of ``kind``, under ``folder``, for this
+    machine's platform, and the folder's ``latest`` naming it."""
     from helpers import claude_release
 
-    platform = platform or claude_release.platform_key()
+    platform = claude_release.platform_key()
     program = binary(version, kind)
     # a failing release names a checksum the program does not have
     checksum = hashlib.sha256(program + (b"changed" if kind == "failing" else b"")).hexdigest()
@@ -148,8 +141,7 @@ def release(
         "platforms": {platform: {"binary": "claude", "checksum": checksum}},
     }
     (folder / version / "manifest.json").write_text(json.dumps(manifest))
-    if latest:
-        (folder / "latest").write_text(version)
+    (folder / "latest").write_text(version)
 
 
 def candidate(folder: Path, version: str, kind: str = "good") -> Path:

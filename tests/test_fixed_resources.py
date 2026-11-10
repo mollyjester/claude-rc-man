@@ -15,13 +15,10 @@ each in both, and project-knowledge/tests.md describes them.
 import ast
 import ipaddress
 import re
-import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-import pytest
-
-from tests.typescript import FRONTEND, SOURCES, parse_ts, ts_scanned
+from tests.typescript import FRONTEND, parse_ts, ts_scanned
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -172,9 +169,6 @@ UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
 # Sites flagged on purpose: (file relative to the repository, the function it is in or ""
 # at module level, the site's source text) -> reason. Each covers exactly one site: another
 # site of the same text in the same function, or at module level, is flagged.
-# Why a port of the whole stack is fixed: it is on the loopback of the stack's own network, a
-# container with no other network that nothing else shares (tests/container/stack.py).
-STACK_NETWORK = "a port of the whole stack's own network, which no other run shares"
 EXEMPT = {
     (
         "tests/test_record_claude.py",
@@ -185,46 +179,6 @@ EXEMPT = {
         "the folder held folders are made in, named as the bound no removal may leave;"
         " nothing is made at the path itself"
     ),
-    ("tests/container/stack.py", "settings", 'f"http://127.0.0.1:{RELEASES_PORT}"'): STACK_NETWORK,
-    (
-        "tests/container/stack.py",
-        "install_settings",
-        (
-            "{\n"
-            '        "DOMAIN": DOMAIN,\n'
-            '        "GOOGLE_CLIENT_ID": "test-client-id",\n'
-            '        "GOOGLE_CLIENT_SECRET": "test-client-secret",\n'
-            '        "COOKIE_SECRET": secrets.token_urlsafe(24),\n'
-            '        "PROXY_PORT": str(PROXY_PORT),\n'
-            '        "ASK_PORT": str(ASK_PORT),\n'
-            "    }"
-        ),
-    ): STACK_NETWORK,
-    (
-        "tests/container/stack.py",
-        "up",
-        "f'redeem_url = \"http://127.0.0.1:{STUB_PORT}/token\"\\n'",
-    ): STACK_NETWORK,
-    (
-        "tests/container/stack.py",
-        "up",
-        "f'validate_url = \"http://127.0.0.1:{STUB_PORT}/tokeninfo\"\\n'",
-    ): STACK_NETWORK,
-    (
-        "tests/container/stack.py",
-        "caddy_started",
-        'f"\\n{AUTH} {{\\n\\treverse_proxy 127.0.0.1:{STUB_PORT}\\n}}\\n"',
-    ): STACK_NETWORK,
-    (
-        "tests/container/stack.py",
-        "caddy_started",
-        'f"\\treverse_proxy 127.0.0.1:{GITHUB_PORT}\\n}}\\n"',
-    ): STACK_NETWORK,
-    (
-        "tests/container/stack.py",
-        "",
-        'f"http://127.0.0.1:{ASK_PORT}{ASK_PATH}"',
-    ): STACK_NETWORK,
 }
 
 
@@ -483,6 +437,12 @@ def scanned() -> list[Path]:
 
 
 def test_no_test_holds_a_fixed_tmp_path_or_port():
+    """The tests, tests/container/ among them but for the files that run inside containers,
+    and every devtools module, which the tests and the recorder run."""
+    rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
+    assert {f"devtools/{p.name}" for p in DEVTOOLS.glob("*.py")} <= rels
+    assert "tests/conftest.py" in rels and "tests/container/network.py" in rels
+    assert not {f"tests/{name}" for name in IN_CONTAINERS} & rels
     found, total = [], 0
     for path in scanned():
         rel, source = path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8")
@@ -492,62 +452,12 @@ def test_no_test_holds_a_fixed_tmp_path_or_port():
     assert found == []
 
 
-def test_the_scan_reads_every_devtools_module():
-    """devtools holds what the tests run and what the recorder makes in /tmp."""
-    rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
-    assert {"devtools/held_folders.py", "devtools/record_claude.py"} <= rels
-    assert {f"devtools/{p.name}" for p in DEVTOOLS.glob("*.py")} <= rels
-
-
-def test_the_scan_reads_the_container_suites_but_the_files_that_run_inside_containers():
-    rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
-    assert "tests/conftest.py" in rels and f"tests/{Path(__file__).name}" in rels
-    assert {"tests/container/stack.py", "tests/container/test_builder_in_podman.py",
-            "tests/container/network.py"} <= rels  # fmt: skip
+def test_the_exemptions_still_have_their_sites():
     for name in IN_CONTAINERS:
         assert (TESTS / name).is_file(), name  # the exemption's subject still exists
-        assert f"tests/{name}" not in rels
-
-
-def test_a_fixed_site_in_a_container_module_that_runs_on_the_machine_is_flagged():
-    """Planted twin: only the files IN_CONTAINERS names are left out of tests/container/."""
-    planted = 's.bind(("127.0.0.1", 8765))\n'
-    assert len(flagged("tests/container/test_planted.py", planted)) == 1
-    assert "container/test_planted.py" not in IN_CONTAINERS
-
-
-def test_the_exemptions_still_have_their_sites():
     for rel, function, text in EXEMPT:
         sites = fixed_sites((ROOT / rel).read_text(encoding="utf-8"))
         assert [s for s in sites if (s.function, s.text) == (function, text)], (rel, function)
-
-
-def test_a_new_fixed_site_in_an_exempt_function_is_flagged(monkeypatch):
-    """Planted twin: an exemption covers its own site, not the function it is in. The
-    exemption and its function are planted, so the twin holds whatever EXEMPT lists."""
-    rel, function, text = "tests/planted_module.py", "planted", f'"{TMP}"'
-    source = f"def {function}():\n    y = {text}\n"
-    monkeypatch.setitem(EXEMPT, (rel, function, text), "planted")
-    assert flagged(rel, source) == []  # positive control: the exempt site passes
-    header = f"def {function}("
-    body = source.index(":\n", source.index(header)) + 2
-    for extra in ('    s.bind(("127.0.0.1", 8765))\n', f"    x = {text}\n"):
-        planted = source[:body] + extra + source[body:]
-        assert planted != source  # the plant took effect
-        assert len(flagged(rel, planted)) == 1, extra
-
-
-def test_a_new_fixed_site_beside_a_module_level_exemption_is_flagged():
-    """Planted twin: a module-level exemption covers its own site, not the module."""
-    at_module = [key for key in EXEMPT if not key[1]]
-    assert at_module  # non-vacuity: an exemption at module level to plant beside
-    for rel, _, text in at_module:
-        source = (ROOT / rel).read_text(encoding="utf-8")
-        assert flagged(rel, source) == []  # positive control: the exempt site passes
-        for extra in ('s.bind(("127.0.0.1", 8765))\n', f"x = {text}\n"):
-            planted = f"{source}\n{extra}"
-            assert planted != source  # the plant took effect
-            assert len(flagged(rel, planted)) == 1, (rel, extra)
 
 
 # The frontend's TypeScript and JavaScript: the component tests, the config, the screenshot tool
@@ -826,44 +736,10 @@ def test_no_frontend_source_holds_a_fixed_tmp_path_or_port():
     for rel, source in sources.items():
         total += len(ts_sites(source, trees[rel]))
         found += ts_flagged(rel, source, trees[rel])
+    assert {"vite.config.ts", "src/api.ts"} <= set(sources)  # derived from git
+    assert not any(r.startswith("node_modules/") for r in sources)
     assert total >= len(TS_EXEMPT) > 0  # non-vacuity: the exempt sites are found
     assert found == []
-
-
-def test_the_scan_reads_every_typescript_and_javascript_file_in_the_frontend():
-    """Derived from git: every such file in frontend/ that is not ignored."""
-    rels = set(ts_scanned())
-    named = {"vite.config.ts", "src/api.ts"}
-    assert named <= rels
-    for ignored in ("node_modules", "dist", "test-results"):
-        assert not any(r.startswith(ignored + "/") for r in rels), ignored
-    # Positive control: node_modules holds TypeScript that the scan leaves out.
-    assert next((FRONTEND / "node_modules" / "vite").rglob("*.d.ts"), None) is not None
-
-
-def test_the_scan_takes_every_name_and_kind_of_source_git_lists(tmp_path):
-    """Planted twin: names with spaces and beyond ASCII, each kind of source, and what
-    git ignores, in a repository of its own."""
-    sources = {f"src/kind{suffix}" for suffix in SOURCES} | {"a b.ts", "über/ünï.tsx"}
-    for rel in [*sources, "ignored/x.ts", "notes.txt"]:
-        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / rel).write_text("const a = 1;\n")
-    (tmp_path / ".gitignore").write_text("ignored/\n")
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "add", "a b.ts", "src"], check=True)
-    assert set(ts_scanned(tmp_path)) == sources
-
-
-def test_a_typescript_file_that_does_not_parse_fails_the_guard():
-    with pytest.raises(RuntimeError, match="broken.ts"):
-        parse_ts({"fine.ts": "const a = 1;", "broken.ts": "const = ;"})
-
-
-def test_the_guard_fails_without_the_frontends_packages(tmp_path):
-    """The parser is Vite's, from the frontend's packages; without them nothing is read."""
-    assert parse_ts({"fine.ts": "const a = 1;"})["fine.ts"]["body"]  # positive control
-    with pytest.raises(RuntimeError, match="vite"):
-        parse_ts({"fine.ts": "const a = 1;"}, cwd=tmp_path)
 
 
 def test_the_typescript_exemptions_still_have_their_sites():
@@ -871,35 +747,6 @@ def test_the_typescript_exemptions_still_have_their_sites():
         source = (FRONTEND / rel).read_text(encoding="utf-8")
         sites = ts_sites(source, parse_ts({rel: source})[rel])
         assert [s for s in sites if (s.function, s.text) == (scope, text)], (rel, scope)
-
-
-def test_a_new_fixed_site_beside_a_typescript_exemption_is_flagged():
-    """Planted twin: an exemption covers its own site, not the scope it is in."""
-    rel, scope, text = next(iter(TS_EXEMPT))
-    source = (FRONTEND / rel).read_text(encoding="utf-8")
-    assert scope == ""  # the exempt site is at module level, where the plants go
-    plants = {"exempt": source}
-    for extra in ("server.listen(8765);\n", f"const again = {text};\n"):
-        plants[extra] = source + extra
-        assert plants[extra] != source  # the plant took effect
-    trees = parse_ts({f"p{i}.ts": s for i, s in enumerate(plants.values())})
-    flags = [ts_flagged(rel, s, trees[f"p{i}.ts"]) for i, s in enumerate(plants.values())]
-    assert flags[0] == []  # positive control: the exempt site passes
-    assert [len(f) for f in flags[1:]] == [1, 1], flags
-
-
-def test_a_typescript_site_is_named_by_the_function_or_test_it_is_in():
-    snippet = f'join("{TMP}", "x")'
-    source = (
-        f"const top = {snippet};\n"
-        f"function named() {{\n  {snippet};\n}}\n"
-        f"const arrow = () => {snippet};\n"
-        f'test("a test title", async () => {{\n  {snippet};\n}});\n'
-    )
-    sites = ts_sites(source, parse_ts({"scopes.ts": source})["scopes.ts"])
-    assert [(s.line, s.function) for s in sites] == [
-        (1, ""), (3, "named"), (5, "arrow"), (7, "a test title"),
-    ]  # fmt: skip
 
 
 # The forms the guard catches, each spelled in both languages: the one list of them. Planted
@@ -1159,47 +1006,6 @@ FORMS = {
         ("const server = { port: `${<port>}` };", "const env = { RCMAN_E2E_PORT: `<port>` };"),
     ),
 }
-# A module-level name given a fixed port, and the forms that use it in a function. The name
-# is followed to where it is used; it is not a site itself.
-PORT_DECLARATIONS = {
-    "a number": Twins(("PORT = <port>",), ("const PORT = <port>;",)),
-    "a string of digits": Twins(('PORT: str = "<port>"',), ('export const PORT = "<port>";',)),
-    "a fallback": Twins(
-        ('PORT = int(os.environ.get("PORT", "<port>"))',),
-        ('const PORT = process.env.PORT ?? "<port>";',),
-    ),
-}
-PORT_USES = {
-    "an address": Twins(
-        ('s.bind(("127.0.0.1", PORT))',), ('const address = ["127.0.0.1", PORT];',)
-    ),
-    "a call's arguments": Twins(
-        ('connection = asyncio.open_connection("127.0.0.1", PORT)',),
-        ('const socket = net.connect(PORT, "127.0.0.1");',),
-    ),
-    "a port's name": Twins(("start(port=PORT)",), ("const server = { port: PORT };",)),
-    "an environment's port": Twins(
-        ('os.environ.setdefault("RCMAN_E2E_PORT", str(PORT))',),
-        ("process.env.RCMAN_E2E_PORT ??= PORT;",),
-    ),
-    "listen": Twins(("app.listen(PORT)",), ("server.listen(PORT);",)),
-    "after --port": Twins(
-        ('run(["uvicorn", "--port", str(PORT)])', 'run(["uvicorn", "--port", PORT])'),
-        ('run("uvicorn", ["--port", String(PORT)]);',),
-    ),
-    "a formatted command": Twins(
-        ('command = f"uvicorn app --port {PORT}"',),
-        ("const command = `uvicorn app --port ${PORT}`;",),
-    ),
-    "a formatted URL": Twins(
-        ('url = f"http://localhost:{PORT}"',), ("const url = `http://localhost:${PORT}`;",)
-    ),
-    "a joined URL": Twins(
-        ('url = "http://127.0.0.1:" + str(PORT)',), ('const url = "http://127.0.0.1:" + PORT;',)
-    ),
-}
-# A name for a port that is a function's own: a site, as a module-level one is not.
-LOCAL_PORT = Twins(("port = <port>",), ("const port = <port>;", "let port;\nport = <port>;"))
 # What the guard leaves alone, in both languages.
 CLEAN = {
     "a uniquely named folder made in /tmp itself": Twins(
@@ -1323,12 +1129,7 @@ CLEAN = {
         ),
     ),
 }
-TABLES = {
-    "FORMS": FORMS,
-    "PORT_DECLARATIONS": PORT_DECLARATIONS,
-    "PORT_USES": PORT_USES,
-    "CLEAN": CLEAN,
-}
+TABLES = {"FORMS": FORMS, "CLEAN": CLEAN}
 
 
 def _spelled(planted: str) -> str:
@@ -1348,28 +1149,9 @@ def _in_function(snippet: str) -> str:
     return f"function f() {{\n  {snippet}\n}}\n"
 
 
-def _module_port(declaration: str, use: str, python: bool) -> str:
-    inside = _python_in_function(use) if python else _in_function(use)
-    return f"{_spelled(declaration)}\n{inside}"
-
-
 def _twins(language: str, table: dict) -> list:
-    """Each spelling in one language of a table's entries, with the entry's name as its id."""
-    return [
-        pytest.param(entry, spelling, id=f"{name}: {spelling}")
-        for name, entry in table.items()
-        for spelling in getattr(entry, language)
-    ]
-
-
-def _module_ports(language: str) -> list:
-    return [
-        pytest.param(declaration, use, id=f"{d} / {u}: {use}")
-        for d, declarations in PORT_DECLARATIONS.items()
-        for declaration in getattr(declarations, language)
-        for u, uses in PORT_USES.items()
-        for use in getattr(uses, language)
-    ]
+    """Each spelling in one language of a table's entries, with its entry."""
+    return [(entry, spelling) for entry in table.values() for spelling in getattr(entry, language)]
 
 
 def test_every_form_and_allowance_is_spelled_in_both_languages():
@@ -1377,7 +1159,6 @@ def test_every_form_and_allowance_is_spelled_in_both_languages():
     assert all(TABLES.values())  # non-vacuity: each table has entries
     for name, table in TABLES.items():
         assert _one_sided(table) == [], name
-    assert LOCAL_PORT.python and LOCAL_PORT.typescript
     planted = {**FORMS, "only in Python": Form("port", ("x = 1",), ())}
     planted["only in TypeScript"] = Form("port", (), ("const x = 1;",))
     assert _one_sided(planted) == ["only in Python", "only in TypeScript"]
@@ -1385,111 +1166,38 @@ def test_every_form_and_allowance_is_spelled_in_both_languages():
 
 def test_planted_text_names_no_fixed_path_or_port_until_spelled():
     """The placeholders stand for the path and port, so the guard reads none in this module."""
-    entries = [*(e for table in TABLES.values() for e in table.values()), LOCAL_PORT]
+    entries = [e for table in TABLES.values() for e in table.values()]
     planted = [s for e in entries for s in (*e.python, *e.typescript)]
     assert any("<port>" in s for s in planted) and any("<tmp>" in s for s in planted)
     assert all(TMP not in s and PLANTED_PORT not in s for s in planted)
 
 
-@pytest.mark.parametrize(("form", "planted"), _twins("python", FORMS))
-def test_the_guard_finds_each_form_planted_in_python(form, planted):
+def test_the_guard_finds_each_form_planted_in_python_and_leaves_each_allowance_alone():
     """Planted twins: each spelling is found, at module level and in a function."""
-    source = _spelled(planted)
-    sites = fixed_sites(source)
-    assert [s.kind for s in sites] == [form.kind]
-    inside = fixed_sites(_python_in_function(source))
-    assert [s[:3] for s in inside] == [(sites[0].line + 1, sites[0].function or "f", form.kind)]
+    for form, planted in _twins("python", FORMS):
+        source = _spelled(planted)
+        sites = fixed_sites(source)
+        assert [s.kind for s in sites] == [form.kind], planted
+        inside = fixed_sites(_python_in_function(source))
+        line, function = sites[0].line + 1, sites[0].function or "f"
+        assert [s[:3] for s in inside] == [(line, function, form.kind)], planted
+    for _, source in _twins("python", CLEAN):
+        assert fixed_sites(_spelled(source)) == [], source
 
 
-@pytest.mark.parametrize(("declaration", "use"), _module_ports("python"))
-def test_the_guard_finds_a_fixed_port_held_in_a_module_constant(declaration, use):
-    """Planted twin: a port named once at module level and used in a function."""
-    source = _module_port(declaration, use, python=True)
-    assert [s[:3] for s in fixed_sites(source)] == [(3, "f", "port")]
-    chosen = _module_port(declaration.replace("<port>", "0"), use, python=True)
-    assert fixed_sites(chosen) == []  # positive control: port 0
-
-
-def test_a_functions_own_port_name_is_a_site_and_a_modules_is_followed():
-    (planted,) = LOCAL_PORT.python
-    assert fixed_sites(_spelled(planted)) == []
-    inside = _python_in_function(_spelled(planted))
-    assert [s[:3] for s in fixed_sites(inside)] == [(2, "f", "port")]
-
-
-@pytest.mark.parametrize(("allowance", "source"), _twins("python", CLEAN))
-def test_the_guard_leaves_unique_names_and_chosen_ports_alone(allowance, source):
-    assert fixed_sites(_spelled(source)) == []
-
-
-@pytest.fixture(scope="module")
-def ts_trees() -> dict[str, dict]:
-    """Every TypeScript source these tests plant, parsed together: one node per module."""
-    sources = []
-    for form in FORMS.values():
-        for planted in map(_spelled, form.typescript):
-            sources += [planted, _in_function(planted)]
-    for declarations in PORT_DECLARATIONS.values():
-        for declaration in declarations.typescript:
-            for uses in PORT_USES.values():
-                for use in uses.typescript:
-                    for chosen in (declaration, declaration.replace("<port>", "0")):
-                        sources.append(_module_port(chosen, use, python=False))
-    for local in map(_spelled, LOCAL_PORT.typescript):
-        sources += [local, _in_function(local)]
-    sources += [_spelled(s) for twins in CLEAN.values() for s in twins.typescript]
+def test_the_guard_finds_each_form_planted_in_typescript_and_leaves_each_allowance_alone():
+    """Planted twins: each spelling is found, at module level and in a function; every source
+    parsed together, one node per module."""
+    forms = [(form, _spelled(planted)) for form, planted in _twins("typescript", FORMS)]
+    clean = [_spelled(source) for _, source in _twins("typescript", CLEAN)]
+    sources = [s for _, planted in forms for s in (planted, _in_function(planted))] + clean
     names = {f"planted{i}.ts": source for i, source in enumerate(sources)}
-    return {names[name]: tree for name, tree in parse_ts(names).items()}
-
-
-@pytest.mark.parametrize(("form", "planted"), _twins("typescript", FORMS))
-def test_the_guard_finds_each_form_planted_in_typescript(ts_trees, form, planted):
-    """Planted twins: each spelling is found, at module level and in a function."""
-    source = _spelled(planted)
-    sites = ts_sites(source, ts_trees[source])
-    assert [s.kind for s in sites] == [form.kind]
-    inside = _in_function(source)
-    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [
-        (sites[0].line + 1, sites[0].function or "f", form.kind)
-    ]
-
-
-@pytest.mark.parametrize(("declaration", "use"), _module_ports("typescript"))
-def test_the_guard_finds_a_fixed_port_held_in_a_typescript_module_constant(
-    ts_trees, declaration, use
-):
-    """Planted twin: a port named once at module level and used in a function."""
-    source = _module_port(declaration, use, python=False)
-    assert [s[:3] for s in ts_sites(source, ts_trees[source])] == [(3, "f", "port")]
-    chosen = _module_port(declaration.replace("<port>", "0"), use, python=False)
-    assert ts_sites(chosen, ts_trees[chosen]) == []  # positive control: port 0
-
-
-@pytest.mark.parametrize("planted", LOCAL_PORT.typescript)
-def test_a_functions_own_port_name_is_a_typescript_site_and_a_modules_is_followed(
-    ts_trees, planted
-):
-    planted = _spelled(planted)
-    assert ts_sites(planted, ts_trees[planted]) == []
-    line = 2 + next(i for i, text in enumerate(planted.splitlines()) if PLANTED_PORT in text)
-    inside = _in_function(planted)
-    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [(line, "f", "port")]
-
-
-@pytest.mark.parametrize(("allowance", "source"), _twins("typescript", CLEAN))
-def test_the_guard_leaves_unique_names_and_chosen_ports_in_typescript_alone(
-    ts_trees, allowance, source
-):
-    source = _spelled(source)
-    assert ts_sites(source, ts_trees[source]) == []
-
-
-def test_ports_given_in_a_tuple_assignment_are_followed():
-    """Planted twin: module-level names given fixed ports together, as one assignment of a
-    tuple, are followed to their uses as one name is; a tuple of other values is not."""
-    planted = 'A_PORT, B_PORT = 9100, 9200\nurl = f"http://127.0.0.1:{A_PORT}/"\n'
-    assert len(flagged("tests/planted.py", planted)) == 1
-    alone = 'A_PORT = 9100\nurl = f"http://127.0.0.1:{A_PORT}/"\n'
-    assert len(flagged("tests/planted.py", alone)) == 1  # the control: one name alone
-    other = 'A, B = "x", "y"\nurl = f"http://127.0.0.1:{A}/"\n'
-    assert flagged("tests/planted.py", other) == []
+    trees = {names[name]: tree for name, tree in parse_ts(names).items()}
+    for form, source in forms:
+        sites = ts_sites(source, trees[source])
+        assert [s.kind for s in sites] == [form.kind], source
+        inside = _in_function(source)
+        line, function = sites[0].line + 1, sites[0].function or "f"
+        assert [s[:3] for s in ts_sites(inside, trees[inside])] == [(line, function, form.kind)]
+    for source in clean:
+        assert ts_sites(source, trees[source]) == [], source

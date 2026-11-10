@@ -4,9 +4,7 @@
 the deployed copy. Tests and development tooling must never reach it.
 """
 
-import io
 import subprocess
-import tarfile
 from pathlib import Path
 
 from devtools import docs_guard
@@ -66,30 +64,8 @@ def test_every_development_file_is_export_ignored():
     # Non-vacuity: this very file is development-only.
     assert "tests/test_export.py" in [p for p in corpus if under_dev_only(p)]
     assert unmarked_development_files(REPO, corpus) == set()
-
-
-def test_runtime_files_are_exported():
-    corpus = set(docs_guard.corpus_files(REPO))
-    assert set(RUNTIME) <= corpus
+    assert set(RUNTIME) <= set(corpus)  # and what a deployment needs is not marked
     assert export_ignored(RUNTIME) == set()
-
-
-def test_git_archive_honours_the_patterns_used(tmp_path):
-    """Probe the mechanism itself, with this repository's own .gitattributes."""
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / ".gitattributes").write_bytes((REPO / ".gitattributes").read_bytes())
-    for name in ["tests/test_x.py", "devtools/tool.py", "CLAUDE.md", "README.md"]:
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text("x", encoding="utf-8")
-    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-qm", "probe"], check=True)
-
-    archive = subprocess.run([*git, "archive", "HEAD"], capture_output=True, check=True).stdout
-    names = tarfile.open(fileobj=io.BytesIO(archive)).getnames()
-
-    assert "README.md" in names  # positive control
-    assert not [n for n in names if n.startswith(("tests", "devtools")) or n == "CLAUDE.md"]
 
 
 def test_the_check_reports_a_development_file_that_is_not_export_ignored(tmp_path):

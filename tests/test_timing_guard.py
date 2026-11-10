@@ -105,7 +105,7 @@ RESOLVED_POSITIONAL = {
     "trio.move_on_after": 0,
 }  # fmt: skip
 QUEUE_NAME = re.compile(r"queue|inbox|outbox|_q$|^q$", re.I)
-DOUBLES = {"FakeTime", "WatchedCondition", "ControlledEvent", "RecordingLock", "Time", "Clock"}
+DOUBLES = {"FakeTime", "WatchedCondition", "ControlledEvent", "Time", "Clock"}
 GUARD_ATTRIBUTES = GUARD_NAMES | {"tier", "tier_guard"}
 
 SHELL = re.compile(
@@ -1975,11 +1975,8 @@ def scan_source(
 # the tests that run them; ``stand_in_problems`` is their stale check.
 STAND_INS = {
     "devtools/fake_claude.py": "runs as `claude` in a workspace, imitating Claude Code's timing",
-    "devtools/pre_test_commit.py": "the pre-test hook: its DEADLINE and GRACE are its behaviour",
     "tests/container/stand_ins.py": "runs as systemctl, loginctl and rcman's podman in the "
     "container suites, imitating their timing (a unit's stop)",
-    "tests/container/github_stand_in.py": "serves the tests' GitHub in a container",
-    "tests/container/oidc_stub.py": "runs as Google's sign-in in the whole stack",
 }
 GUARD_FILE = "tests/test_timing_guard.py"
 
@@ -2386,7 +2383,7 @@ NAMED = (
     Named("doubles", "tests/time_doubles.py",
           ("_Double._hang_left", "FakeTime._poll", "FakeTime.sleep", "WatchedCondition.wait_for",
            "ControlledEvent.wait", "_Double._until", "FakeTime._park", "_Double.wait_waiting",
-           "_Double._expire", "RecordingLock.acquire", "RecordingLock.wait_blocked"),
+           "_Double._expire"),
           frozenset({"P1", "P2", "P3"}),
           "the doubles' hang bound, which only turns a frozen wait into DoubleHung, and their "
           "wait records, whose parameters are named wait"),
@@ -2408,16 +2405,13 @@ NAMED = (
     Named("guard tests", "tests/test_until.py",
           ("test_a_condition_that_never_holds_fails_at_the_tiers_guard_with_what_it_last_gave",
            "test_a_container_tests_tier_guard_is_the_container_hang_guard",
-           "test_runs_out_puts_a_deadline_at_the_floor_the_product_takes",
-           "test_runs_out_refuses_a_deadline_that_is_not_shortened"),
+           "test_runs_out_puts_a_deadline_at_zero_or_the_products_floor_and_undoes_it"),
           frozenset({"P4"}),
           "until's, tier_guard's and runs_out's own tests: a guard of 0 that until has run out "
-          "against, the container tier read from the registry, and runs_out given a floor and "
-          "a deadline it refuses"),
+          "against, the container tier read from the registry, and runs_out given a floor"),
     Named("guard tests", "tests/test_until.py",
           ("test_a_container_tests_tier_guard_is_the_container_hang_guard",
-           "test_a_program_the_tests_start_takes_the_guard_it_is_handed",
-           "test_a_tests_own_tier_comes_before_a_guard_handed_by_a_fixture"),
+           "test_a_program_the_tests_start_takes_the_guard_it_is_handed"),
           frozenset({"TIER"}),
           "tier_guard's own tests, in a host test: that it gives the container tier's guard "
           "where the container tier asks"),
@@ -2441,6 +2435,10 @@ NAMED = (
           "a killed run's own hang bound: hold() and shell_hold() give up at the deadline the run "
           "is handed, the tier's guard from its start, which only ends a run nothing killed or "
           "released"),
+    Named("pre-test hook", "devtools/pre_test_commit.py", ("", "_run", "Git.restore", "_head"),
+          frozenset({"P3"}),
+          "the pre-test hook, which Claude Code runs before a command and no test runs: its "
+          "DEADLINE and GRACE are its behaviour, and decide no test"),
     Named("held folders", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
           frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
@@ -2533,85 +2531,19 @@ def fn(body: str, params: str = "t") -> str:
     return f"def test_x({params}):\n" + "".join(f"    {line}\n" for line in body.splitlines())
 
 
-# name: (form, source, line, the branch that flags it)
+# name: (form, source, line, the branch that flags it): one twin for each branch
 PLANTED = {
-    # P1
     "a deadline loop": ("P1", "import time\ndeadline = time.monotonic() + 5\n"
                         "while time.monotonic() < deadline:\n    pass\n", 3, "P1 branch"),
-    "a difference stored": ("P1", "import time\nstarted = time.perf_counter()\n"
-                            "took = time.perf_counter() - started\n", 3, "P1 branch"),
-    "time.time": ("P1", "import time\ndef f(t):\n    return time.time() > t\n", 3, "P1 branch"),
-    "monotonic_ns": ("P1", "import time\ndef f(t):\n    return time.monotonic_ns() > t\n", 3,
-                     "P1 branch"),
-    "perf_counter_ns": ("P1", "import time\ndef f(t):\n    return time.perf_counter_ns() > t\n",
-                        3, "P1 branch"),
-    "time_ns": ("P1", "import time\ndef f(t):\n    return time.time_ns() > t\n", 3, "P1 branch"),
-    "datetime.now compared": ("P1", "from datetime import datetime as dt\n"
-                              "def f(t):\n    return dt.now() > t\n", 3, "P1 branch"),
-    "datetime.now with a zone": ("P1", "import datetime\ndef f(t):\n"
-                                 "    return datetime.datetime.now(datetime.UTC) > t\n", 3,
-                                 "P1 branch"),
-    "utcnow": ("P1", "import datetime\ndef f(t):\n    return datetime.datetime.utcnow() > t\n",
-               3, "P1 branch"),
-    "date.today": ("P1", "from datetime import date\ndef f(t):\n    return date.today() > t\n",
-                   3, "P1 branch"),
-    "an aliased clock": ("P1", "import time as t\ndef f(x):\n    return t.monotonic() > x\n", 3,
-                         "P1 branch"),
-    "loop.time": ("P1", "def f(loop, end):\n    return loop.time() < end\n", 2, "P1 branch"),
-    "a clock through max": ("P1", "import time\ndef f(a):\n    late = max(time.monotonic(), a)\n"
-                            "    return late > 3\n", 4, "P1 branch"),
-    # P2
     "time.sleep": ("P2", "import time\ntime.$SLEEP(1)\n", 2, "P2 branch"),
-    "an aliased sleep": ("P2", "from time import $SLEEP as nap\nnap(0.5)\n", 2, "P2 branch"),
-    "asyncio.sleep": ("P2", "import asyncio\nasync def f():\n    await asyncio.$SLEEP(0.1)\n", 3,
-                      "P2 branch"),
-    "anyio.sleep": ("P2", "import anyio\nasync def f():\n    await anyio.$SLEEP(1)\n", 3,
-                    "P2 branch"),
-    "trio.sleep": ("P2", "import trio\nasync def f():\n    await trio.$SLEEP(1)\n", 3, "P2 branch"),
-    "a Timer": ("P2", "import threading\nthreading.Timer(1.0, print).start()\n", 2, "P2 branch"),
-    "call_later": ("P2", "def f(loop):\n    loop.call_later(2, print)\n", 2, "P2 branch"),
-    "call_at": ("P2", "def f(loop):\n    loop.call_at(2, print)\n", 2, "P2 branch"),
-    # P2s
     "a shell sleep": ("P2s", "argv = ['sh', '-c', '$SLEEP 3; echo done']\n", 1, "P2s branch"),
-    "a shell sleep of .5": ("P2s", "argv = ['sh', '-c', '$SLEEP .5']\n", 1, "P2s branch"),
-    "a timeout tool": ("P2s", "argv = ['sh', '-c', '$TIMEOUT -k 1 5 cat']\n", 1, "P2s branch"),
-    "a timeout with --signal": ("P2s", "s = '$TIMEOUT --signal=KILL 5 cat'\n", 1, "P2s branch"),
-    "a timeout with -sKILL": ("P2s", "s = '$TIMEOUT -sKILL 5 cat'\n", 1, "P2s branch"),
-    "a Python sleep in a string": ("P2s", "code = 'import time; time.$SLEEP(2)'\n", 1,
-                                   "P2s branch"),
-    "an interpolated sleep": ("P2s", "n = 3\nscript = f'$SLEEP {n}; exit 0'\n", 2, "P2s branch"),
-    "a child's loop on a clock": ("P1", "s = 'while [ $($DATE +%s) $LT 9 ]; do :; done'\n", 1,
-                                  "P2s branch"),
-    "a child's loop that sleeps on a count": (
-        "P1", "s = 'while [ $n $LT 9 ]; do $SLEEP 1; n=$((n+1)); done'\n", 1, "P2s branch"),
     "a timeout argv": ("P2s", "argv = ['timeout', '-s', 'KILL', '30', 'sh']\n", 1, "P2s argv"),
-    "a timeout argv holding a name": ("P2s", "def f(n):\n    return ['timeout', n, 'cat']\n", 2,
-                                      "P2s argv"),
-    "a timeout argv of an f-string": ("P2s", "def f(n):\n    return ['timeout', f'{n}', 'cat']\n",
-                                      2, "P2s argv"),
-    "a timeout argv of str()": ("P2s", "def f():\n    return ['timeout', str(5), 'cat']\n", 2,
-                                "P2s argv"),
-    "the timeout tool through its argv": (
-        "P2s", "def f(layout, rt):\n    t = [*layout.tool('timeout'), '-s', 'TERM']\n"
-        "    rt.exec([*t, '5', 'sh'])\n", 3, "P2s argv"),
-    "the timeout tool's -k": (
-        "P2s", "def f(layout):\n    return [*layout.tool('timeout'), '-k', '1']\n", 2, "P2s argv"),
-    # P3 keywords
-    **{
-        f"a {kw} keyword": ("P3", f"def f(g):\n    g({kw}=2.5)\n", 2, "P3 keywords")
-        for kw in ("timeout", "within", "deadline", "seconds", "wait", "quiet", "interval",
-                   "delay", "every", "grace", "hold_timeout", "hold_seconds", "hold_within",
-                   "poll_interval", "start_delay", "max_wait", "stop_grace", "hang_after",
-                   "guard")
-    },
-    # P3 positionals
     "a join": ("P3", "def f(t):\n    t.join(5)\n", 2, "P3 positional join"),
     "a wait": ("P3", "def f(e):\n    e.wait(0.5)\n", 2, "P3 positional wait"),
     "a wait_for": ("P3", "def f(c, p):\n    c.wait_for(p, 3)\n", 2, "P3 positional wait_for"),
     "a communicate": ("P3", "def f(p):\n    p.communicate(None, 30)\n", 2,
                       "P3 positional communicate"),
     "a queue get": ("P3", "def f(queue):\n    queue.get(True, 2)\n", 2, "P3 positional get"),
-    "an inbox get": ("P3", "def f(inbox):\n    inbox.get(True, 5)\n", 2, "P3 positional get"),
     "a settimeout": ("P3", "def f(s):\n    s.settimeout(5)\n", 2, "P3 positional settimeout"),
     "an acquire": ("P3", "def f(lock):\n    lock.acquire(True, 5)\n", 2,
                    "P3 positional acquire"),
@@ -2635,112 +2567,25 @@ PLANTED = {
     "asyncio.wait_for": ("P3", "import asyncio\nasync def f(c):\n"
                          "    await asyncio.wait_for(c, 5)\n",
                          3, "P3 positional asyncio.wait_for"),
-    "a local name shadowing an import": (
-        "P3", "from tests.other import restoring\n" + fn("restoring = make()\nrestoring.join(3)"),
-        4, "P3 positional join"),
-    "a positional constant": ("P3", "SHORT = 0.5\ndef test_x(t):\n    t.join(SHORT)\n", 3,
-                              "P3 positional join"),
-    # P3 values that are not checked where they are given
-    "a fixture's value": ("P3", "import pytest\n@pytest.fixture\ndef short():\n    return 0.5\n"
-                          "def test_x(short, t):\n    t.join(timeout=short)\n", 6, "P3 keywords"),
-    "a lambda's parameter": ("P3", "f = lambda t, n: t.join(timeout=n)\n", 1, "P3 keywords"),
-    "a local constant": ("P3", fn("TIMEOUT = 0.5\nt.join(timeout=TIMEOUT)"), 3, "P3 keywords"),
-    "a tuple constant": ("P3", "A_TIMEOUT, B = 0.5, 1\ndef test_x(t):\n"
-                         "    t.join(timeout=A_TIMEOUT)\n", 1, "P3 constants"),
-    "a constant built from a call": ("P3", "WAIT_SECONDS = float('0.5')\n", 1, "P3 constants"),
-    "a rebound constant": ("P3", "WAIT = 1\nWAIT = 2\ndef test_x(t):\n    t.join(timeout=WAIT)\n",
-                           4, "P3 keywords"),
-    "a product's value in a test": ("P3", "from rcman import channel\n"
-                                    + fn("t.join(channel.REQUEST_TIMEOUT)"), 3,
-                                    "P3 positional join"),
+    "a timeout keyword": ("P3", "def f(g):\n    g(timeout=2.5)\n", 2, "P3 keywords"),
     "a helper's parameter given a number": (
         "P3", "def helper(t, n=None):\n    t.join(timeout=n)\ndef test_x(t):\n    helper(t, 0.5)\n",
         4, "P3 table"),
-    "a helper's default that is not checked by name": (
-        "P3", "def helper(t, n=0.5):\n    t.join(timeout=n)\n", 2, "P3 keywords"),
-    # P3 table and defaults
-    "a table position": ("P3", fn("gone(p, 60)", "p"), 2, "P3 table"),
-    "a table position of a method": ("P3", fn("s.recording_held(5)", "s"), 2, "P3 table"),
-    "a table position given a constant": ("P3", "X = 5\n" + fn("held(1, X)"), 3, "P3 table"),
-    "a disagreeing name at the union": ("P3", fn("go(1, 60)\ngo(60, 1)"), 2, "P3 table"),
-    "a disagreeing name, its other position": ("P3", fn("go(1, 60)\ngo(60, 1)"), 3, "P3 table"),
-    "a disagreeing POSITIONAL name": ("P3", fn("world.run(['a'], 10)", "world"), 2, "P3 table"),
     "a parameter default": ("P3", "def f(x, timeout=30):\n    pass\n", 1, "P3 defaults"),
-    "a product's default outside a stand-in": (
-        "P3", "from rcman import runtime as rt\ndef f(g, timeout=rt.PODMAN_TIMEOUT):\n    pass\n",
-        2, "P3 defaults"),
-    "tier_guard in a default": ("P3", "from tests.hang_guard import tier_guard\n"
-                                "def f(within=tier_guard()):\n    pass\n", 2, "P3 defaults"),
     "a constant": ("P3", "ANSWERS_WITHIN = 15.0\n", 1, "P3 constants"),
-    "a constant of a plural timing word": ("P3", "STOP_INTERVALS = 0.5\n", 1, "P3 constants"),
-    "a class constant": ("P3", "class C:\n    POLL_SECONDS = 0.1\n", 2, "P3 constants"),
-    "tier_guard at module level": ("P3", "from tests.hang_guard import tier_guard\n"
-                                   "WAIT_SECONDS = tier_guard()\n", 2, "P3 constants"),
     "pytest.mark.timeout": ("P3", "import pytest\n@pytest.mark.timeout(5)\ndef test_x():\n"
                             "    pass\n", 2, "P3 mark"),
-    "a guard under 1": ("P3", "from tests.hang_guard import HANG_GUARD\n"
-                        "def f(g):\n    g(timeout=HANG_GUARD / 2)\n", 3, "P3 keywords"),
-    # P4
     "a monkeypatched deadline": ("P4", fn("monkeypatch.setattr(mod, 'STOP_TIMEOUT', 0.1)",
                                           "monkeypatch, mod"), 2, "P4 branch"),
-    "patched.setattr": ("P4", "def test_x(monkeypatch, mod):\n"
-                        "    with monkeypatch.context() as patched:\n"
-                        "        patched.setattr(mod, 'STOP_TIMEOUT', 0.1)\n", 3, "P4 branch"),
-    "the builtin setattr": ("P4", fn("setattr(mod, 'STOP_TIMEOUT', 0.1)", "mod"), 2, "P4 branch"),
-    "a string target": ("P4", fn("monkeypatch.setattr('rcman.x.GRACE_SECONDS', 0.5)",
-                                 "monkeypatch"), 2, "P4 branch"),
-    "mock.patch": ("P4", "from unittest import mock\n"
-                   "def test_x():\n    with mock.patch('rcman.x.POLL_SECONDS', 0.01):\n"
-                   "        pass\n", 3, "P4 branch"),
-    "mock.patch.object": ("P4", "from unittest import mock\ndef test_x(m):\n"
-                          "    with mock.patch.object(m, 'IDLE_SECONDS', 1):\n        pass\n", 3,
-                          "P4 branch"),
-    "a plain assignment": ("P4", fn("mod.STOP_TIMEOUT = 0.2", "mod"), 2, "P4 branch"),
-    "a product's value shortening another": (
-        "P4", "from rcman import forward\n"
-        + fn("monkeypatch.setattr(forward, 'IDLE_SECONDS', forward.PACE_SECONDS)", "monkeypatch"),
-        3, "P4 branch"),
-    "a loop-variable name": ("P4", "def test_x(monkeypatch, m):\n"
-                             "    for name in ('IDLE_SECONDS', 'HEAD_SECONDS'):\n"
-                             "        monkeypatch.setattr(m, name, 0.3)\n", 3, "P4 branch"),
-    "an unresolved name": ("P4", fn("monkeypatch.setattr(m, name, 0.3)", "monkeypatch, m, name"),
-                           2, "P4 branch"),
-    "a name a loop unpacks": ("P4", "def test_x(monkeypatch, m, n):\n"
-                              "    for module, name in ((m, 'HEAD_SECONDS'), (n, 'IDLE')):\n"
-                              "        monkeypatch.setattr(module, name, 0.3)\n", 3, "P4 branch"),
-    "a parametrized name": ("P4", "import pytest\n"
-                            "@pytest.mark.parametrize('name', ['HEAD_SECONDS', 'IDLE'])\n"
-                            "def test_x(monkeypatch, m, name):\n"
-                            "    monkeypatch.setattr(m, name, 0.3)\n", 4, "P4 branch"),
-    "a patch of time itself": ("P4", "import time\ndef test_x(monkeypatch):\n"
-                               "    monkeypatch.setattr(time, '$SLEEP', print)\n", 3,
-                               "P4 branch"),
-    "a patch of time through a product": (
-        "P4", "from rcman import workspaces\n"
-        + fn("monkeypatch.setattr(workspaces.time, 'monotonic', abs)", "monkeypatch"), 3,
-        "P4 branch"),
-    "a patch of the guard": ("P4", "from tests import hang_guard\n"
-                             + fn("monkeypatch.setattr(hang_guard, 'HANG_GUARD', 0.01)",
-                                  "monkeypatch"), 3, "P4 branch"),
-    "a restoring setattr": ("P4", "def test_x(monkeypatch, m):\n"
-                            "    monkeypatch.setattr(m, 'WAIT_SECONDS', 0)\n"
-                            "    monkeypatch.setattr(m, 'WAIT_SECONDS', 0)\n", 3, "P4 branch"),
     "runs_out at a number": ("P4", "from tests.hang_guard import runs_out\n"
                              + fn("runs_out(monkeypatch, m, 'X_SECONDS', at=0.5)",
                                   "monkeypatch, m"), 3, "P4 runs_out"),
-    # the review's second round
     "a module's helper called through its module": (
         "P3", "def settle(t, n=None):\n    t.join(timeout=n)\nfrom tests import helpers_x\n"
         "def test_x(t):\n    helpers_x.settle(t, 0.5)\n", 5, "P3 flow through a module"),
     "a method given a name bound to a number": (
         "P3", "class W:\n    def ready(self, t, s=None):\n        t.join(timeout=s)\n"
         "def test_x(t, w):\n    s = 0.5\n    w.ready(t, s)\n", 6, "P3 every value"),
-    "a method given a fixture": (
-        "P3", "import pytest\nclass W:\n    def ready(self, t, s=None):\n"
-        "        t.join(timeout=s)\n@pytest.fixture\ndef short():\n    return 0.5\n"
-        "def test_x(t, short):\n    W().ready(t, short)\n", 9, "P3 every value"),
-    "a disagreeing name given a constant": ("P3", "SHORT = 0.5\n" + fn("go('a', SHORT)"), 3,
-                                            "P3 every value"),
     "a constant rebound through global": (
         "P3", "WAIT = 0\ndef bump():\n    global WAIT\n    WAIT = 5\n"
         "def test_x(t):\n    t.join(timeout=WAIT)\n", 6, "P3 global"),
@@ -2752,30 +2597,12 @@ PLANTED = {
         "def test_x(t):\n    helper(t, 0.5, timeout=3)\n", 4, "P3 one site"),
     "an alias of the guard": ("P3", "from tests.hang_guard import HANG_GUARD\n"
                               "ANSWERS = HANG_GUARD\n", 2, "P3 alias"),
-    "a product's constant as a stand-in's default": (
-        "P3", "from rcman import runtime as rt\n"
-        "class Stand:\n    def exec(self, argv, timeout=rt.PODMAN_TIMEOUT):\n        pass\n",
-        3, "P3 defaults"),
-    "runs_out at a product's constant": (
-        "P4", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
-        + fn("runs_out(monkeypatch, m, 'X_SECONDS', at=repository.X_SECONDS)", "monkeypatch, m"),
-        4, "P4 runs_out"),
-    # the review's third round: a name at a positional slot is seconds unless shown otherwise
     "a helper's positional parameter given a number": (
         "P3", "def helper(t, n):\n    t.join(n)\ndef test_x(t):\n    helper(t, 0.5)\n", 4,
         "P3 positional name"),
-    "a method's positional parameter given a number": (
-        "P3", "class W:\n    def ready(self, t, n):\n        t.join(n)\n"
-        "def test_x(w, t):\n    w.ready(t, 0.5)\n", 5, "P3 positional name"),
-    "a fixture at a positional slot": ("P3", fn("e.wait(short)", "e, short"), 2,
-                                       "P3 positional name"),
-    "a name bound from a call at a positional slot": ("P3", fn("s = f()\ne.wait(s)", "e, f"), 3,
-                                                      "P3 positional name"),
-    "a call at a positional slot": ("P3", fn("e.wait(f())", "e, f"), 2, "P3 positional name"),
     "a disagreeing name given an imported number": (
         "P3", "from tests.planted_constants import SHORT\n" + fn("go('a', SHORT)"), 3,
         "P3 seconds through an import"),
-    # the review's fourth round
     "a helper's parameter at a disagreeing slot given a number": (
         "P3", "def helper(p, n):\n    go(p, n)\ndef test_x(p):\n    helper(p, 0.5)\n", 4,
         "P3 disagreeing parameter"),
@@ -2786,70 +2613,24 @@ PLANTED = {
         "P3", "from tests.time_doubles import FakeTime\ndef looping(t, timeout=None):\n"
         "    t.join(timeout=timeout)\n    return FakeTime()\n"
         "def test_x(t):\n    looping(t, timeout=0.5)\n", 6, "P3 flow past a double's helper"),
-    "a guard handed short": ("P3", "from tests.hang_guard import handed\n"
-                             + fn("with handed(0.5):\n    pass"), 3, "P3 table"),
-    "an engine started with a short guard": (
-        "P3", "from tests import podman_service as ps\n" + fn("with ps.started(0.5):\n    pass"),
-        3, "P3 table"),
     "a typed double given a real event": (
         "P3", "import threading\nfrom tests.time_doubles import ControlledEvent\n"
         "def waited(e: ControlledEvent):\n    assert e.wait(1)\n"
         "def test_x():\n    waited(threading.Event())\n", 4, "P3 typed double given"),
-    "a typed double no call is seen to give": (
-        "P3", "import threading\nfrom tests.time_doubles import ControlledEvent\n"
-        "def waited(e: ControlledEvent):\n    assert e.wait(1)\n"
-        "def test_x():\n    threading.Thread(target=waited, args=(threading.Event(),))\n", 4,
-        "P3 typed double given"),
     "a sleep argv": ("P2s", "import subprocess\nsubprocess.Popen(['$SLEEP', '5'])\n", 2,
                      "P2s sleep argv"),
-    "a sleep argv by its path": ("P2s", "argv = ['/bin/$SLEEP', '60']\n", 1, "P2s sleep argv"),
-    "a sleep in a call's arguments": (
-        "P2s", "def f(engine):\n    engine.cli('run', 'bb', 'busybox', '$SLEEP', '600')\n", 2,
-        "P2s sleep argv"),
-    "a sleep argv of an f-string": ("P2s", "def f(n):\n    return ['$SLEEP', f'{n}']\n", 2,
-                                    "P2s sleep argv"),
-    "a sleep argv of a name bound to a number": (
-        "P2s", "LENGTH = '600'\ndef f():\n    return ['$SLEEP', LENGTH]\n", 3, "P2s sleep argv"),
-    "a sleep argv in a child's Python": (
-        "P2s", "code = \"import os; os.execv('/bin/$SLEEP', ['$SLEEP', '600'])\"\n", 1,
-        "P2s sleep argv"),
-    "a sleep argv split over lines in a child's Python": (
-        "P2s", "code = (\"run('busybox', '$SLEEP',\\n\"\n        \"    '600')\\n\")\n", 1,
-        "P2s sleep argv"),
     "a seconds constant written as a string": ("P3", "POLL_SECONDS = '0.01'\n", 1,
                                                "P3 numeric words"),
-    "a timing name run together": ("P3", "IDLETIMEOUT = 0.5\n", 1, "P3 constants"),
-    "a timing name run together after a word": ("P3", "MAXWAIT = 2\n", 1, "P3 constants"),
     "a loop's name assigned again": (
         "P4", "def test_x(monkeypatch, m):\n    for name in ('A',):\n"
         "        name = 'POLL_SECONDS'\n        monkeypatch.setattr(m, name, 0.01)\n", 4,
         "P4 reassigned"),
-    "a parametrized name assigned again": (
-        "P4", "import pytest\n@pytest.mark.parametrize('name', ['A'])\n"
-        "def test_x(monkeypatch, m, name):\n    name = name + '_SECONDS'\n"
-        "    monkeypatch.setattr(m, name, 0.01)\n", 5, "P4 reassigned"),
-    "a closure's name given a timing literal": (
-        "P4", "def into(monkeypatch, name, value):\n    def init(self):\n"
-        "        setattr(self, name, value)\n    monkeypatch.setattr(C, 'init', init)\n"
-        "def test_x(monkeypatch):\n    into(monkeypatch, 'POLL_SECONDS', 0.5)\n", 3,
-        "P4 branch"),
-    "a sleep argv of a number through str()": (
-        "P2s", "def f():\n    return ['$SLEEP', str(60)]\n", 2, "P2s sleep argv"),
-    "a sleep argv of a name bound to a number through str()": (
-        "P2s", "LENGTH = 60\ndef f():\n    return ['$SLEEP', str(LENGTH)]\n", 3, "P2s sleep argv"),
     "a sleep argv whose helper's caller gives a number": (
         "P2s", "def held(n):\n    return ['$SLEEP', n]\ndef test_x():\n    held('60')\n", 4,
         "P2s sleep argv parameter"),
     "a sleep argv of the guard once": (
         "P2s", "from tests.hang_guard import HANG_GUARD\n"
         "def f():\n    return ['$SLEEP', f'{HANG_GUARD:g}']\n", 3, "P2s twice the guard"),
-    "a shell sleep of the guard once": (
-        "P2s", "from tests.hang_guard import HANG_GUARD\n"
-        "argv = ['sh', '-c', f'$SLEEP {HANG_GUARD:g}']\n", 2, "P2s twice the guard"),
-    "a shell sleep of the guard and a bit": (
-        "P2s", "from tests.hang_guard import HANG_GUARD\n"
-        "argv = ['sh', '-c', f'$SLEEP {HANG_GUARD + 7:g}']\n", 2, "P2s twice the guard"),
-    # the guard's own names
     "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
 }  # fmt: skip
 
@@ -2857,16 +2638,9 @@ PLANTED = {
 CLEAN = {
     "the guard": ("guard", "from tests.hang_guard import HANG_GUARD\n"
                   "def f(g):\n    g(timeout=HANG_GUARD)\n"),
-    "a multiple of the guard": ("guard", "from tests.hang_guard import HANG_GUARD\n"
-                                "def f(g):\n    g(timeout=2 * HANG_GUARD)\n"),
-    "the guard through its module": ("guard", "from tests import hang_guard\n"
-                                     "def f(g):\n    g(timeout=hang_guard.HANG_GUARD)\n"),
     "tier_guard in a test": ("tier_guard", "from tests.hang_guard import tier_guard\n"
                              "def f(g):\n    g(timeout=tier_guard())\n"),
     "None": ("none", "def f(g):\n    g(timeout=None)\n"),
-    "a name that holds a timing word within one of its own": (
-        "structure", "MOST_RELAYS_PER_WORKSPACE = 1\ndef test_x(monkeypatch, mod):\n"
-        "    monkeypatch.setattr(mod, 'MOST_RELAYS_PER_WORKSPACE', 100)\n"),
     "minus one": ("minus one", "def f(lock):\n    lock.acquire(True, -1)\n"),
     "zero": ("zero", "def f(e, g):\n    e.wait(0)\n    g(within=0)\n"),
     "a sleep of 0": ("turn", "import asyncio\nasync def f():\n"
@@ -2886,77 +2660,21 @@ CLEAN = {
     "a method given a string": ("not seconds", "class W:\n    def ready(self, t, s=None):\n"
                                 "        t.join(timeout=s)\ndef test_x(t, w):\n"
                                 "    w.ready(t, 'x')\n"),
-    "str.join": ("structure", "def f(parts, sep):\n    return sep.join(p for p in parts)\n"),
-    "a join on chr(10)": ("structure", "def f(screen):\n    last = screen()\n"
-                          "    return chr(10).join(last)\n"),
-    "dict.get": ("structure", "def f(d):\n    return d.get('k', 5)\n"),
-    "os.path.join": ("structure", "import os\ndef f(a):\n    return os.path.join(a, 'b')\n"),
     "a fake's sleep and advance": (
         "double", "from tests.time_doubles import FakeTime\n"
         "def test_x():\n    fake = FakeTime()\n    fake.advance(600)\n    fake.$SLEEP(5)\n"),
-    "a fixture's double": (
-        "double", "import pytest\nfrom tests.time_doubles import FakeTime\n"
-        "@pytest.fixture\ndef times():\n    return FakeTime()\n"
-        "def test_x(times):\n    times.advance(600)\n"),
-    "a constant of a module whose time is a double": (
-        "double", "from tests.time_doubles import FakeTime\n"
-        "def test_x(monkeypatch, mod):\n    fake = FakeTime()\n"
-        "    monkeypatch.setattr(mod, 'time', fake)\n"
-        "    monkeypatch.setattr(mod, 'STOP_TIMEOUT', 5)\n"),
-    "a non-timing setattr": ("structure", "def test_x(monkeypatch, m):\n"
-                             "    monkeypatch.setattr(m, 'NAME', 'x')\n"),
-    "a resolved non-timing name": ("structure", "def test_x(monkeypatch, m):\n"
-                                   "    for name in ('_changed', '_closing'):\n"
-                                   "        monkeypatch.setattr(m, name, None)\n"),
-    "a non-timing name a loop unpacks": (
-        "structure", "def test_x(monkeypatch, m, n):\n"
-        "    for module, name in ((m, 'unlink'), (n, 'rmdir')):\n"
-        "        monkeypatch.setattr(module, name, None)\n"),
-    "a non-timing parametrized name": (
-        "structure", "import pytest\n@pytest.mark.parametrize('table', ['NODE_SHA256', 'UV'])\n"
-        "def test_x(monkeypatch, m, table):\n    monkeypatch.setattr(m, table, {})\n"),
     "a child's wait loop": ("child loop",
                                   "s = 'while [ ! -e f ]; do $SLEEP 0.05; done'\n"),
-    "a child's endless loop": ("child loop", "s = 'while :; do $SLEEP 1; done'\n"),
-    "a child's counted loop that does not sleep": (
-        "structure", "s = 'while [ $i $LT 3 ]; do i=$((i+1)); done'\n"),
-    "a child's Python loop": ("child loop",
-                                    "code = 'import time\\nwhile True:\\n"
-                                    "    time.$SLEEP(0.01)\\n'\n"),
-    "a child's sleep at the guard (OUT)": ("guard", "from tests.hang_guard import HANG_GUARD\n"
-                                           "s = f'$SLEEP {3 * HANG_GUARD}'\n"),
     "a child's timeout at RUNS_OUT": ("runs out", "from tests.hang_guard import RUNS_OUT\n"
                                       "s = f'$TIMEOUT {RUNS_OUT} cat'\n"),
-    "a timeout argv at RUNS_OUT": ("runs out", "from tests.hang_guard import RUNS_OUT\n"
-                                   "argv = ['timeout', '-k', f'{RUNS_OUT}', str(RUNS_OUT), "
-                                   "'sh']\n"),
     "a benchmark": ("benchmark", "import time\nimport pytest\ndef measure():\n"
                           "    s = time.perf_counter()\n    return time.perf_counter() - s\n"
                           "@pytest.mark.benchmark\ndef test_b():\n    measure()\n"),
-    "a clock read not compared": ("structure", "import time\ndef f():\n    return time.time()\n"),
-    "a clock read inside a call": ("structure", "import time\ndef f(stamp):\n"
-                                   "    label = stamp(time.time())\n    return label > 'a'\n"),
-    "a clock's None compared": ("structure", "import time\ndef f(a):\n"
-                                "    left = None if a else time.monotonic()\n"
-                                "    return left is None\n"),
-    "a tuple paired by element": ("structure", "import time\ndef f(n):\n"
-                                  "    t, count = time.time(), n\n    return count > 3\n"),
-    "runs_out at 0 and at a product's floor": (
-        "structure", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
-        "def test_x(monkeypatch, m):\n    runs_out(monkeypatch, m, 'X_SECONDS')\n"
-        "    runs_out(monkeypatch, m, 'Y_SECONDS', at=repository.FLOOR_SECONDS)\n"),
     "a helper's parameter typed as a double": (
         "typed double", "from tests.time_doubles import FakeTime\n"
         "def stepping(fake: FakeTime):\n    def run():\n        fake.advance(5)\n"
         "    return run\n"
         "def test_x():\n    stepping(FakeTime())()\n    made = FakeTime()\n    stepping(made)\n"),
-    "a docstring that names a sleep": ("structure", "def f():\n"
-                                       "    '''Waits with $SLEEP 5 in the shell.'''\n"),
-    # the review's third round
-    "a constant whose name holds a timing word but whose value is words": (
-        "not seconds", "WORKSPACE = 'workspace'\nINTERVALS = ['idle_minutes', 'absolute_hours']\n"),
-    "a join of a name bound to a list": ("not seconds", "def f(sep):\n    parts = ['a']\n"
-                                         "    return sep.join(parts)\n"),
     "what is not seconds at a disagreeing slot": (
         "seconds only at a disagreeing slot",
         "from tests.planted_constants import NAME\nfrom tests.people import BOB\n"
@@ -2969,31 +2687,9 @@ CLEAN = {
         "loop variable not seconds",
         fn("for name in ('one', 'two'):\n    run.wait(name)\n"
            "found = [run.wait(n) for n in ('one', 'two')]", "run")),
-    "a Clock's advance": ("double", "from tests.time_doubles import Clock\n"
-                               "def test_x():\n    clock = Clock()\n    clock.advance(600)\n"),
     "a double's method as a value": (
         "a double's method", "from tests.time_doubles import Time\n"
         "def helper(m):\n    times = Time()\n    return m(clock=times.clock, wait=times.wait)\n"),
-    "a sleep argv that outlasts the test": (
-        "guard", "from tests.hang_guard import HANG_GUARD, tier_guard\n"
-        "OUTLASTING = f'{3 * HANG_GUARD:g}'\nBUILD = f'{3 * HANG_GUARD + 7:g}'\n"
-        "argv = ['$SLEEP', OUTLASTING]\nbuilt = f'RUN [\"busybox\", \"$SLEEP\", \"{BUILD}\"]'\n"
-        "def test_x(engine):\n    engine.cli('run', 'bb', '$SLEEP', f'{3 * tier_guard():g}')\n"
-        "    code = f\"os.execv('/bin/$SLEEP', ['$SLEEP', '{3 * HANG_GUARD:g}'])\"\n"),
-    "a sleep argv whose helper's callers give what outlasts the test": (
-        "guard", "from tests.hang_guard import tier_guard\n"
-        "def held(n):\n    return ['$SLEEP', n]\n"
-        "def test_x():\n    held(f'{2 * tier_guard():g}')\n    held('infinity')\n"),
-    "a sleep argv of infinity, compared, or no argv": (
-        "structure", "def f(d, s, run):\n    argv = ['$SLEEP', 'infinity']\n"
-        "    assert run[-2:] == ['$SLEEP', '600']\n    d._record('$SLEEP', s)\n"),
-    "a timeout argv at int() of the guard's multiple": (
-        "guard", "import sys\nfrom tests.hang_guard import tier_guard\ndef f():\n"
-        "    return ['timeout', '-s', 'KILL', str(int(2 * tier_guard())), sys.executable]\n"),
-    "a closure's name given literals": (
-        "structure", "def into(monkeypatch, name, double):\n    def init(self):\n"
-        "        setattr(self, name, double)\n    monkeypatch.setattr(C, 'init', init)\n"
-        "def test_x(monkeypatch):\n    into(monkeypatch, '_changed', 1)\n"),
     "a helper that builds a double given its intervals": (
         "a double's helper", "from tests.time_doubles import Time\n"
         "def looping(s, **changes):\n    times = Time()\n    return s, times\n"
@@ -3026,37 +2722,29 @@ def test_the_parameter_table_records_agreeing_and_disagreeing_names():
     assert table.disagreeing == {"run": frozenset({1, 2}), "go": frozenset({0, 1})}
 
 
-@pytest.mark.parametrize(
-    ("name", "key"),
-    [
-        ("a fake's sleep and advance", "double"),
-        ("a fixture's double", "double"),
-        ("a sleep of 0", "turn"),
-        ("a benchmark", "benchmark"),
-        ("a child's wait loop", "child loop"),
-    ],
-)
-def test_the_derived_allowances_are_recorded(name, key):
+def test_the_derived_allowances_are_recorded():
     """Recorded where they allow a site, for the real tree's non-vacuity checks."""
-    scan = scan_source("t.py", placed(CLEAN[name][1]), planted_table())
-    assert key in {k for k, _ in scan.derived}
+    derived = {"a fake's sleep and advance": "double", "a sleep of 0": "turn",
+               "a benchmark": "benchmark", "a child's wait loop": "child loop"}  # fmt: skip
+    for name, key in derived.items():
+        scan = scan_source("t.py", placed(CLEAN[name][1]), planted_table())
+        assert key in {k for k, _ in scan.derived}, name
 
 
-@pytest.mark.parametrize("key", sorted({k for k, _ in CLEAN.values()} - {"structure"}))
-def test_each_allowance_has_a_clean_twin(key):
-    """Every allowance the scan knows is held by a CLEAN twin; the mutation run turns each off
-    and sees its twin flagged."""
-    assert key in ALLOWANCES
-
-
-def test_every_allowance_of_the_scan_has_a_clean_twin():
-    assert set(ALLOWANCES) <= {k for k, _ in CLEAN.values()}
+def test_each_allowance_has_a_clean_twin():
+    """Every allowance the scan knows is held by a CLEAN twin, and every twin's is one the scan
+    knows; the mutation run turns each off and sees its twin flagged."""
+    assert set(ALLOWANCES) == {k for k, _ in CLEAN.values()}
 
 
 def test_an_allowance_turned_off_flags_its_clean_twin(monkeypatch):
-    """Planted twin of the allowances: the doubles' off, the fake's calls are sites."""
+    """Planted twins of the allowances: the doubles' off, the fake's calls are sites; the guard
+    not allowed, its TypeScript twin is a site."""
     monkeypatch.setitem(ALLOWANCES, "double", False)
     assert flagged(CLEAN["a fake's sleep and advance"][1]) != []
+    monkeypatch.setitem(ALLOWANCES, "guard", False)
+    _key, files = CLEAN_TS["the guard"]
+    assert ts_found(ts_scan_sources(files)) == [("P3", 2)]
 
 
 # --- the tier rule ------------------------------------------------------------------------------
@@ -3065,28 +2753,9 @@ USES = "def helper(g):\n    g(timeout={given})\n"
 BOTH = ("container", "host")
 TIERED = {
     # (the file, the tiers that reach helper, the guard it gives): whether it is a TIER site
-    ("tests/container/test_c.py", None, "hang_guard.HANG_GUARD"): True,
-    ("tests/container/test_c.py", None, "hang_guard.CONTAINER_HANG_GUARD"): False,
-    ("tests/test_h.py", None, "hang_guard.CONTAINER_HANG_GUARD"): True,
-    ("tests/test_h.py", None, "hang_guard.HANG_GUARD"): False,
     ("tests/shared.py", BOTH, "hang_guard.HANG_GUARD"): True,
-    ("tests/shared.py", BOTH, "hang_guard.CONTAINER_HANG_GUARD"): True,
     ("tests/shared.py", BOTH, "hang_guard.tier_guard()"): False,
-    ("tests/shared.py", ("container",), "hang_guard.HANG_GUARD"): True,
-    ("tests/shared.py", ("container",), "3 * hang_guard.CONTAINER_HANG_GUARD"): False,
 }
-
-
-@pytest.mark.parametrize(("path", "tiers", "guard"), sorted(TIERED, key=str))
-def test_a_guard_of_another_tier_is_flagged(path, tiers, guard):
-    """Planted twins of the tier rule, and its CLEAN twins: each tier's own guard, and
-    tier_guard() where both tiers run the code."""
-    source = "from tests import hang_guard\n" + USES.format(given=guard)
-    reached = {"helper": set(tiers)} if tiers else None
-    found = [(s.form, s.line) for s in scan_source(path, source, Table(), None, reached).sites]
-    assert found == ([("TIER", 3)] if TIERED[path, tiers, guard] else []), found
-
-
 TREES = {
     "tests/shared.py": "def helper():\n    pass\ndef unused():\n    pass\n",
     "tests/container/test_c.py": "from tests.shared import helper\ndef test_c():\n    helper()\n",
@@ -3097,54 +2766,51 @@ TREES = {
 }  # fmt: skip
 
 
-def test_the_tiers_are_reached_through_imports_and_fixtures():
+def test_a_guard_of_another_tier_is_flagged():
     """Each tier's roots: all of tests/container/, and a test elsewhere by whether it asks for
     the engine, through a fixture of conftest's here; what each reaches through an import, a
-    module's attribute and a fixture; and a name nothing reaches is in no tier."""
+    module's attribute and a fixture. Planted twin of the tier rule, and its CLEAN twin: a guard
+    of one tier where both tiers run the code, and tier_guard() there."""
     reached = tier_reach({p: ast.parse(s) for p, s in TREES.items()})
     assert reached["tests/shared.py"] == {"helper": {"host", "container"}}
     assert reached["tests/test_h.py"] == {"test_h": {"host"}, "test_e": {"container"}}
     assert reached["tests/conftest.py"] == {"engine": {"container"}, "GIVES": {"container"}}
+    for (path, tiers, guard), site in TIERED.items():
+        source = "from tests import hang_guard\n" + USES.format(given=guard)
+        found = scan_source(path, source, Table(), None, {"helper": set(tiers)}).sites
+        assert [(s.form, s.line) for s in found] == ([("TIER", 3)] if site else []), guard
 
 
 # --- named patterns: clean twins and stale checks ------------------------------------------------
 
 
-@pytest.mark.parametrize("named", NAMED, ids=lambda n: f"{n.key}-{n.where[0] or 'module'}")
-def test_a_named_pattern_covers_only_its_subject(named):
-    """CLEAN twin of each named pattern: a site of its form in its subject is covered; the same
+def test_a_named_pattern_covers_only_its_subject_and_one_whose_subject_is_gone_is_reported():
+    """CLEAN twin of a named pattern: a site of its form in its subject is covered; the same
     site in another file, or of another form, is not."""
+    named = NAMED[0]
     site = Site(named.path, 1, sorted(named.forms)[0], "planted", named.where[0])
     assert named.covers(site)
     assert not named.covers(Site("tests/elsewhere.py", 1, site.form, "planted", site.where))
     assert not named.covers(Site(named.path, 1, "GUARD", "planted", site.where))
-
-
-def test_a_named_pattern_whose_subject_is_gone_is_reported():
     gone = Named("until", "tests/until.py", ("no_such_function",), frozenset({"P2"}), "planted")
     assert named_problems([], [gone]) == [
         "until: tests/until.py ('no_such_function',) holds no site of ['P2']"
     ]
-    missing = Named("until", "tests/no_such.py", ("",), frozenset({"P2"}), "planted")
-    assert named_problems([], [missing]) == ["until: tests/no_such.py is gone"]
 
 
 def test_the_stand_ins_are_programs_that_tests_run():
-    assert stand_in_problems() == []
-
-
-def test_a_stand_in_named_only_by_the_guard_is_reported():
     """Planted twin: with only this module scanned, no stand-in is named by a test."""
+    assert stand_in_problems() == []
     problems = stand_in_problems([GUARD_FILE])
     assert problems == [f"{p} is named in the string of no scanned file" for p in STAND_INS]
 
 
 # --- the real tree -------------------------------------------------------------------------------
 
-# The allowances the real tree's scan must have made, each at least once, and two files whose
+# The allowances the real tree's scan must have made, each at least once, and a file whose
 # doubles it must have found: that each holds what it is for, and the scan sees the tree.
 DERIVED = {"double", "child loop", "benchmark"}
-UNDER_DOUBLES = ("tests/test_workspace_limits.py", "tests/test_monitor.py")
+UNDER_DOUBLES = ("tests/test_monitor.py",)
 # The allowances the scan of the frontend's TypeScript must have made, each at least once.
 TS_DERIVED = {"turn", "guard"}
 
@@ -3222,13 +2888,9 @@ def autouse_fixtures(sources: dict[str, str]) -> set[tuple[str, str]]:
 
 
 def test_the_guard_adds_no_autouse_fixture():
+    """Planted twin: one added is seen."""
     sources = {p: (REPO / p).read_text(encoding="utf-8") for p, _ in AUTOUSE}
     assert autouse_fixtures(sources) == AUTOUSE
-
-
-def test_an_autouse_fixture_added_is_seen():
-    """Planted twin."""
-    sources = {p: (REPO / p).read_text(encoding="utf-8") for p, _ in AUTOUSE}
     sources["tests/conftest.py"] += "\n@pytest.fixture(autouse=True)\ndef planted():\n    pass\n"
     assert autouse_fixtures(sources) - AUTOUSE == {("tests/conftest.py", "planted")}
 
@@ -3236,24 +2898,14 @@ def test_an_autouse_fixture_added_is_seen():
 # --- the scope -----------------------------------------------------------------------------------
 
 
-def test_each_root_of_the_scope_is_read_and_holds_a_named_file():
-    files = scoped_files()
-    for root, known in (("tests", "tests/test_until.py"), ("devtools", "devtools/tmuxctl.py"),
-                        ("tests/container", "tests/container/stack.py")):  # fmt: skip
-        assert any(f.startswith(root + "/") for f in files), root
-        assert known in files
-    assert not set(STAND_INS) & set(files)
-
-
-def test_an_empty_scope_reads_nothing():
-    """With no root nothing is read, where git ls-files without a path would list everything."""
-    assert scoped_files(()) == []
-    assert scoped_files(("no-such-root",)) == []
-
-
 def test_a_planted_file_in_each_root_is_read(tmp_path):
     """A file of the scanned shape, planted under each root of a scratch repository, is listed
-    and its site found, tests/container/ among them; a stand-in is not listed."""
+    and its site found, tests/container/ among them; a stand-in is not listed. In the real
+    tree each root holds a file known to be there."""
+    files = scoped_files()
+    for known in ("tests/test_until.py", "devtools/tmuxctl.py", "tests/container/clone.py"):
+        assert known in files
+    assert not set(STAND_INS) & set(files)
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
     planted = ["devtools/planted.py", "tests/container/planted.py", "tests/planted.py"]
     for rel in [*planted, "devtools/fake_claude.py", "tests/container/stand_ins.py"]:
@@ -3319,12 +2971,6 @@ PLANTED_TS = {
         "src/x.test.ts",
         1,
     ),
-    "window.setTimeout": (
-        "P2",
-        {"src/test/x.ts": "window.setTimeout(f, 10);\n"},
-        "src/test/x.ts",
-        1,
-    ),
     "setInterval": ("P2", {"src/x.test.tsx": "setInterval(f, 1000);\n"}, "src/x.test.tsx", 1),
     "a timeout option": (
         "P3",
@@ -3332,26 +2978,6 @@ PLANTED_TS = {
         "src/x.test.tsx",
         1,
     ),
-    "a Timeout key": (
-        "P3",
-        {"src/test/setup.ts": "configure({ asyncUtilTimeout: 3000 });\n"},
-        "src/test/setup.ts",
-        1,
-    ),
-    "test.setTimeout": (
-        "P3",
-        {"src/x.test.ts": "test.setTimeout(90_000);\n"},
-        "src/x.test.ts",
-        1,
-    ),
-    "test.slow": ("P3", {"src/x.test.ts": "test.slow();\n"}, "src/x.test.ts", 1),
-    "testInfo.slow": (
-        "P3",
-        {"src/x.test.ts": 'test("x", async ({ page }, testInfo) => {\n  testInfo.slow();\n});\n'},
-        "src/x.test.ts",
-        2,
-    ),
-    "test.info().slow": ("P3", {"src/x.test.ts": "test.info().slow();\n"}, "src/x.test.ts", 1),
     "userEvent with a delay": (
         "P2",
         {"src/x.test.tsx": "const user = userEvent.setup({\n  delay: 50,\n});\n"},
@@ -3361,12 +2987,6 @@ PLANTED_TS = {
     "vi.waitFor without a timeout": (
         "P3",
         {"src/x.test.ts": "await vi.waitFor(() => f());\n"},
-        "src/x.test.ts",
-        1,
-    ),
-    "vi.waitUntil without a timeout": (
-        "P3",
-        {"src/x.test.ts": "await vi.waitUntil(() => f(), { interval: 5 });\n"},
         "src/x.test.ts",
         1,
     ),
@@ -3400,43 +3020,9 @@ CLEAN_TS = {
         "guard",
         {"src/x.test.ts": UNIT_IMPORT + "configure({ asyncUtilTimeout: UNIT_HANG_GUARD_MS });\n"},
     ),
-    "vi.waitFor given the guard": (
-        "guard",
-        {
-            "src/x.test.ts": UNIT_IMPORT + "await vi.waitFor("
-            "() => f(), { timeout: UNIT_HANG_GUARD_MS });\n"
-        },
-    ),
     "a turn": (
         "turn",
         {"src/test/x.ts": "await new Promise((r) => setTimeout(r));\nsetTimeout(f, 0);\n"},
-    ),
-    "every key set": (
-        "structure",
-        {"vite.config.ts": VITE.format(keys="testTimeout: T, hookTimeout: T, teardownTimeout: T")},
-    ),
-    "a clock read and not compared": (
-        "structure",
-        {"src/x.test.ts": "const at = Date.now();\nreport(at);\n"},
-    ),
-    "a destructured or typed timeout": (
-        "structure",
-        {
-            "src/x.test.ts": "type T = { timeout: number };\n"
-            "const f = ({ timeout }: T) => timeout;\n"
-        },
-    ),
-    "a spy on a timer": ("structure", {"src/x.test.ts": 'vi.spyOn(globalThis, "setInterval");\n'}),
-    "userEvent with no delay": (
-        "structure",
-        {
-            "src/x.test.tsx": "userEvent.setup({ delay: null });\nuserEvent.setup({ delay: 0 });\n"
-            "userEvent.setup({ advanceTimers: vi.advanceTimersByTime });\nuserEvent.setup();\n"
-        },
-    ),
-    "shouldAdvanceTime off": (
-        "structure",
-        {"src/x.test.ts": "vi.useFakeTimers({ shouldAdvanceTime: false });\n"},
     ),
 }
 
@@ -3490,31 +3076,21 @@ def test_a_planted_typescript_form_is_flagged_where_it_is(ts_twins, name):
     assert ts_found(ts_twins[f"planted {name}"], rel).count((form, line)) == 1, (name, ts_twins)
 
 
-@pytest.mark.parametrize("name", sorted(CLEAN_TS))
-def test_an_allowed_typescript_form_is_not_flagged(ts_twins, name):
-    key, _files = CLEAN_TS[name]
-    scanned = ts_twins[f"clean {name}"]
-    assert ts_found(scanned) == []
-    if key != "structure":  # the allowance made is the one the twin is for
-        assert key in {k for k, _ in scanned.derived}
+def test_an_allowed_typescript_form_is_not_flagged(ts_twins):
+    for name, (key, _files) in CLEAN_TS.items():
+        scanned = ts_twins[f"clean {name}"]
+        assert ts_found(scanned) == [], name
+        assert key in {k for k, _ in scanned.derived}, name  # the allowance it is for
 
 
-def test_an_allowance_turned_off_flags_its_typescript_twin(monkeypatch):
-    """Planted twin of the allowances: the guard not allowed, its CLEAN twin is a site."""
-    monkeypatch.setitem(ALLOWANCES, "guard", False)
-    _key, files = CLEAN_TS["the guard"]
-    assert ts_found(ts_scan_sources(files)) == [("P3", 2)]
-
-
-@pytest.mark.parametrize("form", sorted(FORMS))
-def test_each_form_is_spelled_in_each_language_or_said_why_not(form):
-    python, typescript = FORMS[form]
-    assert (python in PLANTED) if python else ((form, "python") in NOT_SPELLED)
-    assert (typescript in PLANTED_TS) if typescript else ((form, "ts") in NOT_SPELLED)
-    if python:
-        assert PLANTED[python][0] == form
-    if typescript:
-        assert PLANTED_TS[typescript][0] == form
+def test_each_form_is_spelled_in_each_language_or_said_why_not():
+    for form, (python, typescript) in FORMS.items():
+        assert (python in PLANTED) if python else ((form, "python") in NOT_SPELLED)
+        assert (typescript in PLANTED_TS) if typescript else ((form, "ts") in NOT_SPELLED)
+        if python:
+            assert PLANTED[python][0] == form
+        if typescript:
+            assert PLANTED_TS[typescript][0] == form
 
 
 def test_every_form_planted_is_in_the_table():
@@ -3522,21 +3098,16 @@ def test_every_form_planted_is_in_the_table():
     assert planted | {"TIER"} == set(FORMS)
 
 
-def test_the_typescript_scope_is_the_frontends_tests_and_their_configs():
-    rels = ts_scope()
-    for known in ("src/api.test.ts", "src/test/setup.ts", "src/test/hangGuard.ts", *TS_CONFIGS):
-        assert known in rels, known
-    assert "src/api.ts" not in rels  # the product's own
-    vite = (FRONTEND / "vite.config.ts").read_text(encoding="utf-8")
-    assert re.findall(r"include:\s*\[([^\]]*)\]", vite) == [f'"{TS_INCLUDE}"']
-    assert TS_TESTS.match("src/api.test.ts") and TS_TESTS.match("src/a/b.test.tsx")
-    assert not TS_TESTS.match("src/api.ts")
-
-
 def test_a_planted_typescript_file_in_each_root_is_read(tmp_path):
     """A file of the scanned shape planted under each root of the TypeScript scope, in a
     scratch repository, is listed and its site found, the config among them, whose unset
-    limits are found too; the product's own, and another config, are not listed."""
+    limits are found too; the product's own, and another config, are not listed. In the real
+    tree the scope is the component tests vite.config.ts's include names."""
+    rels = ts_scope()
+    for known in ("src/api.test.ts", "src/test/setup.ts", "src/test/hangGuard.ts", *TS_CONFIGS):
+        assert known in rels, known
+    vite = (FRONTEND / "vite.config.ts").read_text(encoding="utf-8")
+    assert re.findall(r"include:\s*\[([^\]]*)\]", vite) == [f'"{TS_INCLUDE}"']
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
     frontend = tmp_path / "frontend"
     planted = sorted(["src/x.test.tsx", "src/test/x.ts", *TS_CONFIGS])

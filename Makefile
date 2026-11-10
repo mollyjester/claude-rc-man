@@ -22,9 +22,8 @@ test-container: export RCMAN_REQUIRE_CONTAINER = 1
 test-container:  ## on demand: the Python tests that need a container; they fail rather than skip; when the working rules require them, and before the live reinstall
 	uv run pytest -m "container and not real_claude and not benchmark"
 
-benchmark: export RCMAN_REQUIRE_CONTAINER = 1
-# In one process, like test-container, as its Podman test needs the tests' engine; -s shows
-# what each test reports. In no other target: it decides nothing.
+# In one process, so that no other test runs beside one that measures; -s shows what each test
+# reports. In no other target: it decides nothing.
 benchmark:  ## on demand, not a check: the tests that measure and report; they fail only when they cannot measure
 	uv run pytest -m "benchmark and not real_claude" -s
 

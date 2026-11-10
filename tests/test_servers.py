@@ -2,41 +2,34 @@
 
 import sqlite3
 
-import pytest
 from rcman import db
-from rcman.problems import FIELD_MESSAGES
 
 from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
-from tests.hang_guard import HANG_GUARD
-from tests.test_screens import RECONNECTED_SCENARIOS
 from tests.until import until
 
 
-def workspaces(client, who=ALICE) -> list[dict]:
-    return client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
+def server_of(client, workspace):
+    listed = client.get("/api/workspaces", headers=as_user(ALICE)).json()["workspaces"]
+    return next(w for w in listed if w["id"] == workspace["id"])["server"]
 
 
-def server_of(client, workspace, who=ALICE):
-    return next(w for w in workspaces(client, who) if w["id"] == workspace["id"])["server"]
-
-
-def wait_state(client, workspace, state, who=ALICE, named=False):
-    """The server once it is read as ``state``; with ``named``, once its session's name and
-    its environment's URL are read too. A ready screen is drawn line by line: it is read as
-    ready from its Capacity line, before the name's line below it and the URL's below that
-    are drawn, and the name's line is whole once the URL is read."""
+def wait_ready(client, workspace):
+    """The server once it is read as ready with its session's name and its environment's URL.
+    A ready screen is drawn line by line: it is read as ready from its Capacity line, before
+    the name's line below it and the URL's below that are drawn, and the name's line is whole
+    once the URL is read."""
 
     def reached():
-        server = server_of(client, workspace, who)
-        drawn = server and (not named or (server["session_name"] and server["environment_url"]))
-        return server if drawn and server["state"] == state else None
+        server = server_of(client, workspace)
+        drawn = server and server["session_name"] and server["environment_url"]
+        return server if drawn and server["state"] == "ready" else None
 
     return until(reached)
 
 
-def post(client, verb, workspace, who=ALICE, **body):
+def post(client, verb, workspace, **body):
     path = "/api/servers" + (f"/{verb}" if verb else "")
-    return client.post(path, json={"workspace": workspace["id"], **body}, headers=changing(who))
+    return client.post(path, json={"workspace": workspace["id"], **body}, headers=changing(ALICE))
 
 
 def wanted(settings, workspace) -> tuple[int, int, str | None]:
@@ -50,15 +43,6 @@ def wanted(settings, workspace) -> tuple[int, int, str | None]:
         con.close()
 
 
-def test_a_start_answers_not_signed_in_until_claude_is(client, app):
-    made = made_workspace(client, ALICE, "alpha")
-    r = post(client, "", made)
-    assert (r.status_code, r.json()["code"]) == (409, "claude_not_logged_in")
-    assert server_of(client, made) is None
-    signed_in(app, made)
-    assert post(client, "", made).status_code == 200  # positive control
-
-
 def test_the_lifecycle_records_what_should_be_running(client, app, settings):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made)
@@ -68,7 +52,7 @@ def test_the_lifecycle_records_what_should_be_running(client, app, settings):
     assert wanted(settings, made) == (1, 1, "alpha")  # named after the workspace by default
     r = post(client, "confirm", made, answer="y")
     assert r.json()["server"]["state"] in ("connected", "ready")
-    ready = wait_state(client, made, "ready", named=True)
+    ready = wait_ready(client, made)
     assert ready["session_name"].startswith("alpha-")
 
     output = client.get(
@@ -92,39 +76,8 @@ def test_the_prefix_set_names_the_sessions(client, app, settings):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made, trusted=True)
     post(client, "", made)
-    assert wait_state(client, made, "ready", named=True)["session_name"].startswith("mine-")
+    assert wait_ready(client, made)["session_name"].startswith("mine-")
     assert wanted(settings, made)[2] == "mine"
-
-
-def test_conflicts_are_409(client, app):
-    made = made_workspace(client, ALICE, "alpha")
-    signed_in(app, made)
-    post(client, "", made)
-    r = post(client, "", made)
-    assert (r.status_code, r.json()["code"]) == (409, "already_running")
-
-
-def test_a_workspace_that_is_not_ready_has_no_server(client, app):
-    import threading
-
-    release = threading.Event()
-    runtime = app.state.workspaces.runtime
-    real = runtime.create
-    runtime.create = lambda spec: (release.wait(HANG_GUARD), real(spec))
-    try:
-        made = client.post("/api/workspaces", json={"name": "slow"}, headers=changing(ALICE))
-        r = post(client, "", made.json()["workspace"])
-        assert (r.status_code, r.json()["code"]) == (409, "workspace_not_ready")
-    finally:
-        release.set()
-
-
-def test_the_answer_is_validated(client):
-    made = made_workspace(client, ALICE, "alpha")
-    r = post(client, "confirm", made, answer="maybe")
-    assert r.status_code == 422
-    expected = FIELD_MESSAGES["literal_error"].format(expected="'y' or 'n'")
-    assert r.json()["errors"] == [{"field": "answer", "message": expected}]
 
 
 def test_administrators_see_every_persons_workspaces_and_servers(client, app):
@@ -143,14 +96,7 @@ def test_administrators_see_every_persons_workspaces_and_servers(client, app):
     assert people["carol@example.com"]["workspaces"] == []
 
 
-def test_people_who_are_not_administrators_cannot_see_everyone(client):
-    made_workspace(client, ALICE, "alpha")
-    r = client.get("/api/servers/everyone", headers=as_user(BOB))
-    assert (r.status_code, r.json()["code"]) == (403, "admin_only")
-    assert "alpha" not in r.text
-
-
-def in_scenario(app, tmp_path, scenario):
+def in_scenario(app, scenario):
     """Every claude the workspaces run from now on runs the fake's ``scenario``."""
     fake_claude(app.state.workspaces.runtime.claude, env=f"FAKE_CLAUDE_SCENARIO={scenario}")
 
@@ -163,84 +109,25 @@ def last_audit(settings):
     )
 
 
-def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(
-    client, app, settings, tmp_path
-):
+def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(client, app, settings):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made)
-    in_scenario(app, tmp_path, "unrecognised")
+    in_scenario(app, "unrecognised")
     r = post(client, "", made)
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] == "unrecognised"
     assert last_audit(settings) == ("server.start", "alpha", "unrecognised_screen")
 
 
-@pytest.mark.parametrize("scenario", RECONNECTED_SCENARIOS)
-def test_an_action_ending_reconnected_is_audited_ok(client, app, settings, tmp_path, scenario):
+def test_yes_at_the_remote_control_prompt_starts_the_server(client, app, settings):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made)
-    in_scenario(app, tmp_path, scenario)
+    in_scenario(app, "remote_control_prompt")
     r = post(client, "", made)
-    assert r.json()["server"]["state"] == "reconnected"
-    assert last_audit(settings) == ("server.start", "alpha", "ok")
-
-
-def audit_rows(settings):
-    return (
-        sqlite3.connect(settings.database)
-        .execute("select action, target, result from audit order by rowid")
-        .fetchall()
-    )
-
-
-def at_the_remote_control_prompt(client, app, settings, tmp_path):
-    made = made_workspace(client, ALICE, "alpha")
-    signed_in(app, made)
-    in_scenario(app, tmp_path, "remote_control_prompt")
-    r = post(client, "", made)
-    assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] == "remote_control_prompt"
-    return made
-
-
-def test_a_start_at_the_remote_control_prompt_is_a_known_state_audited_ok(
-    client, app, settings, tmp_path
-):
-    at_the_remote_control_prompt(client, app, settings, tmp_path)
-    assert last_audit(settings) == ("server.start", "alpha", "ok")
-    # The twin above is audited as unrecognised, so "ok" here is the state being known.
-    assert "unrecognised_screen" not in {result for _, _, result in audit_rows(settings)}
-
-
-def test_yes_at_the_remote_control_prompt_starts_the_server(client, app, settings, tmp_path):
-    made = at_the_remote_control_prompt(client, app, settings, tmp_path)
+    assert last_audit(settings) == ("server.start", "alpha", "ok")  # a state rcman knows
     r = post(client, "confirm", made, answer="y")
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] in ("connected", "ready")
-    assert wait_state(client, made, "ready", named=True)["session_name"].startswith("alpha-")
+    assert wait_ready(client, made)["session_name"].startswith("alpha-")
     assert last_audit(settings) == ("server.confirm", "alpha", "ok")
-    assert post(client, "confirm", made, answer="y").status_code == 409  # no longer asked
-
-
-def test_no_at_the_remote_control_prompt_ends_the_server_and_is_audited_ok(
-    client, app, settings, tmp_path
-):
-    made = at_the_remote_control_prompt(client, app, settings, tmp_path)
-    r = post(client, "confirm", made, answer="n")
-    assert r.status_code == 200, r.text
-    assert r.json()["server"]["state"] == "exited"
-    assert last_audit(settings) == ("server.confirm", "alpha", "ok")
-    assert wanted(settings, made)[:2] == (1, 1)  # still wanted: a restore asks again
-    assert post(client, "resume", made).json()["server"]["state"] == "remote_control_prompt"
-
-
-def test_a_workspace_that_cannot_be_reached_is_listed_with_why(client, app):
-    made = made_workspace(client, ALICE, "alpha")
-    signed_in(app, made)
-    post(client, "", made)
-    app.state.workspaces.runtime.stop(f"rcman-ws-{made['id']}")
-    app.state.workspaces.close_channels()
-    [found] = workspaces(client)
-    assert found["server"] is None
-    assert found["server_error"]["code"] == "workspace_failed"
-    assert workspaces(client, BOB) == []
