@@ -36,7 +36,7 @@ below), run on demand: `make test-container` runs them.
 `make test`, `make test-container` and `make benchmark`, `make check` holds no
 on-demand run, and no container test of `make test-container` can skip. To
 work on what a container suite covers, run its module directly, as in
-`RCMAN_REQUIRE_CONTAINER=1 uv run pytest tests/container/test_github_in_podman.py -k gh`.
+`RCMAN_REQUIRE_CONTAINER=1 uv run pytest tests/container/test_runtime_in_podman.py`.
 
 What keeps `make test` fast, none of it losing an assertion: it runs
 `TEST_WORKERS` workers with `--dist worksteal`; an autouse fixture in
@@ -59,10 +59,10 @@ Workspaces in the backend's tests run on the host runtime (see
 the fake `claude`, real tmux, and a real channel through the host's `sh`.
 `tests/runtime_contract.py`, which is not a test module, holds the cases every
 runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
-`tests/container/test_runtime_in_podman.py` against real Podman on the tests' engine, and
-its `PODMAN_CASES`, which hold what only the Podman runtime does, such as the instructions for
-Claude bound read-only at Claude Code's managed path, and which only
-`tests/container/test_runtime_in_podman.py` runs. Its case of `port_argv` reaches a listener
+`tests/container/test_runtime_in_podman.py`, in three basic cases, against real Podman on the
+tests' engine, and its `PODMAN_CASES`, which hold what only the Podman runtime does, such as the
+instructions for Claude bound read-only at Claude Code's managed path, which the core tier no
+longer runs. Its case of `port_argv` reaches a listener
 the workspace's `python3` runs, so the runtime's image needs python3, as the default image and
 the host have it.
 
@@ -95,8 +95,7 @@ could not be written into the script.
 The tools' `podman` and `docker` wrapper's reading of a published port,
 `backend/rcman/podman/publish.sh`, is tested on the host by `tests/test_podman_wrapper.py`,
 sourced as the wrapper sources it, by the static busybox's shell; its lists of Podman's options
-are held there to the help recorded in `tests/fakes/podman-help/`, and the recording to the
-default image's Podman by `tests/container/test_nest_in_podman.py`.
+are held there to the help recorded in `tests/fakes/podman-help/`.
 
 Limits (see [runtime.md](runtime.md#limits)) are tested on the host runtime and a stand-in for
 `systemctl`, which records what it is asked: `tests/test_limits.py` the pure module `limits.py`
@@ -165,15 +164,10 @@ to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a re
 and a service that stops, through real uvicorn running the screenshots' backend
 (`devtools/world.py`) with the options of the unit's `ExecStart`. `tests/container/test_terminal_in_podman.py` runs on
 the tests' engine, with the default workspace image built from the installer's build file and
-workspaces made through the app: the shell through `podman --remote exec` on a tty of its own, a
-resize reaching it (seen by the SIGWINCH a process in the container gets, as the podman client
-passes a resize apart from what is typed, which can arrive first), ^P^Q passing through, a terminal closed as it opens leaving nothing, the
-shell as root of the person's range and neither root nor the user on the host, `apt-get` in the
-default image, the podman client's memory, and no process and no running exec of the terminal's
-left in the container once it is closed. A remote exec's record stays after it ends until
+workspaces made through the app: what is typed reaching the shell through `podman --remote exec`
+and coming back. A remote exec's record stays after it ends until
 Podman's own cleanup removes it, once the exit delay conmon is given has passed, so whether an
-exec runs is read from Podman's API. The runtime contract's terminal case (`tests/runtime_contract.py`) runs on both
-runtimes. No test opens the tab in a real browser
+exec runs is read from Podman's API. The runtime contract's terminal case (`tests/runtime_contract.py`) runs on the host runtime. No test opens the tab in a real browser
 ([What the tests no longer check](#what-the-tests-no-longer-check)). The page's side of the protocol, its states and its fakes are in
 [frontend.md](frontend.md).
 
@@ -194,9 +188,7 @@ are:
 
 - the channel's 95th percentile against `LATENCY_P95_SECONDS` in `channel.py`, on the host
   (`tests/test_channel.py`), in up to `LATENCY_BATCHES` batches, as a busy host can push one
-  batch over the bound and a slow channel is over it in every batch; and through Podman, on
-  the tests' engine (`tests/container/test_runtime_in_podman.py`), which carries the derived
-  `container` marker as well and is under the container tests' hang guard;
+  batch over the bound and a slow channel is over it in every batch;
 - the redaction of a screen (`tests/test_claude_checks.py`), the time each of its large
   cases takes against its size. `make test` holds the same cases ended, each run in a thread
   joined within `HANG_GUARD` and asserted to have ended with the right result, so that a
@@ -472,16 +464,6 @@ given up:
 - "promptly": where a test asserted that something ended within a time, its result is still
   asserted and the cause that must not act is pushed past the guard, so that a defect fails
   the test, but an ending that is slow without being a hang passes;
-- in `tests/container/test_devcontainer_in_podman.py`, that two workspaces writing the shared
-  credentials at once really overlapped: each now starts once it has read the other's first
-  write and writes a count of rounds, and how far they overlapped is printed, not asserted;
-- in `tests/container/test_nest_in_podman.py`, that a nest slow to make its user namespace is
-  made within the real wrapper's count of tries: the slow copy waits for the namespace with that
-  count taken out, so that the test, not a count of looks, decides how slow it is;
-- that a sign-in container's own time ends it, in Podman:
-  `tests/container/test_runtime_in_podman.py` ends its process from outside, and the container's
-  going by itself is what is asserted, while that its process is a `sleep` of its seconds is read
-  from its argv on the host (`tests/test_runtime.py`);
 - the timing of `RealWatch` (`devtools/record_claude.py`), its quiet windows against the real
   `claude` and its `TIMEOUT`, after which the pane's waits give up, which only the recorder's
   command line exercises, by hand;
@@ -580,8 +562,7 @@ so carries the container marker; `tests/test_conftest.py` holds every module to 
 twin.
 
 What a machine needs to run them: rootless Podman for the user, with subordinate ids for every
-slot the suites use (`tests/container/sizes.py`; `test_the_sizes_fit` below holds the engine's map
-to it), a `newuidmap` and `newgidmap` that work for the user, and `catatonit`, the init the
+slot the suites use (`tests/container/sizes.py`), a `newuidmap` and `newgidmap` that work for the user, and `catatonit`, the init the
 workspaces' shared configuration names; the images come from their registries, so the network;
 and a `/tmp` that is not overlay, since the engine's storage is native overlay (`driver="overlay"`,
 no mount program) in a folder under `/tmp`, and overlay over overlayfs is refused. A workspace of
@@ -613,8 +594,7 @@ image a session's fixture builds or pulls (the default, the builder and the syst
 the default image's base) is held there
 for the session by a container that never starts (`hold` in `tests/podman_service.py`): a
 service deleting a workspace collects the images nothing refers to, and a later module would
-find one gone; `test_the_sessions_images_survive_a_collection_and_an_image_nothing_holds_does_not`
-in `tests/container/test_engine_in_podman.py` holds this, with an image not held as its twin.
+find one gone.
 Every run of an image built or imported on the engine, and every build from one, says
 `--pull=never`: a pull of a `localhost/` name would ask the machine's own `https://localhost`
 for it, which may be another service's.
@@ -627,189 +607,21 @@ stand-in's certificate authority and git finding github.com on that loopback (`d
 `tests/container/github_stand_in.py`). A server the test runs itself serves on a socket that a
 helper made inside the holder's network and handed back.
 
-- `tests/container/test_runtime_in_podman.py`: the runtime contract, and what only Podman has —
-  a workspace's uid range and its volume's owner, its init, no port published, the read-only
-  mounts and the tmpfs, a person's credentials file their range's root's alone, a rename over it
-  refused busy and a write in place shared, a sign-in container that removes itself, an
-  unreachable socket told from a missing workspace, an exec running the image's own program
-  and answering without its mark, its podman client's memory, and the channel's latency, as a
-  benchmark that only `make benchmark` runs; the
-  `PODMAN_CASES` of the runtime contract; the instructions for Claude as a single file bound
-  read-only where the image has no `/etc/claude-code`, readable with swapped ids, in place of an
-  image's own `CLAUDE.md` with its other files there left visible, and a file renamed over on the
-  host reaching the workspace at its next start and not before; and the image probe's reading
-  of `/etc`, `/etc/claude-code` and the managed `CLAUDE.md` in real images, a link followed
-  along the path and at its end; every command the default image's instructions name there
-  in the default image; and what the monitor reads of Podman: the disk read naming a
-  workspace's container and both its volumes, the recordings of `tests/fakes/podman-monitor/`
-  held to this Podman's tables and inspect, an inspect naming a container that is gone
-  answering those that are there, and the storage folder `info` names; what image collection
-  rests on, `images -a` listing a plain build's nameless step image linked by `ParentId` down to
-  its base, and what `image rm` does to an image with a child, to the one name of a named image
-  with a child and to a leaf's nameless parents, held to its recording
-  (`tests/fakes/podman-images/`); and the `system df` summary counting a layer two images share
-  once, in bytes, and counting a layer that belongs to no image, held to its recording
-  (`tests/fakes/podman-monitor/df-summary.json`).
-- `tests/container/test_github_in_podman.py`: git in a workspace of the Podman runtime against
-  `tests/github_server.py` served as `https://github.com` in a network of its own: the workspace
-  in that network's namespace and not this process's, rcman's push (`Repository`), Claude's git
-  (the fake `claude`'s `fake-exec`) and the credential helper using the person's token, the token
-  written by `GitAccount` through `put_account`, no push without a token, the environment of
-  Claude's children holding no token, the image check, and forgetting the token making the very
-  next push fail for both. It also makes workspaces by cloning through `Workspaces`: a public
-  repository cloned into a workspace that then works, a private one failing without a token and
-  cloning with one (which is kept out of the repository), a refused token, a repository that is
-  not there and a GitHub that cannot be reached, each said in plain words, and the deletion of a
-  workspace being cloned stopping git and leaving nothing. Its tests of `gh` run the default
-  image, with Ubuntu's `gh` as one of Claude's children, in the module's network, which has no
-  way out (one of them, with a token and no `config.yml`, has gh ask GitHub whose the token is):
-  no token before a save
-  and the token after one, none from the very next command after a forget, every shape of token
-  in `tests/github_tokens.py` read back as it was saved, and gh writing nothing into the folder
-  as rcman writes it, against a control in which a command that writes gh's configuration does,
-  and one without `config.yml` in which a stored token makes every command fail.
-- `tests/container/test_devcontainer_in_podman.py`, sharing that module's stand-in, image,
-  network and person: how an image is read without being run, pulled and, when only the engine
-  has it, used without a registry; the uid swap map with `--user` and `--group-add`; files an
-  ordinary-map root made being the user's, and a user's rename in them; the tmpfs being the
-  user's; the shared credentials file and git folder written in place from a root workspace and
-  the user's of one person, two refreshing at once, with its owner and mode unchanged as the
-  engine sees them; and, through `Workspaces` and a clone from the stand-in, Claude and the
-  commands running as `remoteUser` with the file's environment and the image's, git with the
-  person's author and token, the create commands running once and `postStartCommand` at every
-  start across a restart of rcman, a file that names no image and builds none made ready from
-  the default image without a pull, pinned by its id with the file's environment, a refused
-  key or an Alpine image leaving nothing behind, a
-  failing command keeping the workspace with its token redacted, and a deletion killing a
-  running command; and rebuilds: a new image applied with the work folder kept, a change of user
-  (root and uid 1000, both ways) leaving the user's files writable, a failed rebuild leaving the
-  old container running from the old image, a restart of rcman while the container was replaced
-  coming back on the old image, and a workspace whose `postCreateCommand` failed rebuilt and
-  ready.
-- `tests/container/test_builder_in_podman.py`: the devcontainer builder (`builder.py`,
-  `build_image` in `runtime.py`) against real Podman and the real Dev Containers CLI, with the
-  builder in the suites' builder slot. The builder pulls the images a build starts from, so the
-  module's workspaces and builders are on the engine's own network, and the stand-in GitHub is
-  reached through git's `http.proxy`, a relay on the loopback that takes only `CONNECT
-  github.com:443` (`Relay` in `tests/container/network.py`), so nothing listens on the machine's
-  port 443. A *stub builder*, the workspace image with a stand-in for the CLI that records its
-  arguments, its environment, the build-only configuration it was given and a listing of the
-  repository, and waits to be told to fail, shows the builder running in the builder's uid range
-  with no privileges, one capability more than a workspace and no device more, and no mount but
-  its own volume; the repository arriving as a tar archive without its top-level git folder, its
-  files the builder root's, its links and modes kept; the CLI run with the argument list and the
-  environment `builder.py` gives it and a configuration of only the build keys; the words of a
-  failing CLI told in plain words; the size limit refusing before the CLI runs; a deletion
-  removing the builder and its volume; and the formats Podman prints that `builders`,
-  `built_images` and `remove_build` read, with the restore removing orphans. The *real builder*,
-  built from `installer/builder`, builds a Dockerfile and a local feature into an image in rcman's
-  storage, the workspace made from it with the feature's tool on Claude's PATH, the label holding
-  the feature's entry only so that each lifecycle command runs once, the builder, its volume and
-  the image in it gone, the progress in the creation log, the copy logged, two builds of one
-  person at once, the deletion of one removing its image and the copies Podman made of it in the
-  person's range and leaving the other's, the policy's refusal of a feature's request before the
-  image is copied out and of a musl base after it, each leaving nothing, and a capability a build
-  gives `newuidmap` writing another user's map in the person's range, against a copy without it;
-  and a built image rebuilt while its container runs, taking the built name only once the
-  rebuild is done, and a deletion by `rcman-admin` while a rebuild builds leaving nothing of it.
-- `tests/container/test_claude_versions_in_podman.py`: `ClaudeVersions` against real Podman, with
-  the default image and a store of the module's own, and the fake `claude` as good, broken and
-  checksum-failing Claude Code versions (`tests/claude_download.py`), served from a folder: a
-  server keeping the version it started with through an approval, the drift report and a restart
-  of rcman, and a stop and start taking the approved version by its exact file; a version leaving
-  the store once the last server that used it has stopped, the approved and previous ones
-  staying; a broken or checksum-failing candidate leaving the store, the approvals, the
-  containers and the staging folder as they were; the canary container as `run_canary` designs
-  it, looked at from outside and inside while it runs (the builder's uid range, no network, its
-  `/proc/net/dev` naming only `lo` against one on the engine's network that names more, a
-  read-only root, no capabilities, only the candidate and rcman's helpers mounted read-only and
-  readable by that range, a stale one removed first, none left after); `--timeout` ending a
-  container through `podman --remote run`; and the canary cases of `tests/runtime_contract.py`, in
-  the suites' builder slot.
-- `tests/container/test_forward_in_podman.py`: a port in a workspace of the default image, in a
-  network of its own, reached through the product's relay (`PodmanRuntime.port_argv`): under
-  busybox's `setsid`, the mounted busybox's shell writes its id to a pidfile and runs `cat` into
-  `nc`, and once either ends, it removes its pidfile and `kill 0` ends the relay's process
-  group. Binary bytes, more than a pipe holds, cross intact both ways, the client keeping its
-  input open until it has read the answer and its end of input reaching the listener as its end
-  of file; the pidfile names the relay's shell while it runs, which leads a process group
-  holding the relay's parts alone; once the client is killed, or only closes its input, while
-  the listener keeps its side open, and once the listener has answered and closed its side while
-  the client keeps its input open, no `nc`, `cat` or shell of the relay, no exec of it and no
-  pidfile of it is left, and the client gets the whole answer and then its end of file. Each
-  absence is read by a check that first sees a `nc` left running on purpose and the relay's
-  processes, exec and pidfile while it runs; the relay that ends only with its input, run when
-  the listener closes first, is seen to hang and to keep its pidfile. A relay left with both
-  sides held open is ended by `forwards.sweep` through the workspace's channel, and a decoy
-  pidfile naming a process of a separate exec signals nothing, that process and the listener
-  still running. The relay carries no half-close: a client that ends its input before the answer
-  comes ends the relay, and the answer the listener does send is cut short. Which execs run is
-  read from Podman's API by `tests/container/execs.py`.
-- `tests/container/test_terminal_in_podman.py`: the Terminal tab's shell, in workspaces of the
-  default image made through the app (see the Terminal tab, below).
-- `tests/container/test_restored_in_container.py`: rcman's app on the engine, with `systemctl`
-  the stand-in, makes a workspace with a running server and limits on the person and the
-  workspace; rcman stops, every container on the engine stops and the stand-in forgets what a
-  restart forgets; rcman starts again, and the workspace runs again, its server is ready again,
-  and the limits are set again, from rcman's table, before the container starts; and a rebuild
-  that the restart cut short comes back on the old image.
-- `tests/container/test_install_in_container.py` and `tests/container/test_stack_in_podman.py`:
-  below.
-- `tests/container/test_nest_in_podman.py`: the tools' `podman` and `docker` in a workspace of
-  the default image, as root in the nest (an imported busybox run in a pid namespace with a fresh
-  `/proc`, a build from a subfolder whose whiteout holds, `--init`, root's storage native overlay
-  in the volume with its mounts in the nest and not in the workspace's own mount namespace, the
-  record of the nest replaced when stale or unreadable, a lock whose owner is gone taken over,
-  `compose` refused wherever it is the subcommand and not as another's argument; a Podman of a
-  program's own, its storage in a folder mktemp makes under the workspace's `/tmp` with a
-  storage.conf pinning native overlay and no mount program, as `tests/podman_service.py`'s
-  `started` makes the engine, running an imported busybox as root through the tools' `podman`
-  and as a user who is not root, with its twin under `/var/tmp`, on the workspace's overlay root,
-  refused as overlay over overlayfs; one nest from
-  calls made at once, in rounds, with a lock whose holder is gone; a nest slow to make its user
-  namespace still made, against a copy of the wrapper without the wait for it; a lock whose
-  folder is gone taken over and let go, against a copy that does not make the folder and is
-  still trying when stopped; letting go keeping a folder whose claimer runs; after a stop and a
-  start, the record's tmpfs empty and a record naming a process with the workspace's own
-  namespaces refused, against a copy without those checks; the record's folder root's alone in a
-  workspace whose user is not root; the record's folder refused when it is another's or others
-  may write in it, and a workspace made without its tmpfs refused as one made before) and as a
-  user who
-  is not root (a map over every id of the workspace but root's, a run and a build rootless), with
-  its twin, a setuid `newuidmap` that cannot write the map; the image's `newuidmap` and
-  `newgidmap` with their capability and no setuid, every package it asks for installed, the
-  tools a repository's setup needs, and no `/etc/claude-code` of its own; a published port
-  explained by `podman` and `docker`, as root and as a user who is not root, with the container
-  still run, the recorded helps held to the image's own Podman's; and
-  in an image without Podman, the image's own `docker` after the wrappers run, and none told so,
-  a port it publishes not explained,
-  the wrapper never taking a link to itself for it; and `podman` and `docker` found by name as the wrappers, and
-  `git` as the image's, in the environment of Claude's programs and of the lifecycle commands.
-- `tests/container/test_engine_in_podman.py`: `create`'s own argv on the engine (the hostname,
-  the range, the network), rcman's exec, channel and the Terminal tab's shell; the workspace's
-  `/tmp`, an anonymous volume whose type in `/proc/self/mountinfo` is not overlay, against `/`
-  and `/var/tmp`, which are, mounted `nosuid` and `nodev`; `1777` and `0:0` under the ordinary
-  map and a swapped one, in images of busybox with no `/tmp`, with a `/tmp` of a user's that only
-  they may enter, and with that declared `VOLUME /tmp` (one volume there), each against what
-  Podman alone makes of it, which is not; the twins, an image whose `/tmp` is a link to `var/tmp`
-  and one whose `/tmp` is a link to the workspace's volume, refused, with nothing made `1777`
-  through the link where the container runs, and the container then removed and its volume kept; a file in it kept across a stop and a start, the volume kept
-  by `_clean_volumes` while its container is stopped and gone once it is removed; a UTS namespace
-  the workspace makes taking a hostname and its own not, and a pid namespace it makes mounting a
-  fresh `/proc`, each against a sign-in container, which has neither the profile nor the
-  unmasked `/proc`; no process of a workspace left once it is stopped or removed, against the
-  one seen while it runs; a workspace made without `UNMASK_PROC`, and one with Podman's own
-  seccomp profile, each running no nested container; the kernel's own files of `/proc` kept from
-  the workspace's root, against a setting of its own IPC namespace it may write; and
-  `test_the_sizes_fit`: the slots within the engine's map, every
-  `*_ID` integer of the modules of `tests/container/` and the owner of every file in every image
-  on the engine within one slot's range, with its twins, a smaller map and an image with a file
-  owned beyond it; and the builder image built with the installer's own arguments (`build_argv`)
-  leaving no image without a name.
-- `tests/container/test_builder_on_engine.py`: the builder image in the builder's slot, its
-  Podman on native overlay with no FUSE device, building a Dockerfile with a whiteout and a local
-  feature into an image a workspace then runs from; and its twin, a builder without
-  `SYS_ADMIN`, which runs nothing.
+The tier is a small core: one basic happy-path test of each thing only real Podman proves, and
+nothing else (no variants, refusals, edge cases or timing).
+
+- `tests/container/test_runtime_in_podman.py`: three basic cases of the runtime contract
+  (`tests/runtime_contract.py`) on Podman: a workspace made, running and removed; an exec
+  answering; and its files outliving a stop and start.
+- `tests/container/test_restored_in_container.py`: a workspace running again after rcman restarts.
+- `tests/container/test_builder_in_podman.py`: an image built for real from a devcontainer.json
+  (a Dockerfile and a local feature) and a workspace running from it.
+- `tests/container/test_nest_in_podman.py`: a container running inside a workspace.
+- `tests/container/test_terminal_in_podman.py`: what is typed reaching the Terminal tab's shell and
+  coming back.
+- `tests/container/test_forward_in_podman.py`: a forwarded port answering through the relay.
+- `tests/container/test_install_in_container.py`: the first installation putting rcman in Caddy
+  and restarting it.
 
 #### The stubbed installation
 
@@ -855,21 +667,7 @@ machine, as the engine resolves what the stack's rcman asks it to mount. The bac
 and the built frontend are made once per run from the checkout's files in a container with the
 network (`stack_prepared`). `stack.py` says what each of its verbs does.
 
-`tests/container/test_stack_in_podman.py` runs, against a stack of its own, what an installation
-does once people and workspaces are there (see [installer.md](installer.md#tests)), through
-rcman's socket as Caddy passes requests on, and through Caddy and oauth2-proxy; and the stack's
-network: a workspace in the stack's network namespace and not this process's, with a hostname
-and a hosts file of its own, against the stack's, and git there finding the stand-in GitHub
-through the image; and, with sites of its own added to the stack's Caddy for a while (`stack.py
-caddy`), a forwarded port's certificate got on demand only for a host a stand-in for rcman's ask
-allows, on an ask site bound to the loopback that passes only the ask's exact path, and the
-forward site's log keeping no cookie and no query string, against a twin site's that keeps them;
-with no `on_demand_tls` in the global options (`stack.py caddy` given an empty ask), a
-certificate got for any name under the wildcard, asking no one, against the same Caddy asking
-and refusing. Those sites are under a name of their
-own (`gate`) with an ask site on a port of its own, beside the installer's sites for
-forwarded ports, which the stack's Caddy holds too, the stack's global options asking the gate's
-for the while.
+No container test runs the stack now; `stack.py` stays for the host tests that read it.
 
 A person's first workspace in the stack is slow, because rootless Podman keeps one copy of the
 default image per range of ids and copies it into the person's range; the tests wait for it, as

@@ -2,9 +2,9 @@
 service that serves it.
 
 Not a test module, and the standard library only, so that the whole stack's container can run it
-as it is from the checkout's files at /src. Shared by tests/container/test_github_in_podman.py,
-which serves tests/github_server.py as https://github.com itself, in a network of its own
-(tests/container/network.py), and by tests/container/stack.py, which serves it behind Caddy
+as it is from the checkout's files at /src. Shared by tests/container/test_builder_in_podman.py,
+which serves tests/github_server.py as https://github.com itself, and by
+tests/container/stack.py, which serves it behind Caddy
 (``serve`` below).
 
 - ``mint`` makes a certificate authority and a certificate it signed for github.com;

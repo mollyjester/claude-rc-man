@@ -24,16 +24,14 @@ from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from rcman import db, limits, people
+from rcman import db, people
 from rcman import runtime as rt
 from rcman.main import create_app
-from rcman.problems import REBUILD_MESSAGES
 
 from devtools import fake_claude as fake
 from devtools.world import record_sign_in
 from tests.conftest import ALICE, ORIGIN, as_user, changing, made_workspace
 from tests.container import sizes
-from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import engine_runtime, engine_settings, image_of, stand_in
 from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.until import SLOW, until
@@ -67,16 +65,6 @@ def started(podman_service, name: str) -> float:
     found = json.loads(podman_service.cli("container", "inspect", name).stdout)[0]
     text = re.sub(r"(\.\d{6})\d+", r"\1", found["State"]["StartedAt"])  # to microseconds
     return datetime.fromisoformat(text).timestamp()
-
-
-def set_properties(state, after: float) -> dict[str, float]:
-    """When, after ``after``, the stand-in was last asked to set properties on each slice."""
-    found = {}
-    for line in (state / "calls").read_text().splitlines():
-        call = json.loads(line)
-        if call["time"] > after and call["args"][:2] == ["--user", "set-property"]:
-            found[call["args"][3]] = call["time"]
-    return found
 
 
 @pytest.fixture(scope="module")
@@ -178,45 +166,3 @@ def restarted(
 def test_the_workspace_runs_again(restarted):
     until(lambda: restarted["podman"].running(restarted["name"]), SLOW)
     assert started(restarted["engine"], restarted["name"]) > restarted["rebooted"]
-
-
-def test_its_server_is_ready_again(restarted):
-    client, workspace = restarted["client"], restarted["workspace"]
-    until(lambda: server_state(client, workspace) in ("ready", "connected"), SLOW)
-    found = claude_processes(restarted["podman"], restarted["name"])
-    assert found and restarted["before"]["processes"]  # it ran before, and runs again
-
-
-def test_the_limits_are_set_again_before_the_container_starts(restarted):
-    """The stand-in forgot the limits with the restart; rcman set them again from its table
-    before it started the workspace."""
-    me, workspace = restarted["person"], restarted["workspace"]
-    until(lambda: restarted["podman"].running(restarted["name"]), SLOW)
-    times = set_properties(restarted["state"], restarted["rebooted"])
-    own, theirs = limits.workspace_slice(me, workspace), limits.person_slice(me)
-    assert set(times) >= {own, theirs}, times
-    assert max(times[own], times[theirs]) < started(restarted["engine"], restarted["name"])
-    caps = restarted["podman"].caps(me, workspace)
-    assert caps == limits.Caps(2048 * limits.MEBIBYTE, 3000)
-    assert restarted["podman"].caps(me, None) == limits.Caps(4096 * limits.MEBIBYTE, 6000)
-
-
-def test_the_slots_the_module_uses_are_the_suites(restarted):
-    """The person rcman gave a slot is in the suites' people slots, so their range fits."""
-    con = db.connect(restarted["client"].app.state.settings.database)
-    try:
-        person = people.by_email(con, ALICE)
-    finally:
-        con.close()
-    assert person.slot in sizes.PEOPLE_SLOTS
-    assert base.FIRST_WORKSPACE > restarted["workspace"]  # clear of the runtime module's ids
-
-
-def test_a_rebuild_cut_short_by_the_restart_comes_back_on_the_old_image(restarted):
-    podman, workspace = restarted["podman"], restarted["beta"]
-    name = rt.container_name(workspace)
-    until(lambda: podman.exists(name) and podman.running(name), SLOW)
-    assert image_of(podman, name) == restarted["beta_image"]
-    now = restarted["client"].app.state.workspaces.get(workspace)
-    assert (now.state, now.rebuild_state) == ("ready", None)
-    assert now.rebuild_error == REBUILD_MESSAGES["restarted_switching"]

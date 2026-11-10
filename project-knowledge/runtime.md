@@ -762,8 +762,7 @@ helpers; one left from before is removed first. The checks need `python3` in the
 the real binary needs no network for them is a check of
 [the real-Claude list](real-claude-checklist.md); if it does, the canary would have to use the
 workspace network. `HostRuntime` runs the same program with the host's interpreter and a
-clean environment, or a test's `canary_script`. The cases for both are `tests/runtime_contract.py`'s,
-and against real Podman `tests/container/test_claude_versions_in_podman.py`'s.
+clean environment, or a test's `canary_script`. The cases for both are `tests/runtime_contract.py`'s.
 
 ## A repository's devcontainer.json
 

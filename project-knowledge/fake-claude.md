@@ -169,8 +169,7 @@ environment the fake was started with but for `FAKE_CLAUDE_VERSION` (a release's
 launcher exports it for the fake alone, and the real Claude's children never see
 such a variable), on its own streams, and ends with the command's exit status. A workspace starts Claude through `env -i` with exactly
 `runtime.child_env`, so the command sees what a command Claude runs, as git
-does for it, would see; the container test of git uses it to show Claude's own git
-and gh using the person's token (`tests/container/test_github_in_podman.py`).
+does for it, would see.
 `tests/test_fake_claude.py` holds it.
 
 ## Not recorded

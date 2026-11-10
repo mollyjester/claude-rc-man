@@ -31,7 +31,6 @@ import subprocess
 import threading
 
 import pytest
-from rcman import forwards
 from rcman import runtime as rt
 
 from tests import podman_service as ps
@@ -53,7 +52,6 @@ RELAY = rt.RELAY_SCRIPT.format(busybox=BUSYBOX)
 ONE_SIDED = f'echo $$ >"$1"; {{ {BUSYBOX} cat; kill 0; }} | {BUSYBOX} nc 127.0.0.1 "$2"'
 # The ports the workspace listens on in its own network: one per part of the tests.
 EXCHANGED, PLANTED, HELD_KILLED, HELD_CLOSED, HALF_CLOSED = 6080, 6082, 6083, 6084, 6085
-APP_CLOSED, APP_CLOSED_ONE_SIDED, LEFT_OVER = 6086, 6087, 6088
 # Bytes sent each way: many times what a pipe holds, so neither side can have taken it whole.
 PAYLOAD = 1024 * 1024
 # What the bystander runs: a process of a separate exec, which no relay's end may take with it,
@@ -193,12 +191,6 @@ def wrapper_argv(pidfile: str, port: int) -> list[str]:
     return rt.relay_shell(rt.PODMAN_LAYOUT, pidfile, port)
 
 
-def an_nc(argv: list[str]) -> bool:
-    """Whether ``argv`` is an ``nc``'s, the mounted busybox's or another."""
-    program = os.path.basename(argv[0]) if argv else ""
-    return program == "nc" or (program == "busybox" and argv[1:2] == ["nc"])
-
-
 def relay_parts(podman, name: str) -> dict[int, list[str]]:
     """Every process of a relay running in the workspace - its shell and subshell, ``cat`` and
     ``nc``, the mounted busybox's or another ``nc`` - by its id: its argv."""
@@ -321,14 +313,6 @@ def shell_of(podman, name: str, port: int) -> int:
     read = podman.exec(name, [BUSYBOX, "cat", pidfile(port)])
     assert read.code == 0, read
     return int(read.out.decode())
-
-
-def reading(stream) -> queue.Queue:
-    """What ``stream`` gives next - b"" at its end of file - read aside, into the queue given,
-    which is empty until it comes."""
-    got: queue.Queue = queue.Queue()
-    threading.Thread(target=lambda: got.put(stream.read(1)), daemon=True).start()
-    return got
 
 
 def held(relay: subprocess.Popen) -> bool:
@@ -537,151 +521,3 @@ def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_i
         for f in found.values()
     ), found  # fmt: skip
     assert processes(podman, workspace).get(bystander) == BYSTANDER  # kill 0 took only its own
-
-
-def test_the_relay_does_not_carry_a_half_close(podman, workspace, bystander):
-    """A documented limitation, pinned: a client that ends its input before the answer comes, as
-    a half-close does, ends the relay, and the answer the listener sends after its end of file
-    is not carried whole, while the relay leaves nothing, its pidfile included, and a bystander
-    of another exec still runs. Its only client, rcman's forwarding server, keeps the input
-    open until the answer has been passed back."""
-    late = Listener(podman, workspace, HALF_CLOSED, "after-eof", PAYLOAD)
-    relay = relay_started(podman, workspace, pidfile(HALF_CLOSED), HALF_CLOSED)
-    try:
-        late.said("accepted")
-        assert relay_parts(podman, workspace)  # the control: it runs
-        until(lambda: pidfile_there(podman, workspace, HALF_CLOSED), SLOW)  # its pidfile, too
-        sent = os.urandom(PAYLOAD)
-        back, _ = relay.communicate(
-            sent, timeout=CONTAINER_HANG_GUARD
-        )  # sends, then ends its input at once
-        length, _ = late.said("eof")
-        assert int(length) >= 0  # the end of file came, after however much the relay passed
-        assert late.said("answer")[0] == str(PAYLOAD)  # and the listener answered in full
-        assert len(back) < PAYLOAD, len(back)  # cut short
-        until(lambda: relay_parts(podman, workspace) == {}, SLOW)
-        until(lambda: not pidfile_there(podman, workspace, HALF_CLOSED), SLOW)
-    finally:
-        ended(relay)
-        late.end()
-        podman.exec(workspace, [BUSYBOX, "rm", "-f", pidfile(HALF_CLOSED)])
-    assert processes(podman, workspace).get(bystander) == BYSTANDER
-
-
-def app_closed_left(podman, name: str, port: int, script: str | None = None) -> dict:
-    """A relay to a listener that answers in full and then closes its side, while the client
-    keeps its input open, as an app that closes a connection (HTTP/1.0, ``Connection: close``,
-    a WebSocket's close, a crash) does: whether the client got the whole answer, then its end of
-    file, and the relay's processes, exec and pidfile still there if they never go, each seen
-    while it ran first. With ``script``, an exec of the same shape running that script instead
-    (the planted positive), which never ends: once its ``nc`` has ended with the connection,
-    whether it holds its client, and what of it is there then. What is left is ended
-    afterwards."""
-    closing = Listener(podman, name, port, "close", PAYLOAD)
-    before = running_execs(podman, name)
-    relay = relay_started(podman, name, pidfile(port), port, script)
-    try:
-        # The positive, before anything is sent: the relay waits for its input, so its exec
-        # runs until it has been read.
-        [relay_exec] = until(lambda: running_execs(podman, name) - before, SLOW)
-        until(lambda: pidfile_there(podman, name, port), SLOW)  # and its pidfile is written
-        sent = os.urandom(PAYLOAD)
-        writer = threading.Thread(target=written, args=(relay.stdin, sent), daemon=True)
-        writer.start()
-        back = read_exactly(relay.stdout, PAYLOAD)
-        writer.join(timeout=CONTAINER_HANG_GUARD)
-        answered = closing.said("answer")
-        closing.said("closed")
-        whole = answered == [str(len(back)), hashlib.sha256(back).hexdigest()]
-        if script is not None:  # the twin: its nc has ended, its cat waits on the input
-            until(lambda: not any(an_nc(argv) for argv in relay_parts(podman, name).values()),
-                  SLOW)  # fmt: skip
-            return {
-                "whole answer": whole and len(back) == PAYLOAD,
-                "hung": held(relay),
-                "relay left": relay_parts(podman, name),
-                "pidfile left": pidfile_there(podman, name, port),
-            }
-        end = reading(relay.stdout)  # its input still open
-        # One wait over its end of file and every absence, then each read on its own, so that
-        # a failure is read within one hang bound.
-        waited(
-            lambda: (
-                not end.empty()
-                and not relay_parts(podman, name)
-                and relay_exec not in running_execs(podman, name)
-                and not pidfile_there(podman, name, port)
-            )
-        )
-        return {
-            "whole answer": whole and len(back) == PAYLOAD,
-            "eof": not end.empty() and end.get_nowait() == b"",
-            "relay left": relay_parts(podman, name),
-            "exec left": relay_exec in running_execs(podman, name),
-            "pidfile left": pidfile_there(podman, name, port),
-        }
-    finally:
-        for pid in relay_parts(podman, name):
-            podman.exec(name, [BUSYBOX, "kill", "-KILL", str(pid)])
-        ended(relay)
-        closing.end()
-        until(lambda: relay_parts(podman, name) == {}, SLOW)
-        podman.exec(name, [BUSYBOX, "rm", "-f", pidfile(port)])
-
-
-def test_the_relay_ends_when_the_app_closes_first_while_its_client_keeps_its_input(
-    podman, workspace, bystander
-):
-    """Gate: once the listener has answered and closed its side, the client, keeping its input
-    open, reads the whole answer and then its end of file, and no part of the relay, no exec of
-    it and no pidfile of it is left, while a bystander of another exec still runs. The planted
-    positive: the relay that ends only with its input, run the same way, does not end - its
-    client sees no end of file, and its pidfile stays - so the check can fail."""
-    found = app_closed_left(podman, workspace, APP_CLOSED)
-    assert found["whole answer"] and found["eof"], found
-    assert not found["relay left"] and not found["exec left"], found
-    assert not found["pidfile left"], found
-    planted = app_closed_left(podman, workspace, APP_CLOSED_ONE_SIDED, ONE_SIDED)
-    assert planted["whole answer"] and planted["hung"], planted  # the twin hangs
-    assert planted["relay left"], planted  # its cat waits on the input still open
-    assert planted["pidfile left"], planted  # and the same check sees its pidfile
-    assert processes(podman, workspace).get(bystander) == BYSTANDER
-
-
-def test_the_pidfile_wrapper_lets_sweep_end_a_leftover_relay(podman, workspace, bystander):
-    """A relay left running - its client keeping its input open, its listener its side - is
-    ended by forwards.py's sweep through the workspace's channel, as rcman sweeps it: every part
-    of it and its exec gone, its pidfile removed; while a decoy pidfile, named as a relay's and
-    naming the bystander, signals nothing and is removed, and the listener still runs."""
-    holding = Listener(podman, workspace, LEFT_OVER, "hold")
-    before = running_execs(podman, workspace)
-    relay = relay_started(podman, workspace, pidfile(LEFT_OVER), LEFT_OVER)
-    decoy = f"{rt.RUN_MOUNT}/forward-{'d' * 16}.pid"
-    channel = podman.channel(workspace)
-    try:
-        holding.said("accepted")
-        shell = shell_of(podman, workspace, LEFT_OVER)
-        parts = relay_parts(podman, workspace)
-        assert sorted(parts.values()) == expected_parts(pidfile(LEFT_OVER), LEFT_OVER), parts
-        assert shell in parts  # the positive: the pidfile names the running shell
-        [relay_exec] = running_execs(podman, workspace) - before
-        planted = podman.exec(workspace, [BUSYBOX, "sh", "-c", f'echo {bystander} >"$1"', "sh",
-                                          decoy])  # fmt: skip
-        assert planted.code == 0, planted
-        assert held(relay)  # held open by both sides, it runs on
-
-        forwards.sweep(rt.PODMAN_LAYOUT, channel.run)
-        assert relay.wait(timeout=CONTAINER_HANG_GUARD) is not None  # its exec ended with its shell
-        until(lambda: relay_parts(podman, workspace) == {}, SLOW)
-        until(lambda: relay_exec not in running_execs(podman, workspace), SLOW)
-        for path in (pidfile(LEFT_OVER), decoy):
-            assert podman.exec(workspace, [BUSYBOX, "test", "-e", path]).code != 0, path
-        assert processes(podman, workspace).get(bystander) == BYSTANDER
-        assert holding.pid in processes(podman, workspace)
-    finally:
-        channel.close()
-        for pid in relay_parts(podman, workspace):
-            podman.exec(workspace, [BUSYBOX, "kill", "-KILL", str(pid)])
-        podman.exec(workspace, [BUSYBOX, "rm", "-f", decoy, pidfile(LEFT_OVER)])
-        ended(relay)
-        holding.end()

@@ -314,7 +314,7 @@ def test_a_repository_that_is_not_there_fails_with_gits_own_words_from_real_git(
     ("said", "cause"),
     [
         # as git 2.43 words them against the tests' GitHub in Podman
-        # (tests/container/test_github_in_podman.py): a repository GitHub does not have
+        # (tests/container/test_builder_in_podman.py): a repository GitHub does not have
         ("fatal: repository 'https://github.com/octo/not-there/' not found\n", "not_found"),
         ("remote: Repository not found.\nfatal: repository 'https://x/' not found\n", "not_found"),
         # a sign-in asked for with no token, and a token that was sent and not accepted

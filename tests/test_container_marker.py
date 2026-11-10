@@ -95,7 +95,10 @@ def test_in_the_suite_the_marker_is_exactly_the_fixtures_users():
     assert "tests/test_container_suite.py::test_podman_is_usable" in suite
     assert any(n.startswith("tests/container/test_nest_in_podman.py::") for n in engine)
     assert engine == users
-    assert "tests/container/test_stack_in_podman.py::test_services_answer" in users
+    assert (
+        "tests/container/test_forward_in_podman.py::test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_input"
+        in users
+    )
     assert suite and suite <= users
     assert marked == users
     assert "tests/test_collected.py::test_uses_tmp_path" not in marked

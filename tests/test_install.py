@@ -413,8 +413,7 @@ def snippet_site(snippet: str, address: str) -> str:
 def test_the_snippet_passes_every_forwarded_port_to_the_forward_socket_without_identity():
     """The forwarded ports' wildcard site: certificates on demand, the sign-in's identity headers
     deleted, the forwarding server's socket as its upstream, and a log of its own that keeps no
-    cookie, no referrer, no Location and no query string, in the forms Ubuntu's Caddy loads
-    (tests/container/test_stack_in_podman.py)."""
+    cookie, no referrer, no Location and no query string, in the forms Ubuntu's Caddy loads."""
     snippet = ins.render("Caddyfile", SETTINGS)
     site = snippet_site(snippet, "*.ws.rcman.example.com")
     assert "\ttls {\n\t\ton_demand\n\t}\n" in site

@@ -129,4 +129,3 @@ start.
 | `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
 | `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, `delete` waiting for a workspace the service is making and leaving it to restore when the service is down, its words, running itself again as rcman, and the installed script |
 | `tests/container/test_install_in_container.py` | The installed thing: the first administrator, `rcman-admin` by name as root, and the allowed list's owner and mode |
-| `tests/container/test_stack_in_podman.py` | The whole stack: its administrator, a person added and let in, one person unable to reach another's workspace, deleting a person leaving nothing labelled theirs, through the People page and through `rcman-admin` while a rebuild of theirs runs a create command in the container it makes, and limits set through the API |

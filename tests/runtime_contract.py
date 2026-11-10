@@ -5,8 +5,7 @@ tests/container/test_runtime_in_podman.py against Podman on the tests' engine, s
 that the host runtime the other tests use behaves as Podman does where it matters.
 ``port_argv_carries_bytes_both_ways`` needs python3 in the runtime's image, as the default
 workspace image and the host have it, for the listener it reaches. The ``CANARY_CASES`` need
-python3 in the runtime's image too: tests/test_runtime.py runs them too,
-and tests/container/test_claude_versions_in_podman.py against Podman with the default image;
+python3 in the runtime's image too: tests/test_runtime.py runs them too;
 they take the slot the canary runs in as ``slot``, the product's builder slot unless a runtime
 with ranges of another size is given another (tests/container/sizes.py). The
 ``PODMAN_CASES`` are the Podman runtime's alone: tests/container/test_runtime_in_podman.py runs
