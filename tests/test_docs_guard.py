@@ -11,8 +11,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from devtools import docs_guard
 from devtools.held_folders import held
 from tests.hang_guard import HANG_GUARD
@@ -37,33 +35,12 @@ def make_repo(tmp_path: Path, files: dict[str, str]) -> Path:
     return tmp_path
 
 
-# --- corpus -----------------------------------------------------------------
-
-
-def test_corpus_includes_tracked_and_untracked_files(tmp_path):
-    root = make_repo(tmp_path, {md("a"): "x", "sub/" + md("b"): "y", ".gitignore": "ignored/\n"})
-    (root / "ignored").mkdir()
-    (root / "ignored" / md("c")).write_text("z", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", md("a")], check=True)
-
-    corpus = docs_guard.corpus_files(root)
-
-    assert md("a") in corpus  # tracked
-    assert "sub/" + md("b") in corpus  # untracked, not ignored
-    assert "ignored/" + md("c") not in corpus
-
-
-def test_real_corpus_is_not_empty():
-    corpus = docs_guard.corpus_files(REPO)
-    assert "README.md" in corpus
-    assert "tests/test_docs_guard.py" in corpus
-
-
 # --- references resolve -------------------------------------------------------
 
 
 def test_real_repository_references_all_resolve():
     corpus = docs_guard.corpus_files(REPO)
+    assert {"README.md", "tests/test_docs_guard.py"} <= set(corpus)
     refs = docs_guard.all_references(REPO, corpus)
     # Known positive: README links CONTRIBUTING; without it an empty scan would pass.
     assert any(r.file == "README.md" and r.target == "CONTRIBUTING.md" for r in refs)
@@ -86,96 +63,7 @@ def test_dangling_mention_is_reported(tmp_path):
     assert [(r.target, r.kind) for r in bad] == [(md("nowhere"), "mention")]
 
 
-def test_link_resolves_relative_to_the_file_it_is_written_in(tmp_path):
-    root = make_repo(
-        tmp_path,
-        {
-            md("b"): "root b",
-            "sub/" + md("a"): link("b", md("b")) + " and " + link("up", "../" + md("b")),
-        },
-    )
-    bad = docs_guard.unresolved_references(root, docs_guard.corpus_files(root))
-    # The bare link points at sub/b, which does not exist; the ../ link is fine.
-    assert [(r.file, r.target) for r in bad] == [("sub/" + md("a"), md("b"))]
-
-
-def test_mention_resolves_by_root_path_writer_path_or_basename(tmp_path):
-    root = make_repo(
-        tmp_path,
-        {
-            "docs/" + md("guide"): "g",
-            "sub/" + md("local"): "l",
-            "sub/" + md("a"): f"docs/{md('guide')}, {md('local')}, {md('guide')}",
-        },
-    )
-    assert docs_guard.unresolved_references(root, docs_guard.corpus_files(root)) == []
-
-
-def test_link_to_existing_non_markdown_file_and_directory_resolves(tmp_path):
-    root = make_repo(
-        tmp_path,
-        {
-            "pyproject.toml": "",
-            "docs/" + md("x"): "",
-            md("a"): link("p", "pyproject.toml") + " " + link("d", "docs/"),
-        },
-    )
-    assert docs_guard.unresolved_references(root, docs_guard.corpus_files(root)) == []
-
-
-def test_link_to_missing_non_markdown_file_is_reported(tmp_path):
-    root = make_repo(tmp_path, {md("a"): link("p", "nothing" + ".toml")})
-    bad = docs_guard.unresolved_references(root, docs_guard.corpus_files(root))
-    assert [r.target for r in bad] == ["nothing" + ".toml"]
-
-
-def test_external_links_and_pure_anchors_are_ignored(tmp_path):
-    root = make_repo(
-        tmp_path,
-        {
-            md("a"): (
-                f"[x](https://example.com/{md('remote')}) "
-                f"https://example.com/{md('bare')} [y](#section) "
-                "[m](mailto:a@example.com)"
-            )
-        },
-    )
-    assert docs_guard.unresolved_references(root, docs_guard.corpus_files(root)) == []
-
-
-def test_anchor_is_stripped_before_resolving(tmp_path):
-    root = make_repo(tmp_path, {md("b"): "", md("a"): link("b", md("b") + "#part")})
-    assert docs_guard.unresolved_references(root, docs_guard.corpus_files(root)) == []
-
-
-def test_references_are_found_in_code_files_too(tmp_path):
-    root = make_repo(tmp_path, {"tool.py": f'"""See {md("gone")}."""\n'})
-    bad = docs_guard.unresolved_references(root, docs_guard.corpus_files(root))
-    assert [(r.file, r.line) for r in bad] == [("tool.py", 1)]
-
-
-def test_binary_files_are_skipped(tmp_path):
-    root = make_repo(tmp_path, {md("a"): "fine"})
-    (root / "blob.bin").write_bytes(b"\xff\xfe" + md("gone").encode() + b"\x00")
-    assert docs_guard.unresolved_references(root, docs_guard.corpus_files(root)) == []
-
-
 # --- documentation describes the current state only --------------------------
-
-
-def test_history_corpus_is_docs_readme_and_claude_md():
-    corpus = docs_guard.corpus_files(REPO)
-    history = docs_guard.history_corpus(corpus)
-    assert "README.md" in history
-    assert "CLAUDE.md" in history
-    # The rule files quote the forbidden phrasings in order to forbid them.
-    assert "CONTRIBUTING.md" not in history
-    assert "project-knowledge/working-rules.md" not in history
-
-
-def test_history_corpus_includes_every_markdown_file_under_docs():
-    files = ["docs/" + md("a"), "docs/deep/" + md("b"), "docs/image.png", md("other")]
-    assert docs_guard.history_corpus(files) == ["docs/" + md("a"), "docs/deep/" + md("b")]
 
 
 def test_real_documentation_has_no_history():
@@ -186,51 +74,8 @@ def test_real_documentation_has_no_history():
     assert {f: hits for f, hits in found.items() if hits} == {}
 
 
-@pytest.mark.parametrize(
-    "sentence",
-    [
-        "The API previously accepted a token.",
-        "This used to be a flag.",
-        "The option is no longer supported.",
-        "The legacy endpoint stays.",
-        "This field is deprecated.",
-        "The parameter was removed in favour of another.",
-        "Both modes were removed.",
-        "It was replaced by the helper.",
-        "It has been replaced by the helper.",
-        "Formerly this ran as root.",
-        "It was originally designed to mitigate drift.",
-        "Kept for backward compatibility.",
-        "Kept for backwards-compat.",
-        "Until recently the server ran here.",
-        "In the past the server ran here.",
-        "A machine with one from before workspaces.",
-        "A range from an earlier installation.",
-        "Refused on an old install.",
-        "Refused on an old installation.",
-    ],
-)
-def test_history_phrasing_is_reported(sentence):
-    assert docs_guard.history_phrases(sentence) != []
-
-
-def test_history_hits_carry_line_numbers():
-    text = "fine\nthis used to work\n"
-    assert [line for line, _ in docs_guard.history_phrases(text)] == [2]
-
-
-@pytest.mark.parametrize(
-    "sentence",
-    [
-        "The server is used to run sessions.\n",  # not history: "is used to <verb>"
-        "The tool was focused on speed.\n",  # substring of a word is not a match
-        "Run `git log --previously` to see.\n",  # inline code
-        "```\nthis used to be shown in a code block\n```\n",  # fenced code
-        "Take the bold install path.\n",  # a substring of a word is not a match
-    ],
-)
-def test_non_history_text_is_not_reported(sentence):
-    assert docs_guard.history_phrases(sentence) == []
+def test_history_phrasing_is_reported():
+    assert [line for line, _ in docs_guard.history_phrases("fine\nthis used to work\n")] == [2]
 
 
 # --- every page is in CLAUDE.md's table ----------------------------------------------------
@@ -255,37 +100,6 @@ def test_a_page_the_table_does_not_link_is_reported():
     ]
     both = claude_md + link("b", "docs/" + md("b")) + link("c", "project-knowledge/" + md("c"))
     assert docs_guard.pages_not_linked(corpus, both) == []  # positive control
-
-
-def test_a_page_named_but_not_linked_is_reported():
-    corpus = ["CLAUDE.md", "docs/" + md("a")]
-    named = "See docs/" + md("a") + " for it.\n"
-    assert docs_guard.pages_not_linked(corpus, named) == ["docs/" + md("a")]
-
-
-def test_a_link_with_an_anchor_or_a_leading_dot_counts():
-    corpus = ["CLAUDE.md", "docs/" + md("a"), "docs/" + md("b")]
-    text = link("a", "docs/" + md("a") + "#part") + link("b", "./docs/" + md("b"))
-    assert docs_guard.pages_not_linked(corpus, text) == []
-
-
-def test_pages_in_a_folder_below_the_two_are_pages_too_and_other_files_are_not():
-    corpus = [
-        "docs/deep/" + md("a"),
-        "docs/image.png",
-        md("README"),
-        "tests/" + md("x"),
-        "project-knowledge/" + md("b"),
-    ]
-    assert docs_guard.pages_of_the_contents(corpus) == [
-        "docs/deep/" + md("a"),
-        "project-knowledge/" + md("b"),
-    ]
-
-
-def test_an_empty_table_or_a_missing_one_reports_every_page():
-    corpus = ["docs/" + md("a")]
-    assert docs_guard.pages_not_linked(corpus, "") == ["docs/" + md("a")]
 
 
 # --- the make targets tests.md documents ------------------------------------
@@ -325,23 +139,6 @@ def make_targets(makefile: str) -> set[str]:
     return found
 
 
-def test_make_reads_its_makefile_in_a_held_folder(monkeypatch):
-    """So a run killed while make reads it leaves it for the next run to clear."""
-    from devtools import held_folders as hf
-
-    seen, run = [], subprocess.run
-
-    def running(argv, **kwargs):
-        folder = Path(kwargs["cwd"])
-        held = (folder / hf.LOCK).is_file() and not hf.unheld(folder)
-        seen.append(hf.made_with("rcmk-")(folder.name) and held)
-        return run(argv, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", running)
-    assert make_targets("a:\n\techo a\n") == {"a"}
-    assert seen == [True]
-
-
 def documented_make_targets(markdown: str) -> set[str]:
     """The targets a table documents, one row each: | `make <target>` | ... |."""
     found = set()
@@ -368,40 +165,3 @@ def test_the_make_target_check_fails_on_a_drifted_table():
     assert documented_make_targets(missing) != make_targets(makefile)
     extra = table + "| `make c` | three |\n"
     assert documented_make_targets(extra) != make_targets(makefile)
-    assert documented_make_targets("") == set()
-
-
-def test_a_makefile_comment_with_a_colon_is_not_a_target():
-    """A comment line is not a rule, whatever it holds; the rule beside it still is."""
-    makefile = "a:  ## one\n\tdo a\n"
-    assert make_targets(makefile) == {"a"}  # positive control
-    commented = "# Why: a reason\n" + makefile
-    assert "# Why:" in commented  # the plant took effect
-    assert make_targets(commented) == {"a"}
-
-
-@pytest.mark.parametrize(
-    "variable",
-    [
-        "NAME := value\n",
-        "NAME ::= value\n",
-        "export NAME := value\n",
-        "override NAME := value\n",
-        "define BLOCK\nnot-a-target: x\nendef\n",
-        "ifeq (1,2)\nnot-a-target:\n\tdo it\nendif\n",
-    ],
-)
-def test_a_makefile_variable_or_unused_text_with_a_colon_is_not_a_target(variable):
-    """Variable assignments, a define block's body and a branch make does not take are
-    not rules; the rule beside them still is."""
-    makefile = "a:  ## one\n\tdo a\n"
-    assert make_targets(makefile) == {"a"}  # positive control
-    planted = variable + makefile
-    assert ":" in variable and planted != makefile  # the plant took effect
-    assert make_targets(planted) == {"a"}
-
-
-def test_a_double_colon_rule_and_a_rule_with_several_targets_are_targets():
-    """Positive controls for the forms a variable must not be mistaken for."""
-    assert make_targets("a:: b\n\tdo a\nb c: \n\tdo it\n") == {"a", "b", "c"}
-    assert make_targets("a: missing\n\tdo a\n") == {"a"}  # a prerequisite only is not

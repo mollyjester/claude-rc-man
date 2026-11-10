@@ -67,18 +67,6 @@ def pid_of(engine, container: str) -> int:
     return int(found.stdout.decode())
 
 
-def namespace_of(engine, container: str) -> str:
-    """The network namespace of ``container``, as ``readlink`` names it (``net:[<inode>]``)."""
-    found = engine.local(
-        "unshare",
-        "readlink",
-        f"/proc/{pid_of(engine, container)}/ns/net",
-        timeout=CONTAINER_HANG_GUARD,
-    )
-    assert found.returncode == 0, found.stderr
-    return found.stdout.decode().strip()
-
-
 def listening(engine, container: str, port: int, host: str = "127.0.0.1") -> socket.socket:
     """A TCP socket bound to ``host``:``port`` in ``container``'s network and listening."""
     with hf.held("rcnet-") as folder:

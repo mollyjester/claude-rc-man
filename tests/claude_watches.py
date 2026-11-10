@@ -10,8 +10,9 @@ the fake says it has done, or on the screen it expects.
   is left only once released, after its capture; and the trust answer of a sequence that is to
   be too quick is so at any speed, the fake's threshold put beyond any test.
 - ``ExpectWatch`` drives the real `claude`, which says nothing of what it has done: a screen
-  is settled once it is, sanitised, the fixture of the capture it is for. It has no ignored
-  input, no gate and no person to wait on.
+  is settled once it is, sanitised, the fixture of the capture it is for, and differs at once
+  when the program has exited showing something else. It has no ignored input, no gate and no
+  person to wait on.
 
 Each gives the pane's waits the tier's guard (tier_guard()), so that a hang ends there with
 tmuxctl's TimeoutError and the screen it last showed, as until's own bound ends the other waits.
@@ -125,8 +126,9 @@ class TraceWatch:
 
 class ExpectWatch:
     """The recorder's watch over the real `claude`: each capture's screen is waited for as its
-    fixture in ``expected`` has it, sanitised. Bounded at the tier's guard, where it fails with
-    how the last screen differs."""
+    fixture in ``expected`` has it, sanitised. A program that has exited draws nothing more, so
+    its screen fails at once when it is not the fixture; a running one's is waited for up to
+    the tier's guard. Either fails with how the last screen differs."""
 
     def on_screen(self, pane, pattern):
         return pane.wait_for(pattern, timeout=tier_guard())
@@ -146,20 +148,28 @@ class ExpectWatch:
         want = self.expected[name].lines
         last: list[str] = []
 
-        def now() -> list[str] | None:
+        def now() -> list[str] | bool | None:
+            """The screen once it is the fixture; True once the program has exited and its
+            last screen, which tmux shows whole once the pane is dead, is not; else None."""
             nonlocal last
+            exited = kind == rec.EXITED or run.pane.exit_status() is not None
             screen = run.pane.screen()
             last = rec.sanitise("\n".join(screen), run.ctx).split("\n")
-            return screen if last == want else None
+            if last == want:
+                return screen
+            return exited or None
 
         try:
-            return until(now)
+            found = until(now)
         except AssertionError:
+            found = True
+        if found is True:
             got = {name: rec.Recorded(lines=last, exit_code=None)}
             wanted = {name: rec.Recorded(lines=want, exit_code=None)}
             raise AssertionError(
                 f"{name} never showed its fixture:\n" + "\n".join(rec.compare(got, wanted))
-            ) from None
+            )
+        return found
 
     def took(self, run: rec.Run, sent: str) -> None:
         raise RuntimeError("ExpectWatch has no ignored input to wait on: no such sequence runs")

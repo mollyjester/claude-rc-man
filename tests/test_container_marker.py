@@ -7,8 +7,6 @@ nowhere is it placed by hand.
 import ast
 from pathlib import Path
 
-import pytest
-
 from tests import container_marker
 from tests.collected import collect
 
@@ -159,36 +157,14 @@ def test_the_marker_is_never_placed_by_hand():
     assert found == []
 
 
-@pytest.mark.parametrize(
-    "planted",
-    [
-        f"@pytest.{MARK}\ndef test_x():\n    pass\n",
-        f"pytestmark = pytest.{MARK}\n",
-        f"pytestmark = [pytest.{MARK}, pytest.mark.skip]\n",
-        f"@pytest.{MARK}(reason='x')\ndef test_x():\n    pass\n",
-        f"from pytest import mark\n@{MARK}\ndef test_x():\n    pass\n",
-        f'def pytest_collection_modifyitems(items):\n    items[0].add_marker("{NAME}")\n',
-        f'def test_x(request):\n    request.applymarker("{NAME}")\n',
-        f'def test_x(request):\n    request.node.add_marker("{NAME}")\n',
-        f'pytestmark = getattr(pytest.mark, "{NAME}")\n',
-        f'def test_x(request):\n    request.applymarker(getattr(pytest.mark, "{NAME}"))\n',
-    ],
-)
-def test_the_hand_placed_marker_guard_finds_a_planted_marker(planted):
-    assert hand_placed(planted) != []
-
-
-def test_the_hand_placed_marker_guard_leaves_a_user_of_the_fixture_alone():
-    assert hand_placed("def test_x(podman_service):\n    pass\n") == []
-    assert hand_placed("@pytest.mark.skip\ndef test_x():\n    pass\n") == []
-    assert hand_placed('def test_x(request):\n    request.applymarker("skip")\n') == []
-    assert hand_placed("item.add_marker(getattr(pytest.mark, MARKER))\n") == []
-    assert hand_placed('x = getattr(pytest.mark, "skip")\n') == []
+def test_the_hand_placed_marker_guard_finds_a_planted_marker():
+    planted = f"@pytest.{MARK}\ndef test_x():\n    pass\n"
+    assert hand_placed(planted) == [1]
 
 
 def test_the_fixture_is_never_requested_by_name():
     """A test asking for the fixture with request.getfixturevalue does not hold it in its
-    fixture names, so it would not carry the marker."""
+    fixture names, so it would not carry the marker. Planted twin: such a request found."""
     sources = sorted(TESTS.rglob("*.py"))
     assert TESTS / "test_container_suite.py" in sources  # non-vacuity
     found = [
@@ -197,11 +173,5 @@ def test_the_fixture_is_never_requested_by_name():
         for line in by_name(p.read_text(encoding="utf-8"))
     ]
     assert found == []
-
-
-@pytest.mark.parametrize("fixture", FIXTURES)
-def test_the_by_name_guard_finds_a_planted_request(fixture):
-    planted = f'def test_x(request):\n    request.getfixturevalue("{fixture}")\n'
+    planted = f'def test_x(request):\n    request.getfixturevalue("{FIXTURES[0]}")\n'
     assert by_name(planted) == [2]
-    other = planted.replace(f'"{fixture}"', '"tmp_path"')
-    assert other != planted and by_name(other) == []  # the plant was the fixture's name

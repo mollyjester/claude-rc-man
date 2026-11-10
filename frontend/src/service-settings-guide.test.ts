@@ -28,19 +28,17 @@ const missingNames = (markdown: string) => missing(NAMED, markdown);
 const CARDS = [m.monitorSettingsTitle, m.forwardingTitle];
 const anchorOf = (title: string) => anchors(`## ${title}`)[0];
 
-test("every name the Service settings guide gives in bold is text the page shows", () => {
+test("every name the Service settings guide gives in bold is text the page shows, it names the page, its cards and their settings with a section for each card, and every link to its sections names one it has", () => {
   const guide = readFileSync(GUIDE, "utf-8");
   expect(names(guide).length).toBeGreaterThan(0); // positive control: the guide was read
   expect(unknownNames(guide)).toEqual([]);
-});
-
-test("the guide names the page, its cards and their settings", () => {
-  expect(missingNames(readFileSync(GUIDE, "utf-8"))).toEqual([]);
-});
-
-test("the guide has a section named as each card", () => {
-  const found = anchors(readFileSync(GUIDE, "utf-8"));
+  expect(missingNames(guide)).toEqual([]);
+  const found = anchors(guide);
   for (const title of CARDS) expect(found).toContain(anchorOf(title));
+  const pages = helpPages();
+  // positive control: the guides that point at it are read (monitor.md, configuration.md, audit.md)
+  expect(pages.join("\n").match(/service-settings\.md#/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+  expect(brokenLinks(pages, guide)).toEqual([]);
 });
 
 // The sections of the guide that links in the help pages name and the guide does not have.
@@ -55,23 +53,7 @@ const helpPages = () =>
     .filter((file) => file.endsWith(".md"))
     .map((file) => readFileSync(resolve(DOCS, file), "utf-8"));
 
-test("every link to the guide's sections, from any help page, names one it has", () => {
-  const pages = helpPages();
-  // positive control: the guides that point at it are read (monitor.md, configuration.md, audit.md)
-  expect(pages.join("\n").match(/service-settings\.md#/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
-  expect(brokenLinks(pages, readFileSync(GUIDE, "utf-8"))).toEqual([]);
-});
-
-test("the link check flags a link to a section the guide does not have", () => {
-  const guide = readFileSync(GUIDE, "utf-8");
-  // built from parts, so that the repository's own reference check does not take it for a link
-  const nope = ["service-settings.md", "nope"].join("#");
-  const planted = [...helpPages(), ["See [it](", nope, ")."].join("")];
-  expect(planted.at(-1)).toContain(nope); // the plant took effect
-  expect(brokenLinks(planted, guide)).toEqual(["nope"]);
-});
-
-test("the checks fail on a name the page does not have, and on a guide that leaves one out", () => {
+test("the checks fail on a name the page does not have, a guide that leaves one out, and a link to a section it does not have", () => {
   const right = NAMED.map((name) => `Choose **${name}**.`).join("\n");
   expect(unknownNames(right)).toEqual([]);
   expect(missingNames(right)).toEqual([]);
@@ -84,4 +66,9 @@ test("the checks fail on a name the page does not have, and on a guide that leav
   expect(without).not.toEqual(right); // the plant took effect
   expect(missingNames(without)).toEqual([m.forwardingIdle]);
   expect(missingNames("")).toEqual(NAMED);
+  // built from parts, so that the repository's own reference check does not take it for a link
+  const nope = ["service-settings.md", "nope"].join("#");
+  const linked = [...helpPages(), ["See [it](", nope, ")."].join("")];
+  expect(linked.at(-1)).toContain(nope); // the plant took effect
+  expect(brokenLinks(linked, readFileSync(GUIDE, "utf-8"))).toEqual(["nope"]);
 });

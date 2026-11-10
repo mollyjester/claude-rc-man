@@ -2,8 +2,8 @@
 
 How to install, for administrators: [the installation guide](../docs/installation.md).
 That guide and `install.sh` are one contract: a change to either changes
-both, and `tests/test_install.py` holds the guide's options, variables and
-paths to the installer's.
+both, and `tests/test_install.py` holds the guide's options and variables to
+the installer's.
 
 ## Parts
 
@@ -13,7 +13,7 @@ paths to the installer's.
 | `installer/upgrade.py` | The wrapper of the upgrade from the web interface, installed as `/opt/rcman/bin/rcman-upgrade` and run by `rcman-upgrade.service` (see [Upgrading from the web interface](#upgrading-from-the-web-interface)); the standard library only. Its checks of the clone and its owner are the installer's too |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/rules.py`, whose rules' sentences explain a refused setting; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
 | `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, the two services, the Caddy site block, and the upgrade's two units. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`), the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) and whether the upgrade from the web interface is on (`WEB_UPGRADE_ENABLED`, `true` or `false`, written as `RCMAN_WEB_UPGRADE`); and the wrapper's environment (`UPGRADE_ENVIRONMENT`, from `upgrade.ENVIRONMENT` by `unit_environment`) |
-| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line; a test reads its package list (`tests/containers.py` `asked_packages`). Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
+| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line, which `tests/test_install.py` holds. Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
 The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION` and
@@ -46,18 +46,16 @@ unpacked.
 `check_kernel`, the first thing `main` does as root, before a rollback too, refuses a kernel
 older than `USERNS_OVERLAY_KERNEL`, or one whose release it cannot read: the devcontainer
 builder's Podman mounts overlay inside a user namespace, with no FUSE device (see
-[runtime.md](runtime.md#building-an-image)); `tests/test_install.py` holds it to both, and to
-coming before anything is changed. `ensure_packages` installs `PACKAGES` that are missing. `ensure_subordinate_ids`
-gives `rcman` `SUBORDINATE_COUNT` subordinate uids and gids, a range after every
-range already in `/etc/subuid` and `/etc/subgid` (`subordinate_start`), unless it
-has one that big, so a machine whose range was made for fewer slots gets a second,
-full one; a test holds the count to `MAX_PEOPLE`, `BUILDER_SLOT` and `RANGE` (see
-[people.md](people.md)). `ensure_podman` enables linger for `rcman`, starts its
-user manager, enables `podman.socket` in it and waits for the socket; when the
-subordinate ids changed, it tells Podman with a local `podman system migrate`
-first. Everything after runs Podman as rcman through that socket
-(`as_rcman_podman`). `rcman.service` names the socket's `XDG_RUNTIME_DIR` and
-runs with `NoNewPrivileges=yes` and `UMask=0077`.
+[runtime.md](runtime.md#building-an-image)). `ensure_packages` installs `PACKAGES` that are
+missing. `ensure_subordinate_ids` gives `rcman` `SUBORDINATE_COUNT` subordinate uids and gids, a
+range after every range already in `/etc/subuid` and `/etc/subgid` (`subordinate_start`), unless
+it has one that big, so a machine whose range was made for fewer slots gets a second, full one;
+a test holds the count to `MAX_PEOPLE`, `BUILDER_SLOT` and `RANGE` (see [people.md](people.md)).
+`ensure_podman` enables linger for `rcman`, starts its user manager, enables `podman.socket` in
+it and waits for the socket; when the subordinate ids changed, it tells Podman with a local
+`podman system migrate` first. Everything after runs Podman as rcman through that socket
+(`as_rcman_podman`). `rcman.service` names the socket's `XDG_RUNTIME_DIR` and runs with
+`NoNewPrivileges=yes` and `UMask=0077`.
 
 `PACKAGES` holds `crun`, and `ensure_oci_runtime`, right after `ensure_podman`, asks rcman's
 Podman (`podman info`, through `as_rcman_podman`) for its OCI runtime and fails with an
@@ -70,22 +68,22 @@ nothing can run, and where the ranges are in place it asks nothing. It refuses b
 is added, not after, because the next run decides from the files whether a range is missing, and
 would not migrate.
 
-`ensure_limits`, after `ensure_oci_runtime`, prepares what the limits on memory, CPU and processes
-(see [runtime.md](runtime.md#limits)) need. The user manager's drop-in is in rcman's home, so it
-is read and written by rcman (`rcman_write`), which makes its folders too; root follows no link
-there (see [Root and rcman's paths](#root-and-rcmans-paths)). `limits_problem` says why limits cannot be applied, or
-that it cannot tell, and the installer only warns (`warn`) and goes on, since limits are off until
-set: cgroup v2 is missing, a controller of `LIMIT_CONTROLLERS` is not among those of
-`user@<uid>.service`'s control group, that group is empty (which would be the root cgroup, listing
-every controller) or its list cannot be read; delegating a controller is the administrator's to
-decide, and setting a limit later fails with `limits_not_applied`. It writes two drop-ins with
-`write_if_changed`: `USER_SLICE_DROP_IN` for `user-<uid>.slice`, which lifts the ceiling on
-processes that systemd's own defaults put there, read by the daemon-reload that starts the
-services, and `USER_MANAGER_DROP_IN` in rcman's home, which lifts the user manager's default for the
-scopes of its containers. `daemon-reexec` of rcman's user manager (`as_rcman_systemctl`) runs on every
-install after them, so a failed one is not left undone; it restarts nothing and ends nothing the
-manager runs. A second run changes nothing. The files are named so that they come after systemd's
-own in the order it reads them; `tests/test_install.py` holds that and the order of the steps.
+`ensure_limits`, after `ensure_oci_runtime`, prepares what the limits on memory, CPU and
+processes (see [runtime.md](runtime.md#limits)) need. The user manager's drop-in is in rcman's
+home, so it is read and written by rcman (`rcman_write`), which makes its folders too; root
+follows no link there (see [Root and rcman's paths](#root-and-rcmans-paths)). `limits_problem`
+says why limits cannot be applied, or that it cannot tell, and the installer only warns (`warn`)
+and goes on, since limits are off until set: cgroup v2 is missing, a controller of
+`LIMIT_CONTROLLERS` is not among those of `user@<uid>.service`'s control group, that group is
+empty (which would be the root cgroup, listing every controller) or its list cannot be read;
+delegating a controller is the administrator's to decide, and setting a limit later fails with
+`limits_not_applied`. It writes two drop-ins with `write_if_changed`: `USER_SLICE_DROP_IN` for
+`user-<uid>.slice`, which lifts the ceiling on processes that systemd's own defaults put there,
+read by the daemon-reload that starts the services, and `USER_MANAGER_DROP_IN` in rcman's home,
+which lifts the user manager's default for the scopes of its containers. `daemon-reexec` of
+rcman's user manager (`as_rcman_systemctl`) runs on every install after them, so a failed one is
+not left undone; it restarts nothing and ends nothing the manager runs. A second run changes
+nothing. The files are named so that they come after systemd's own in the order it reads them.
 
 ## Root and rcman's paths
 
@@ -246,24 +244,23 @@ back by `read_status`, which takes only a JSON object with exactly `FIELDS`:
 
 ## What workspaces are made of
 
-- **The tools**, `TOOLS` (`ensure_tools`): tmux, built from its pinned source in
-  a throwaway container of `TMUX_BUILD_REFERENCE`, musl and static, so that it needs
-  nothing of any image (`is_static` checks there is no dynamic loader), and
-  built again only when the version or checksum it was built from
-  (`.tmux-version`) changes; the system's static busybox, and `sh` as a link
-  to it; the terminal descriptions `TERMINFO`, from the system's;
+- **The tools**, `TOOLS` (`ensure_tools`): tmux, built from its pinned source in a throwaway
+  container of `TMUX_BUILD_REFERENCE`, musl and static, so that it needs nothing of any image
+  (`is_static` checks there is no dynamic loader), and built again only when the version or
+  checksum it was built from (`.tmux-version`) changes; the system's static busybox, and `sh` as
+  a link to it; the terminal descriptions `TERMINFO`, from the system's;
   `backend/rcman/tmux.conf` of the release; and, by `ensure_podman_tools`, the `podman` and
   `docker` wrappers, their configuration and the `publish.sh` they source (`PODMAN_PUBLISH`)
-  from `backend/rcman/podman/` in `PODMAN_TOOLS`, and
-  the workspaces' seccomp profile `WORKSPACE_SECCOMP`, which `helpers/seccomp.py` derives from
-  Podman's own (`PODMAN_SECCOMP`, which must be there) with its `UTS_CALLS` allowed;
-  `tests/test_seccomp.py` holds the derived profile to Podman's with exactly those two calls
-  allowed, and plants others, over a recorded copy of Podman's profile
-  (`tests/fakes/podman-seccomp.json`) that a container test holds to the machine's (see
+  from `backend/rcman/podman/` in `PODMAN_TOOLS`, and the workspaces' seccomp profile
+  `WORKSPACE_SECCOMP`, which `helpers/seccomp.py` derives from Podman's own (`PODMAN_SECCOMP`,
+  which must be there) with its `UTS_CALLS` allowed; `tests/test_seccomp.py` holds the derived
+  profile to Podman's with exactly those two calls allowed, and plants others, over a fixed
+  recording of Podman's profile (`tests/fakes/podman-seccomp.json`), recorded again when the
+  product starts failing against real Podman (see
   [runtime.md](runtime.md#containers-in-a-workspace)); and, by `ensure_instructions`, the
   instructions for Claude, each file of `helpers/instructions.py` `FILES` made of the fragments
-  in `backend/rcman/instructions/` of the release, in the folder `instructions.FOLDER`, which
-  is `0755` and its files `0644`, a changed file renamed over the old one (see
+  in `backend/rcman/instructions/` of the release, in the folder `instructions.FOLDER`, which is
+  `0755` and its files `0644`, a changed file renamed over the old one (see
   [runtime.md](runtime.md#workspace-instructions)).
 - **The default image** (`ensure_image`): built from `CONTAINERFILE`, in the build context
   `image_context` makes, which the container tests build it from too, unless
@@ -421,57 +418,47 @@ health check through Caddy; the stubbed installation runs no Caddy.
 
 ## Tests
 
-- `tests/test_install.py`: everything the installer decides that needs no
-  real machine — such as settings precedence and validation, the rendered
-  files, release switching and rollback, the subordinate range, telling a
-  static program from another, the tmux source's and Claude Code's checksums,
-  the image's tag and the builder image's, a range that is too small getting a
-  second one, no range added while a container runs, the rollback refusal, the pins,
-  the snippet's sites for forwarded ports, the installed app's files let through without
-  sign-in or identity and the redirect's relative `rd`, the ask port, the Caddyfile's edits and refusals,
-  `ensure_caddy`'s check and restart, the summary line as all a run prints, and two callers filling one toolchain at once, and the steps that
-  write in rcman's home with `runuser` stood in for by the test's own user — and the
-  guide held to the installer. It also holds the lock, through `install.sh` itself run from a
-  scratch clone with stand-ins for `id` and `runuser` and its root rewritten into the test's
-  folder (`Scratch`), and the upgrade from the web interface: the option, the units rendered,
-  their files made and removed, the owner and path checks, `ls-remote`, the wrapper's install
-  and the release's mark.
-- `tests/test_upgrade.py`: the wrapper, `installer/upgrade.py`: that it runs alone in isolated
-  mode, the owner's and the paths' refusals, the status written and read, a run of a stand-in
-  `install.sh` with the fixed environment and no terminal, and `--finish`.
+- `tests/test_install.py`: what the installer decides that needs no real machine, one test for
+  each step on the path where it works: the installer run as `install.sh` runs it, writing
+  nothing into the clone; settings taken from flags, the environment and the saved file; the
+  rendered files; Ubuntu's own Caddyfile edited, the edit validated as Caddy's account, put in
+  place and Caddy restarted; a release switched to and rolled back, and a rollback refused for a
+  database newer than the release; the subordinate range; the tools, both images and the pruning
+  of older builder images; the Claude Code store; the first administrator; the limits' drop-ins;
+  the steps that write in rcman's home, run as rcman and changing nothing the second time; the
+  allowed list; the Podman tools and the instructions; the summary line as all a run prints; and
+  the upgrade from the web interface turned on and off, its service's unit, its checks of the
+  clone and the place of its steps. Its guards each have a planted twin: the guide's options and
+  its removal section, root's reach into rcman's paths, no command run as rcman opening a
+  descriptor by its path, the commands that change accounts and run as one named in one place,
+  no downloader of the installer's own, the default image's packages on one line, the base
+  images pinned by digest, the toolchain's checksums keyed by their version, every template
+  used, every rendered setting one of rcman's settings, and the wrappers' folder. It holds the
+  lock too: `check_lock` taking it, and `install.sh` itself, run from a scratch clone with
+  stand-ins for `id` and `runuser` and its root rewritten into the test's folder (`Scratch`),
+  handing it to the installer on fd 9 and none of it to git.
+- `tests/test_upgrade.py`: the wrapper, `installer/upgrade.py`: that it imports the standard
+  library only (with a planted twin) and runs alone in isolated mode, the owner taken from the
+  clone, a path anyone can write refused, what git tracks asked as the owner, a run of a
+  stand-in `install.sh` with the fixed environment and no terminal that succeeds and one that
+  fails, and `--finish`.
 - `tests/test_claude_download.py`: the fake `claude` as a Claude Code release
   (`tests/claude_download.py`), downloaded into a store by the installer's own
-  code and run from it, and its bundle holding every module of the repository the fake's
-  Python imports, with a planted import followed.
-- `tests/container/test_install_in_container.py`: the real installer, through `install.sh`,
-  as root in a stubbed installation: a container of the system image on the tests' engine,
-  with no network, real accounts, files, modes and `runuser`, and `systemctl`, `loginctl` and
-  rcman's `podman` the recorded stand-ins of `tests/container/stand_ins.py`, under which the
-  installer's units really run as their accounts (see [tests.md](tests.md#the-stubbed-installation)).
-  The checkout's files become a git origin, and a user `dev` clones it and runs `install.sh`,
-  with the fake `claude` as the release it downloads. Each test runs its check of
-  `tests/container/install_checks.py`, of the same name, in the container: the release's
-  contents and ownership, the accounts, rcman's subordinate ids and linger as the installer
-  writes them, the limits' drop-ins with the installer's text and owners, the unit's
-  `NoNewPrivileges=` and runtime folder, the default and builder images built under the names
-  rcman's settings give, a subordinate range that reaches the builder's slot, the tools, the
-  store, its files, modes and owner (rcman's, readable by every workspace) and a
-  second run leaving `current` on the version rcman approved, the saved settings and the
-  configuration files, the first administrator, `rcman-admin` by name as root, the socket's
-  folder admitting Caddy's group alone and that group kept to Caddy, no listener (every TCP one
-  and every unix socket, tried as an ordinary user) letting a local user be someone in rcman, the package's
+  code and run from it.
+- `tests/container/test_install_in_container.py`: the real installer, through `install.sh`, as
+  root in a stubbed installation: a container of the system image on the tests' engine, with no
+  network, real accounts, files, modes and `runuser`, and `systemctl`, `loginctl` and rcman's
+  `podman` the recorded stand-ins of `tests/container/stand_ins.py`, under which the installer's
+  units really run as their accounts (see [tests.md](tests.md#the-stubbed-installation)). The
+  checkout's files become a git origin, and a user `dev` clones it and runs `install.sh`, with
+  the fake `claude` as the release it downloads. Its one test runs its check of
+  `tests/container/install_checks.py`, of the same name, in the container: the package's
   Caddyfile, kept as the backup, importing the snippet and asking rcman as `caddy adapt` reads
-  it as Caddy's account, with Caddy restarted, a second run changing nothing, saved settings needing
-  no answers, a dirty clone and one that cannot fast-forward refused, self-update and rollback
-  (and a rollback refused for a database newer than the release rolled back to), and the
-  upgrade from the web interface: off, no unit or wrapper there; turned on, the path unit
-  enabled, the service never started by the installer, the wrapper and the status folder with
-  their owners and modes; the wrapper run as the unit runs it, with no `SUDO_USER`, writing a
-  `succeeded` status; and a dirty clone giving a `failed` one, which `--finish` leaves.
+  it as Caddy's account, with Caddy restarted.
 
 What needs systemd, rcman's own rootless Podman, the kernel's limits or the journal is checked
 by hand after an installation ([real-claude-checklist.md](real-claude-checklist.md)).
 
-These suites are container tests, so they run on demand, by
+The stubbed installation is a container test, so it runs on demand, by
 `make test-container`, not by `make check`; when that run is required is in
 [working-rules.md](working-rules.md#tests-and-guards).

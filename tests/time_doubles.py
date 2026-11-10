@@ -1,5 +1,5 @@
 """Test doubles for time: stand-ins a test puts in place of a product's ``time`` module, its
-condition, its event and its locks, so that what a test asserts of time never races real time.
+condition, its event and its clocks, so that what a test asserts of time never races real time.
 A pytest plugin, which tests/conftest.py loads.
 
 Not a test module. The rules are in project-knowledge/tests.md, "Time in tests".
@@ -13,7 +13,6 @@ Not a test module. The rules are in project-knowledge/tests.md, "Time in tests".
   in virtual mode, its timeout never runs out by itself; ``expire`` ends a wait as if it had.
 - ``ControlledEvent`` stands in for a ``threading.Event``: a ``wait`` given seconds is recorded
   and ends only on ``set`` or ``expire``.
-- ``RecordingLock`` wraps a lock, recording each acquire and each that blocked.
 - ``Clock`` is a clock a product's seam reads (the forwarding server's, the monitor's, a token
   bucket's), and ``Time`` the monitor loops' clock and wait; only the test moves either.
 
@@ -21,7 +20,7 @@ Every wait is recorded (``Wait``) with its thread, its seconds and an ordinal of
 under the primitive's own lock and only once what it waits for has been seen not to hold: a
 recorded waiter really waits, and what is told after the record reaches it. A test waits for
 records through the double's own condition (``wait_waiting``, ``wait_parked``,
-``wait_blocked``, ``wait_sleep_begun``, ``wait_sleeps_returned``), never by polling, and picks
+``wait_sleep_begun``, ``wait_sleeps_returned``), never by polling, and picks
 waits out by a match: a thread, a number of seconds, or a predicate on the record.
 
 A frozen wait, one nothing ends but the test, that goes the double's hang bound of real time
@@ -83,15 +82,6 @@ class Wait:
     ended: str | None = None
     seen: int = 0  # FakeTime's generation it last looked at
     expiring: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
-class Call:
-    """One acquire of a RecordingLock's."""
-
-    blocking: bool
-    timeout: float
-    thread: threading.Thread
 
 
 Match = threading.Thread | float | int | Callable[[Wait], bool] | None
@@ -425,54 +415,6 @@ class ControlledEvent(threading.Event, _Double):
                 self._cond.notify_all()
 
         return self._expire(match, wake)
-
-
-class RecordingLock(_Double):
-    """``inner``, a lock or an RLock, with each acquire recorded (``calls``) and each that
-    blocked recorded as a wait once a try without blocking has failed and before it blocks."""
-
-    def __init__(self, inner: Any, *, hang_after: float | None = None):
-        _Double.__init__(self, hang_after)
-        self._inner = inner
-        self.calls: list[Call] = []
-
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        with self._told:
-            self.calls.append(Call(blocking, timeout, threading.current_thread()))
-        if self._inner.acquire(False):
-            return True
-        if not blocking:
-            return False
-        wait = self._record("acquire", None if timeout < 0 else timeout)
-        got = False
-        try:
-            got = self._inner.acquire(True, timeout)
-        finally:
-            self._end(wait, "acquired" if got else "timeout")
-        return got
-
-    def release(self) -> None:
-        self._inner.release()
-
-    def locked(self) -> bool:
-        return self._inner.locked()
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.release()
-
-    def wait_blocked(self, n: int = 1, match: Match = None, within: float | None = None):
-        """Until at least ``n`` acquires that ``match`` picks have blocked, whether or not they
-        still do: those acquires."""
-
-        def enough():
-            picked = [w for w in self.waits if matches(w, match)]
-            return picked if len(picked) >= n else None
-
-        return self._until(enough, f"{n} blocked acquires ({match})", within)
 
 
 class FakeTime(_Double):

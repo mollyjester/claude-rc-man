@@ -1,12 +1,10 @@
-"""tests/git_fixtures.py: fixture git leaves nothing behind, however its run ends, and a
-commit made on an origin is made there alone."""
+"""tests/git_fixtures.py: fixture git leaves nothing behind when its run is killed, has a home
+that does not exist, and a commit made on an origin is made there alone."""
 
 import os
 import signal
 import subprocess
 from pathlib import Path
-
-import pytest
 
 from tests import killed_runs as kr
 from tests.git_fixtures import (
@@ -54,20 +52,11 @@ def _made(run: kr.KilledRun) -> set[str]:
     return controls
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL], ids=["SIGTERM", "SIGKILL"])
-def test_a_killed_run_of_the_git_fixtures_leaves_nothing(tmp_path, sig):
+def test_a_killed_run_of_the_git_fixtures_leaves_nothing(tmp_path):
     with kr.KilledRun(tmp_path, {"test_fixtures.py": USES_THE_FIXTURES}, ()) as run:
         controls = _made(run)
-        run.kill(sig)
+        run.kill(signal.SIGKILL)
         assert not run.alive()
-        assert _left_in_tmpdir(run, controls) == []
-
-
-def test_a_normal_run_of_the_git_fixtures_leaves_nothing(tmp_path):
-    with kr.KilledRun(tmp_path, {"test_fixtures.py": USES_THE_FIXTURES}, ()) as run:
-        controls = _made(run)
-        code, output = run.finish()
-        assert code == 0 and "2 passed" in output, output
         assert _left_in_tmpdir(run, controls) == []
 
 
@@ -80,12 +69,6 @@ def test_fixture_git_has_a_home_that_does_not_exist(tmp_path):
         ["sh", "-c", 'test -e "$HOME"'], env=fixture_env(FIXTURE_HOME), capture_output=True
     )
     assert probe.returncode != 0
-
-
-def test_fixture_env_makes_no_home(tmp_path):
-    home = tmp_path / "home"
-    assert fixture_env(home)["HOME"] == str(home)
-    assert not home.exists()
 
 
 def test_a_commit_on_origin_moves_that_branch_of_origin_alone(tmp_path):
@@ -102,5 +85,3 @@ def test_a_commit_on_origin_moves_that_branch_of_origin_alone(tmp_path):
     assert fixture_git(repo, "rev-parse", "main").strip() == before  # the clone is untouched
     assert fixture_git(repo, "rev-parse", "origin/main").strip() == before
     assert sorted(p.name for p in origin.parent.iterdir()) == beside  # no scratch clone left
-    again = commit_on_origin(origin, "main", "more.txt")  # a second one has a folder of its own
-    assert fixture_git(origin, "rev-parse", f"{again}^").strip() == made

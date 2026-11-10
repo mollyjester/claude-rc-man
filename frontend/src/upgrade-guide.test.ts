@@ -38,14 +38,11 @@ const missingAnchors = (markdown: string, links: string[]) =>
     return path !== "/help/installation" || !anchors(markdown).includes(anchor);
   });
 
-test("the guide's section on upgrading from the web interface names the page and its controls", () => {
-  const found = section(readFileSync(GUIDE, "utf-8"), SECTION);
+test("the guide's section on upgrading from the web interface names the page and its controls, and the page's links to the guide lead to headings it has", () => {
+  const guide = readFileSync(GUIDE, "utf-8");
+  const found = section(guide, SECTION);
   expect(found.length).toBeGreaterThan(0); // positive control: the section was read
   expect(missingNames(found)).toEqual([]);
-});
-
-test("the page's links to the guide lead to headings it has", () => {
-  const guide = readFileSync(GUIDE, "utf-8");
   expect(anchors(guide)).toContain("upgrading-from-the-web-interface"); // positive control
   expect(missingAnchors(guide, [GUIDE_WEB_UPGRADE, GUIDE_ROLLBACK])).toEqual([]);
 });

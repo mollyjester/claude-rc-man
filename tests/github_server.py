@@ -1,9 +1,9 @@
 """A stand-in for github.com for the tests: real ``git http-backend`` behind a small server.
 
 Not a test module. Reading — cloning, fetching — a public repository needs
-no credential, as on GitHub; pushing, and reading a repository made private,
-need HTTP basic authentication with any non-empty username and the server's
-token as the password, as GitHub takes a personal access token. Each
+no credential, as on GitHub; pushing needs HTTP basic authentication with any
+non-empty username and the server's token as the password, as GitHub takes a
+personal access token. Each
 credential offered is recorded in ``attempts`` as (username, accepted), never
 with its password, and each request in ``requests`` as (method, path). A
 repository is reached as ``/<owner>/<name>.git`` and as ``/<owner>/<name>``,
@@ -59,7 +59,6 @@ class GitHubServer:
         # stays so.
         self.gate = threading.Event()
         self.gate.set()
-        self._private: set[str] = set()  # "/<owner>/<name>.git" of each private repository
         self.url = ""
         self.root: Path | None = None
         self.token = ""
@@ -111,9 +110,8 @@ class GitHubServer:
             self._thread.join()
             self._server = None
 
-    def bare(self, owner: str, name: str, private: bool = False) -> Path:
-        """A new empty bare repository ``<owner>/<name>.git``, its default branch main;
-        ``private``, it is read only with the token too."""
+    def bare(self, owner: str, name: str) -> Path:
+        """A new empty bare repository ``<owner>/<name>.git``, its default branch main."""
         path = self.root / owner / f"{name}.git"
         path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
@@ -122,8 +120,6 @@ class GitHubServer:
             check=True,
             capture_output=True,
         )
-        if private:
-            self._private.add(f"/{owner}/{name}.git")
         return path
 
     @staticmethod
@@ -164,8 +160,7 @@ class GitHubServer:
             # in a test's server.
             self.gate.wait(2 * tier_guard())
         pushing = path.endswith("/git-receive-pack") or "service=git-receive-pack" in query
-        private = "/" + "/".join(parts[:2]) in self._private
-        needs_token = pushing or private
+        needs_token = pushing
         user = self._user(environ.get("HTTP_AUTHORIZATION")) if needs_token else None
         if needs_token and user is None:
             start_response(

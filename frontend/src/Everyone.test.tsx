@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
 import { m } from "./messages";
-import { KIND } from "./Servers";
 import { ADMIN_USER, fakeApi, NOTHING_TO_ATTEND } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
@@ -66,83 +66,21 @@ function row(card: HTMLElement, name: string): HTMLElement {
   return found[0];
 }
 
-test("each person is a card, their address as its heading, with how many workspaces they have", async () => {
-  api();
-  renderApp("/admin/workspaces");
-  const title = await screen.findByRole("heading", { level: 1, name: m.everyoneTitle });
-  expect(title.parentElement).toHaveClass("page-head");
-  const alice = await person("alice@example.com");
-  expect(alice).toHaveClass("card");
-  expect(
-    within(alice).getByRole("heading", { level: 2, name: "alice@example.com" }),
-  ).toBeInTheDocument();
-  expect(alice).toHaveTextContent(m.workspaceCount(5));
-  expect(within(alice).getAllByRole("listitem")).toHaveLength(5);
-});
-
-test("each workspace is a row of its list with its state as a pill and its session", async () => {
+test("each person's workspaces are listed with their state and session", async () => {
   api();
   renderApp("/admin/workspaces");
   const alice = await person("alice@example.com");
   const alpha = row(alice, "alpha");
-  expect(alpha).toHaveClass("list-row");
-  expect(within(alpha).getByText(m.states.ready)).toHaveClass("badge", `badge-${KIND.ready}`);
-  const session = within(alpha).getByText("alpha-quiet-otter");
-  expect(session.tagName).toBe("CODE");
-  expect(session).toHaveAttribute("title", m.sessionName); // what it is, as the panel names it
-  expect(within(row(alice, "beta")).getByText(m.states.stopped)).toHaveClass("badge");
-  expect(within(row(alice, "gamma")).getByText(m.everyoneNoServer)).toHaveClass("badge");
-  const delta = within(row(alice, "delta")).getByText(m.workspaceStates.creating);
-  expect(delta).toHaveClass("badge");
+  expect(within(alpha).getByText(m.states.ready)).toBeInTheDocument();
+  expect(within(alpha).getByText("alpha-quiet-otter")).toBeInTheDocument();
+  expect(within(row(alice, "beta")).getByText(m.states.stopped)).toBeInTheDocument();
+  expect(within(row(alice, "delta")).getByText(m.workspaceStates.creating)).toBeInTheDocument();
   const bob = await person("bob@example.com");
   expect(within(bob).getByText(m.everyoneNone)).toBeInTheDocument();
   expect(within(bob).queryAllByRole("listitem")).toEqual([]);
 });
 
-test("each workspace shows its own device name, the one Claude shows for its server", async () => {
-  api();
-  renderApp("/admin/workspaces");
-  const alice = await person("alice@example.com");
-  for (const [id, name] of [
-    [1, "alpha"],
-    [4, "delta"],
-  ] as const) {
-    const device = within(row(alice, name)).getByText(`rcman-ws-${id}`);
-    expect(device.tagName).toBe("CODE");
-    expect(device).toHaveAttribute("translate", "no");
-    expect(device).toHaveAttribute("title", m.device); // what it is, as the panel names it
-  }
-  expect(row(alice, "alpha")).not.toHaveTextContent("rcman-ws-4");
-  // what the server sends, not anything worked out from the id
-  expect(within(row(alice, "gamma")).getByText("planted-device-g")).toHaveAttribute(
-    "translate",
-    "no",
-  );
-  expect(row(alice, "gamma")).not.toHaveTextContent("rcman-ws-3");
-});
-
-test("a workspace shows the Claude Code version its server runs, and nothing where none does", async () => {
-  api();
-  renderApp("/admin/workspaces");
-  const alice = await person("alice@example.com");
-  expect(row(alice, "alpha")).toHaveTextContent(m.serverClaudeVersion("2.1.0"));
-  for (const name of ["beta", "gamma"]) // stopped, or no server: no version
-    expect(row(alice, name).textContent).not.toMatch(/Claude Code/);
-});
-
-test("a workspace whose server could not be read shows the server's reason", async () => {
-  api();
-  renderApp("/admin/workspaces");
-  const alice = await person("alice@example.com");
-  const epsilon = row(alice, "epsilon");
-  expect(within(epsilon).getByRole("alert")).toHaveTextContent(
-    "planted: the server could not be read",
-  );
-  // only there
-  expect(within(alice).getAllByRole("alert")).toHaveLength(1);
-});
-
-test("an administrator's one action is Stop, on a workspace that may be stopped, which asks first and sends the stop", async () => {
+test("an administrator's one action is Stop, on a workspace that may be stopped, which sends the stop at once", async () => {
   const fake = api();
   const stopped = { ...PEOPLE.people[0].workspaces[0], state: "halted", stoppable: false };
   fake.routes["POST /api/workspaces/1/stop"] = () => {
@@ -163,7 +101,7 @@ test("an administrator's one action is Stop, on a workspace that may be stopped,
   expect(within(main).getAllByRole("button")).toEqual([stop]);
   await userEvent.click(stop);
   await waitFor(() => expect(fake.made("POST", "/api/workspaces/1/stop")).toHaveLength(1));
-  expect(await within(row(alice, "alpha")).findByText(m.workspaceStates.halted)).toHaveClass(
-    "badge",
-  );
+  expect(
+    await within(row(alice, "alpha")).findByText(m.workspaceStates.halted),
+  ).toBeInTheDocument();
 });

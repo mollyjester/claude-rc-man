@@ -10,7 +10,7 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
 | `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, those marked `benchmark`, which `make benchmark` runs, and those marked `real_claude`, which no target runs. `TEST_WORKERS` (in the `Makefile`, which says why) is the number of workers; `--dist worksteal` gives an idle worker the queue of a busy one |
 | `make test-container` | On demand: runs the Python tests marked `container`, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where the user's rootless Podman cannot run. When the working rules require it, and before the live reinstall |
-| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them; see [The benchmark](#the-benchmark) |
+| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. No other target runs them; see [The benchmark](#the-benchmark) |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's Chromium, which `make screenshot` drives |
@@ -60,9 +60,7 @@ the fake `claude`, real tmux, and a real channel through the host's `sh`.
 `tests/runtime_contract.py`, which is not a test module, holds the cases every
 runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
 `tests/container/test_runtime_in_podman.py`, in three basic cases, against real Podman on the
-tests' engine, and its `PODMAN_CASES`, which hold what only the Podman runtime does, such as the
-instructions for Claude bound read-only at Claude Code's managed path, which the core tier no
-longer runs. Its case of `port_argv` reaches a listener
+tests' engine. Its case of `port_argv` reaches a listener
 the workspace's `python3` runs, so the runtime's image needs python3, as the default image and
 the host have it.
 
@@ -71,26 +69,14 @@ The forwarding server, the hand-off and the ports the workspaces' listing gives
 `tests/test_forward.py`'s, the ask telling which hosts were marked as wanted, on the host
 runtime: its socket in a held folder (`rcfw-`), each request one Caddy would pass on, on a
 connection kept open as Caddy pools one, to an app of the test's own on the host's loopback,
-which the host runtime's relays reach; the server's clock is the test's where a session's idle
-timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
-upgrade, until the test lets it answer, and holds an answer open after its first chunk
-(`/endless`), so that what is under way as a session ends is seen to end. `tests/test_main.py` holds the lifespan's
-start and end of it.
+which the host runtime's relays reach, which echoes what it is sent and sets cookies of
+rcman's names. `tests/test_main.py` holds the lifespan's start and end of it.
 
 Forwarded ports' relays on the host runtime, whose relays are the host's processes, are
-`tests/test_forwards.py`'s: a relay ending with either side and removing its own pidfile; a real
-relay through `HostRuntime.port_argv` to a listener that holds every connection open, its client
-holding its input open, ended by a sweep and by each place a workspace sweeps (a deletion, the
-start of a rebuild's switch, a restore that finds the container running), with a decoy pidfile
-naming a bystander that is left running, a failing sweep only logged; and, against a relay the
-same harness sees ended, what `forwards.sweep` refuses to act on (a pidfile of anything but its
-relay's exact argv, one not written as `echo $$` writes one, a large one, a link, those beyond
-its bound, a process whose start time is no longer the one read, a name that is not a relay's
-pidfile, what it printed cut short), a process that ends just after its argv was read, and a
-regular file or a fifo planted where a file of the sweep's own could be, each leaving the relay
-in the same sweep ended, empty pidfiles left alone and not counted toward the bound, and the
-relay's argv, the same on both runtimes but for its busybox, whose path is refused where it
-could not be written into the script.
+`tests/test_forwards.py`'s: a real relay through `HostRuntime.port_argv` to a listener that
+holds every connection open, its client holding its input open, ended by each place a
+workspace sweeps (a deletion, the start of a rebuild's switch, a restore that finds the
+container running).
 
 The tools' `podman` and `docker` wrapper's reading of a published port,
 `backend/rcman/podman/publish.sh`, is tested on the host by `tests/test_podman_wrapper.py`,
@@ -100,76 +86,84 @@ are held there to the help recorded in `tests/fakes/podman-help/`.
 Limits (see [runtime.md](runtime.md#limits)) are tested on the host runtime and a stand-in for
 `systemctl`, which records what it is asked: `tests/test_limits.py` the pure module `limits.py`
 (reading, showing, the slices' names, the properties, usage), `tests/test_runtime_limits.py`
-`PodmanRuntime`'s calls, `tests/test_workspace_limits.py` setting, refusing below use, reporting,
-restoring and dropping in `Workspaces`, `tests/test_people.py` and `tests/test_admin.py` the
-routes and `rcman-admin limits`, and `tests/test_rules.py` the rules of the three values. On the
-tests' engine the limits reach the stand-in for `systemctl` of `tests/container/stand_ins.py`, which
-keeps a slice's properties as the user manager does until a restart, and answers the monitor's
-one show of many slices with a block for each, nothing in use but CPU time that grows with the
-clock, so that wherever the stand-in runs, the stack's **Monitor** page among them, every person
-and workspace reads as one whole core busy; `tests/test_stand_ins.py` holds it to what rcman's
-own `limits.py`, monitor and runtime read of it; what the kernel does with a slice is checked by
-hand ([real-claude-checklist.md](real-claude-checklist.md)).
+`PodmanRuntime`'s calls, `tests/test_workspace_limits.py` setting, refusing below use,
+reporting, restoring and dropping in `Workspaces`, `tests/test_people.py` and
+`tests/test_admin.py` the routes and `rcman-admin limits`, and `tests/test_rules.py` the
+sentences of the three values' rules. On the tests' engine the limits reach the stand-in for
+`systemctl` of `tests/container/stand_ins.py`, which keeps a slice's properties as the user
+manager does until a restart, and answers the monitor's one show of many slices with a block for
+each, nothing in use but CPU time that grows with the clock, so that wherever the stand-in runs
+every person and workspace reads as one whole core busy; `tests/test_stand_ins.py` holds it to
+what rcman's own `limits.py`, monitor and runtime read of it; what the kernel does with a slice
+is checked by hand ([real-claude-checklist.md](real-claude-checklist.md)).
 
-Everything git is tested against real git,
-never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
-`tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel and closing while a build waits, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_rebuild.py` rebuilding a workspace on its volume on the same host runtime (telling that its devcontainer.json changed, refusals that leave everything as it was, the switch and putting the old container back, a restart of rcman in each phase, deletions in each phase from the service and from `rcman-admin`, the interlock with an upgrade, the images' two names, and the rebuild of a failed workspace that kept its volume), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders, a rebuild's next name and its promotion to the built one), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
-(a phase of `creating`: its log, failures and their causes, token redaction, names,
-the repository's page, the route, cancel by deletion, restart recovery)
-on a host runtime that runs real git
-and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
-against a host runtime that records what it is asked (git's and gh's files, the failures of
-a save and a forget, and the restore's writes of gh's files), and `tests/test_git.py` the
-git routes. `tests/github_tokens.py`, which is not a test module, holds tokens of the shapes
-the token rule lets in that YAML or a shell would read as something else. `tests/git_fixtures.py`, which is not a test module, makes real
-repositories, their origins and their branches with the system's git, under
-a fixture configuration of its own, with a home, `FIXTURE_HOME`, that does
-not exist, so the configuration git reads is only what a test plants;
-fixture git refuses every transport but a local repository's, so an http,
-https, ssh, git or scp-like address a test gives it is refused before anything
-is connected to. GitHub is `tests/github_server.py`: the
-system's `git http-backend` behind a small server, which serves anyone a
-read of a public repository, and takes a push, or a read of one made
-private, only with its token as the password, under any
-non-empty username, as GitHub takes a personal access token. Its `gate` event, when a
-test clears it, makes every request wait, so that a clone is under way and stays so.
-Nothing a host test drives reaches the real github.com: the autouse
-`github_stand_in` fixture in `tests/conftest.py` gives every git command the host
-runtime runs whose subcommand may reach a remote (`NETWORK_SUBCOMMANDS` in
-`tests/git_fixtures.py`) a folder in place of `https://github.com/` and forbids the
-ssh and git transports (`through_stand_in`), and such a command not given it is an
-`AssertionError` (`assert_through_stand_in`). Any other git command is left as it is:
-`remote get-url --push` rewritten would name the folder, and a push to GitHub would no
-longer be known as one. The git of an argv is the first token named `git` that is no
-`NAME=value`, so a variable rcman passes before it is not taken for it.
-`tests/test_stand_in.py` holds the rewrite of each subcommand, and plants one it missed
-to see the guard fire. The fixture sees only `HostRuntime.exec`, not a channel's `run`:
-it covers rcman's git that reaches a remote because `repository.py` runs every such
-call with `network=True`, through `exec`. The `github` fixture in
-`tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`. Git in a workspace of
-real Podman, against the same stand-in served as `https://github.com`, is the container suites'
-(see [The container suites](#the-container-suites)).
+Everything git is tested against real git, never a fake: `tests/test_git_run.py` holds the
+status parser of `helpers/git_run.py` to every kind of record git writes, and its refusal to
+git's words and exit status, `tests/test_repository.py` every verb of `repository.py` in
+host-runtime workspaces through a real channel and `exec`, `tests/test_devcontainer.py` the pure
+module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal
+to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's
+devcontainer.json on a host runtime with planted images, builds on a host runtime that records
+what it is asked (a Dockerfile and features built, the waiting line for builds, the restart
+removing what no workspace uses), `tests/test_rebuild.py` rebuilding a workspace on its volume
+on the same host runtime (telling that its devcontainer.json changed, the switch and putting the
+old container back when a new command fails, a restart of rcman after the old container was
+discarded, the refusal while rcman is upgraded, the guard that a request asks whether the
+container is there before it takes the images' lock, the images' two names, a Start that makes a
+lost container again on its volume, and the rebuild of a failed workspace that kept its volume),
+`tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the
+builder's words, the pump, the copy of a repository with the host's own tar),
+`tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the
+archive that is loaded, rcman's own names held across the load, the staging folder, a rebuild's
+next name and its promotion to the built one), `tests/test_headers.py` the security headers of
+every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock
+file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning (a
+phase of `creating`: its log, a failure and its cause, the token in no trace, names numbered,
+cancel by deletion, restart recovery) on a host runtime that runs real git and can answer a
+clone with what git would say or hold it as a running git, `tests/test_git_account.py`
+`gitaccount.py` on the host runtime (git's and gh's files, a save and a forget, and the
+restore's writes of gh's files), and `tests/test_git.py` the git routes.
+`tests/git_fixtures.py`, which is not a test module, makes real repositories, their origins and
+their branches with the system's git, under a fixture configuration of its own, with a home,
+`FIXTURE_HOME`, that does not exist, so the configuration git reads is only what a test plants;
+fixture git refuses every transport but a local repository's, so an http, https, ssh, git or
+scp-like address a test gives it is refused before anything is connected to. GitHub is
+`tests/github_server.py`: the system's `git http-backend` behind a small server, which serves
+anyone a read of a public repository, and takes a push only with its token as the password,
+under any non-empty username, as GitHub takes a personal access token. Its `gate` event, when a
+test clears it, makes every request wait, so that a clone is under way and stays so. Nothing a
+host test drives reaches the real github.com: the autouse `github_stand_in` fixture in
+`tests/conftest.py` gives every git command the host runtime runs whose subcommand may reach a
+remote (`NETWORK_SUBCOMMANDS` in `tests/git_fixtures.py`) a folder in place of
+`https://github.com/` and forbids the ssh and git transports (`through_stand_in`), and such a
+command not given it is an `AssertionError` (`assert_through_stand_in`). Any other git command
+is left as it is: `remote get-url --push` rewritten would name the folder, and a push to GitHub
+would no longer be known as one. The git of an argv is the first token named `git` that is no
+`NAME=value`, so a variable rcman passes before it is not taken for it. `tests/test_stand_in.py`
+holds the rewrite of each subcommand, and plants one it missed to see the guard fire. The
+fixture sees only `HostRuntime.exec`, not a channel's `run`: it covers rcman's git that reaches
+a remote because `repository.py` runs every such call with `network=True`, through `exec`. Git
+in a workspace of real Podman, against the same stand-in served as `https://github.com`, is the
+container suites' (see [The container suites](#the-container-suites)).
 
 The Terminal tab is tested on the host runtime, whose shells are the host's own processes, found
 in the host's `/proc` by a `sleep` of a length no other test uses: `tests/test_terminals.py`
-drives `terminals.py` without a WebSocket (what is typed and shown, a resize, ^C, what an end
-leaves and what it does not, open files, a replacement, an open only once the shell named itself,
-a deletion or sign-out that crosses an opening, the pidfile's checks, a program named with a
-newline, a process whose first thread has ended, kept in the process table and ended with its
-session, and the sweeps, the opening's and the restore's among them), and `tests/test_terminal.py`
-the route through the test client's WebSocket (who may open what, the frames, what closes a
-terminal, the audit, nothing typed recorded or logged, the protocol held to backend.md's table and
-to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a refused upgrade
-and a service that stops, through real uvicorn running the screenshots' backend
-(`devtools/world.py`) with the options of the unit's `ExecStart`. `tests/container/test_terminal_in_podman.py` runs on
-the tests' engine, with the default workspace image built from the installer's build file and
-workspaces made through the app: what is typed reaching the shell through `podman --remote exec`
-and coming back. A remote exec's record stays after it ends until
-Podman's own cleanup removes it, once the exit delay conmon is given has passed, so whether an
-exec runs is read from Podman's API. The runtime contract's terminal case (`tests/runtime_contract.py`) runs on the host runtime. No test opens the tab in a real browser
-([What the tests no longer check](#what-the-tests-no-longer-check)). The page's side of the protocol, its states and its fakes are in
-[frontend.md](frontend.md).
+drives `terminals.py` without a WebSocket (what an end leaves and what it does not, a pidfile
+that ends its session only while it names the leader, the restore's sweep, a rebuild's end, and
+a session that ignores the hangup killed after its grace), and `tests/test_terminal.py` the
+route through the test client's WebSocket (what is typed and shown and a resize, who may open
+what, a replacement, what closes a terminal, the audit, nothing typed recorded or logged, the
+protocol held to backend.md's table and to the page's, `frontend/src/terminalSocket.ts`, loaded
+with Node) and, for a service that stops, through real uvicorn running the screenshots' backend
+(`devtools/world.py`) with the options of the unit's `ExecStart`.
+`tests/container/test_terminal_in_podman.py` runs on the tests' engine, with the default
+workspace image built from the installer's build file and workspaces made through the app: what
+is typed reaching the shell through `podman --remote exec` and coming back. A remote exec's
+record stays after it ends until Podman's own cleanup removes it, once the exit delay conmon is
+given has passed, so whether an exec runs is read from Podman's API. The runtime contract's
+terminal case (`tests/runtime_contract.py`) runs on the host runtime. No test opens the tab in a
+real browser ([What the tests no longer check](#what-the-tests-no-longer-check)). The page's
+side of the protocol, its states and its fakes are in [frontend.md](frontend.md).
 
 What needs a real Claude account, and what needs systemd, the kernel's limits or a real
 machine, is checked by hand: [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default
@@ -245,7 +239,7 @@ guard with `handed`, as the engine's `started(guard)` does for what runs while t
 `podman_service`, the session's engine, is started with `CONTAINER_HANG_GUARD`, which it keeps
 handed for the whole session, while a test's own tier still comes first in the test. The
 programs the container suites run in a container from the checkout's files
-(`tests/container/stack.py`, `install_checks.py` and `installed.py`) are handed it in
+(`install_checks.py` and `installed.py`) are handed it in
 `RCMAN_HANG_GUARD` by the exec that runs them, which is how `until` there knows its bound; the
 exec kills the program at `EXEC_GUARD`, beyond that bound and within the test's guard, so that a
 wait there that never ends fails with what it waited for, not a bare timeout;
@@ -253,13 +247,12 @@ wait there that never ends fails with what it waited for, not a bare timeout;
 pytest.
 `tests/test_hang_guard.py` holds the guard to this, each case a
 child pytest with the project's configuration, `tests/conftest.py` loaded as a plugin, and a
-short guard, in one process and under pytest-xdist: each planted twin hangs a test in a way the
-guard must still end, and the test is ended, named wherever the guard's report can be written,
-and any child it started ended with it; a test that finishes under the project's own guard
-passes; and, in a child Python, a process the first look misses is stopped and killed by the
-next, and a pid whose start time is no longer the one read is not signalled. It also holds, by
-reading their source, that each exec that hands `RCMAN_HANG_GUARD` hands `CONTAINER_HANG_GUARD`
-and kills at `EXEC_GUARD`, and that these nest within the container tests' guard.
+short guard: a test blocked in a worker thread where no signal reaches it is ended and named, in
+one process and under pytest-xdist; a test blocked in its teardown after its call failed is
+ended; the child a hung test waits on is ended with it; and a test that finishes under the
+project's own guard passes. It also holds, by reading their source, that each exec that hands
+`RCMAN_HANG_GUARD` hands `CONTAINER_HANG_GUARD` and kills at `EXEC_GUARD`, and that these nest
+within the container tests' guard.
 `tests/test_make.py` holds that every test of every target is under its tier's guard.
 
 The frontend's component tests have hang guards of their own, a tier of their own, in
@@ -289,9 +282,7 @@ puts in place of a product's own, and its module docstring is their rules:
   `expire(match)` ends a wait as if it had.
 - `ControlledEvent`, for an event, `Workspaces._closing` among them: a `wait` given seconds ends
   only on `set` or `expire(match)`.
-- `RecordingLock`, around a lock or an RLock: each acquire is recorded, and one that blocked is
-  recorded once a try without blocking has failed and before it blocks (`wait_blocked`).
-- `Clock`, for a clock a product's seam reads, forwarding's, the monitor's or a token bucket's:
+- `Clock`, for a clock a product's seam reads, the monitor's among them:
   calling it gives `now`, which only `advance`, or the test setting it, moves.
 - `Time`, for the monitor's loops, the `clock` and the `wait` it is given: a wait ends when its
   event is set or the clock passes its deadline; each `advance`, and each `poke`, which moves no
@@ -305,20 +296,17 @@ workspaces' service as its `_changed`, and `periodic` a `ControlledEvent` as its
 the periodic checks wait on between rounds; each goes into the first service made after it
 (`into_the_first_service`), the app's where the test has one, so that rcman-admin's service in a
 test of two processes keeps its own. They are the conftest's `SEAMS`, which `app` asks for first
-wherever the test asks for them, itself or through another fixture. A module's own seam, as
-`test_rcman_upgrade.py`'s `images_lock` (a `RecordingLock` for the images' lock), is listed by
-the test before `client`, as is the conftest's `person_locks` (a `RecordingLock` for each
-person's lock, which `recorded_person_lock` gives); a module's `fake_time` puts a `FakeTime` on the module it tests, and where the
-periodic checks read that module's `time` too it holds them (`periodic`), so that the test owns
-every thread that reads it. `periodic_round` does one round of the checks: it ends their wait of
-`IDLE_CHECK_SECONDS` as if it had passed, and returns once they wait again. `ended` waits, on
-the service's condition, until no thread that makes or rebuilds the workspace it names is left.
+wherever the test asks for them, itself or through another fixture. A module's own seam is
+listed by the test before `client`; a module's `fake_time` puts a `FakeTime` on the module it
+tests, and where the periodic checks read that module's `time` too it holds them (`periodic`),
+so that the test owns every thread that reads it. `ended` waits, on the service's condition,
+until no thread that makes or rebuilds the workspace it names is left.
 
 Every wait on a double is recorded, with its thread, its seconds and an ordinal of the
 double's, under the primitive's own lock and only once what it waits for has been seen not to
 hold: a recorded waiter really waits, and what is told after the record reaches it. A test waits
-for records through the double's own condition (`wait_waiting`, `wait_parked`, `wait_blocked`,
-the sleeps' waits), never by polling, and picks a wait out by a match: its thread, its seconds or
+for records through the double's own condition (`wait_waiting`, `wait_parked`, the sleeps'
+waits), never by polling, and picks a wait out by a match: its thread, its seconds or
 a predicate on the record, so that `_closing`'s periodic wait of `IDLE_CHECK_SECONDS` is told
 from a person's deletion's look of `WORKING_POLL_SECONDS`. A `_changed` wait is matched by its
 seconds only where they are exact: `close`'s `CLOSE_WITHIN_SECONDS`, handed as it is, and
@@ -326,20 +314,19 @@ seconds only where they are exact: `close`'s `CLOSE_WITHIN_SECONDS`, handed as i
 thread or by predicate.
 
 **The hang bound.** A frozen wait that nothing ends within the double's hang bound, `HANG_GUARD`
-for a host test and `CONTAINER_HANG_GUARD` for one that carries the container marker
-([the hang guard](#the-hang-guard)) unless the double is given its own, raises `DoubleHung` in its
-waiter, and so does a polling `FakeTime` loop that goes as long with no advance. A thread's
-sleeps count as one loop only while no more than `POLL_GAP` of real time passes between one's
-return and its next: a longer gap starts the bound again, as a pooled thread may poll for one
-thing and later for another. A test's own wait on a double fails as long after. A lock's
-blocked acquire has no bound of its own: it is ended by what holds the lock, or by the hang
-guard. `DoubleHung` is a BaseException, which the product's `except Exception` lets by, and
-each is also recorded: the plugin's autouse fixture fails the test at its teardown on any hang
-of any double the test made, so a hang in a product thread whose caller never sees it still
-fails the test. A double is made in a test or a fixture of the test's own (`DoubleOutsideTest`
-otherwise); at the test's end it is closed, records no hang, and its waits go on until what
-they wait for ends them. `tests/test_time_doubles.py` holds the doubles to this, the registry's
-own cases in child pytests.
+for a host test and `CONTAINER_HANG_GUARD` for one that carries the container marker ([the hang
+guard](#the-hang-guard)) unless the double is given its own, raises `DoubleHung` in its waiter,
+and so does a polling `FakeTime` loop that goes as long with no advance. A thread's sleeps count
+as one loop only while no more than `POLL_GAP` of real time passes between one's return and its
+next: a longer gap starts the bound again, as a pooled thread may poll for one thing and later
+for another. A test's own wait on a double fails as long after. `DoubleHung` is a BaseException,
+which the product's `except Exception` lets by, and each is also recorded: the plugin's autouse
+fixture fails the test at its teardown on any hang of any double the test made, so a hang in a
+product thread whose caller never sees it still fails the test. A double is made in a test or a
+fixture of the test's own (`DoubleOutsideTest` otherwise); at the test's end it is closed,
+records no hang, and its waits go on until what they wait for ends them.
+`tests/test_time_doubles.py` holds the doubles to this, the registry's own cases in child
+pytests.
 
 **The rules.** A test that waits on time keeps these:
 
@@ -389,56 +376,57 @@ making the file once it has seen what it needs; `tests/test_terminals.py`'s `sle
 of a second of its own added to it.
 
 **The timing guard** (`tests/test_timing_guard.py`) holds every test to these rules by a static
-scan of the Python of `tests/`, `tests/container/` among it, and `devtools/` (`SCOPE`), and of the
-frontend's TypeScript (below), which
-imports and runs nothing it scans; it reads `backend/` and `helpers/` too, for the parameters of a timing
-name each function takes. It flags elapsed real time compared, a clock read or a name derived
-from one in a comparison or a difference (P1); a sleep in test code, or a `threading.Timer` or a
-loop's `call_later` (P2); a sleep or a `timeout` written in a child program's source, unless it
-is a guard's multiple (a sleep: twice the guard or more, rule (g)), `RUNS_OUT` or the pace of a
-child's wait loop, and `sleep` given its length in an argv or a call's arguments (`["sleep",
-"600"]`, `["sleep", str(60)]`, `engine.cli(…, "busybox", "sleep", "600")`), in a test or in a
-child's Python, or as a helper's parameter, at each call of the helper that gives a number,
-unless the length is twice the guard or more, an argv that is compared, and so runs nothing,
-aside (P2s); a timeout that is not
+scan of the Python of `tests/`, `tests/container/` among it, and `devtools/` (`SCOPE`), and of
+the frontend's TypeScript (below), which imports and runs nothing it scans; it reads `backend/`
+and `helpers/` too, for the parameters of a timing name each function takes. It flags elapsed
+real time compared, a clock read or a name derived from one in a comparison or a difference
+(P1); a sleep in test code, or a `threading.Timer` or a loop's `call_later` (P2); a sleep or a
+`timeout` written in a child program's source, unless it is a guard's multiple (a sleep: twice
+the guard or more, rule (g)), `RUNS_OUT` or the pace of a child's wait loop, and `sleep` given
+its length in an argv or a call's arguments (`["sleep", "600"]`, `["sleep", str(60)]`,
+`engine.cli(…, "busybox", "sleep", "600")`), in a test or in a child's Python, or as a helper's
+parameter, at each call of the helper that gives a number, unless the length is twice the guard
+or more, an argv that is compared, and so runs nothing, aside (P2s); a timeout that is not
 allowed, at a keyword or a parameter of a timing name, at a known position of a wait, in a
 parameter's default, in a module's or a class's constant of a timing name, or in
 `pytest.mark.timeout` (P3); and a product's timing constant patched to a value that is not
 allowed, the time module or the guard patched, a value given back by a second setattr, a name a
-setattr is given that cannot be resolved, or `runs_out` given anything but 0 or a product's floor
-(P4); a module other than `tests/hang_guard.py` defining `HANG_GUARD`, `CONTAINER_HANG_GUARD` or
-`tier_guard` (GUARD); and a guard of another tier (TIER): `HANG_GUARD` in what the
-container tests run, `CONTAINER_HANG_GUARD` in what the host tests run, and either in what both
-run, where only `tier_guard()` gives the asking test's. Which tests run a piece of code is worked
-out from the import graph (`tier_reach`): every top-level name of `tests/container/`, a test
-elsewhere, of the container tier where it asks for the tests' engine through its fixtures, as the
-container marker is derived, and `tests/conftest.py`'s autouse fixtures are the roots, and a name
-is reached through the names, imports and fixtures its statement uses. The allowed values are the tier's guard and its multiples,
-also plus a number or through `int()` (`str(int(2 * tier_guard()))`), `tier_guard()` where a
-test reads it, `None`, `-1` and `0`. A timing name is a word of the name between underscores,
-`guard` among a parameter's (`handed`, `started` and `usable` take only an allowed value), and
-a constant's longer words also run together (`IDLETIMEOUT`, `MAXWAIT`); a string that reads as
-a number, as `'0.01'`, is seconds. A name a setattr is given is resolved through a loop over
-literals, the tuples such a loop unpacks, a test's literal `parametrize` and a helper's literal
-arguments, a closure's too, and not where the function assigns the name again. What the scan
-allows where it finds it is a call on a double (`tests/time_doubles.py`), a helper's parameter
-typed as one only where every call of the helper in its module is seen to give it one, a turn
-of 0, a benchmark test, and a child's wait loop. The only other exemptions are its named patterns,
-`NAMED`, each with its reason and a stale check that fails once its subject holds no site:
-`until`'s own pace and bound, the doubles' hang bound, the hang guard with `runs_out`
-and `pace`, the short bounds the tests of these hand them, tmuxctl's give-up, at the
-timeout its caller passes, which a test gives as its tier's guard, and the recorder's
-command-line watch, which no test reaches but a module marked `real_claude`, run by hand,
-a killed run's own hang bound in `tests/killed_runs.py`, `hold` and `shell_hold`, derived from
-the tier's guard, and the sweep of held folders, whose
-deadlines are its behaviour, the tests of `tier_guard` and of each tier's value, which name
-the container tier's guard in a host test, and the container tests' guard `mark` gives
-each of them; and the programs of `STAND_INS`, which run only as another program, whose timing is
-theirs: the fake `claude`, the pre-test hook, and the container suites' stand-ins for
-`systemctl`, `loginctl` and rcman's `podman`, for GitHub and for Google's sign-in. Planted twins show each form flagged and each allowance clean;
-`test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
-named pattern or stand-in, and on a scan that saw no site or made none of the allowances it is
-known to make.
+setattr is given that cannot be resolved, or `runs_out` given anything but 0 or a product's
+floor (P4); a module other than `tests/hang_guard.py` defining `HANG_GUARD`,
+`CONTAINER_HANG_GUARD` or `tier_guard` (GUARD); and a guard of another tier (TIER): `HANG_GUARD`
+in what the container tests run, `CONTAINER_HANG_GUARD` in what the host tests run, and either
+in what both run, where only `tier_guard()` gives the asking test's. Which tests run a piece of
+code is worked out from the import graph (`tier_reach`): every top-level name of
+`tests/container/`, a test elsewhere, of the container tier where it asks for the tests' engine
+through its fixtures, as the container marker is derived, and `tests/conftest.py`'s autouse
+fixtures are the roots, and a name is reached through the names, imports and fixtures its
+statement uses. The allowed values are the tier's guard and its multiples, also plus a number or
+through `int()` (`str(int(2 * tier_guard()))`), `tier_guard()` where a test reads it, `None`,
+`-1` and `0`. A timing name is a word of the name between underscores, `guard` among a
+parameter's (`handed`, `started` and `usable` take only an allowed value), and a constant's
+longer words also run together (`IDLETIMEOUT`, `MAXWAIT`); a string that reads as a number, as
+`'0.01'`, is seconds. A name a setattr is given is resolved through a loop over literals, the
+tuples such a loop unpacks, a test's literal `parametrize` and a helper's literal arguments, a
+closure's too, and not where the function assigns the name again. What the scan allows where it
+finds it is a call on a double (`tests/time_doubles.py`), a helper's parameter typed as one only
+where every call of the helper in its module is seen to give it one, a turn of 0, a benchmark
+test, and a child's wait loop. The only other exemptions are its named patterns, `NAMED`, each
+with its reason and a stale check that fails once its subject holds no site: `until`'s own pace
+and bound, the doubles' hang bound, the hang guard with `runs_out` and `pace`, the short bounds
+the tests of these hand them, tmuxctl's give-up, at the timeout its caller passes, which a test
+gives as its tier's guard, and the recorder's command-line watch, which no test reaches but a
+module marked `real_claude`, run by hand, a killed run's own hang bound in
+`tests/killed_runs.py`, `hold` and `shell_hold`, derived from the tier's guard, the sweep of
+held folders and the pre-test hook, whose deadlines are their behaviour, the tests of
+`tier_guard` and of each tier's value, which name the container tier's guard in a host test, and
+the container tests' guard `mark` gives each of them; and the programs of `STAND_INS`, which run
+only as another program, whose timing is theirs: the fake `claude`, and the container suites'
+stand-ins for `systemctl`, `loginctl` and rcman's `podman`. Planted twins show each form
+flagged, one for each way the scan detects a form (`PLANTED` and `PLANTED_TS`, each form spelled
+in each language or said why not in `FORMS`), and each allowance clean, one clean twin for each
+(`CLEAN` and `CLEAN_TS`); `test_no_test_waits_on_real_time` scans the real tree once, and fails
+on any site, on a stale named pattern or stand-in, and on a scan that saw no site or made none
+of the allowances it is known to make.
 
 In the frontend it reads the component tests `frontend/vite.config.ts`'s `include` names,
 everything under `frontend/src/test/`, and that config (`ts_scope`), parsed in one call of Vite's parser (`tests/typescript.py`). It flags
@@ -458,9 +446,9 @@ language, or why a language does not spell it.
 A test that raced time checked a few things only an elapsed time could tell, and these are
 given up:
 
-- whether the channel's 95th percentile is under `LATENCY_P95_SECONDS`, on the host and through
-  Podman, and how long a redaction takes against its size: [the benchmark](#the-benchmark)
-  reports them and decides no run, and `make test` still ends a redaction that never ends;
+- whether the channel's 95th percentile is under `LATENCY_P95_SECONDS`, and how long a
+  redaction takes against its size: [the benchmark](#the-benchmark) reports them, the channel's
+  on the host only, and decides no run, and `make test` still ends a redaction that never ends;
 - "promptly": where a test asserted that something ended within a time, its result is still
   asserted and the cause that must not act is pushed past the guard, so that a defect fails
   the test, but an ending that is slow without being a hang passes;
@@ -468,10 +456,7 @@ given up:
   `claude` and its `TIMEOUT`, after which the pane's waits give up, which only the recorder's
   command line exercises, by hand;
 - how the real `claude` treats an answer typed before its question, which the `trust_too_fast`
-  replay holds on the fake's side only ([fake-claude.md](fake-claude.md));
-- in `tests/test_filelock.py`, that two threads inside the lock at once would be caught: each
-  comes to the lock while the test holds it, so all of them contend once it is let go, but none
-  stays inside for any length of time, so an overlap is no longer made likely.
+  replay holds on the fake's side only ([fake-claude.md](fake-claude.md)).
 
 No test drives the page in a real browser. `make screenshot` shows a page for someone to look
 at, and asserts nothing. What only a browser could check is given up:
@@ -479,8 +464,8 @@ at, and asserts nothing. What only a browser could check is given up:
 - the stand-ins the component tests put in for the browser are held to nothing real:
   `frontend/src/test/fakeDialog.ts` against the native modal dialog (its focus on opening,
   Escape and the cancel event, focus given back on closing) and
-  `frontend/src/test/fakeLayout.ts` against the browser's layout and colour scheme, and with
-  them whether a phone's pointer is coarse and a mouse's fine;
+  `frontend/src/test/fakeLayout.ts` against the browser's ResizeObserver and colour scheme, and
+  with them whether a phone's pointer is coarse and a mouse's fine;
 - on a phone and at every width: each page walked at every width for overflow, the size of
   every control, fields that zoom in on focus, icon-only buttons with a name, the design
   system's checks, the places allowed to scroll, and every dialog and pop-up opened there (the
@@ -527,6 +512,249 @@ at, and asserts nothing. What only a browser could check is given up:
 - the rules [frontend.md](frontend.md#rules-it-keeps) lists that a browser would show are kept
   by hand.
 
+The frontend's component tests are held to one test for each thing a person or an administrator
+relies on a page for, on the path where it works ([frontend.md](frontend.md#tests)), and to the
+guards [frontend.md](frontend.md#rules-it-keeps) names, each scanning check with its run on the
+real tree and one planted twin: the stylesheet's colours, the terminal's colours, the danger
+buttons, contrast, a field's focus, touch targets, a field's text size, the viewport's tag,
+hovering, buttons and links laid out alike, every form's validation, leading button, destructive
+opener and refused fields, every form and dialog in the source opened, every card's actions,
+every change's letter and word, the server states' tables, the manifest's icons, every table in
+the guides, and each guide held to its page; the design system's tokens, the dialog's sheet and
+the manifest's fields are checked directly. The shared dialog's and `usePopup`'s own focus and
+Escape are tested, and so is the skip link's focus. The failure paths kept are those that are
+the behaviour: a start refused while Claude is not signed in, a refresh that cannot reach rcman
+said and reported, rcman not reached and a sign-in ended, a workspace that failed saying why, a
+workspace with no repository said quietly, git's refusal in its words, a commit whose push
+failed, a roll-out's failed checks, a failed upgrade with the way to roll back, a terminal
+refused or whose socket never opened, xterm.js that cannot be loaded, and a fault in the page
+named as the page's. Given up: every other refusal, shown under a field or in a form or a
+dialog, and every other failure of a request, a poll or a read; a report's fields and the
+queue's cap, but for alike failures counted as one; the variants of each state of a workspace, a
+server, a rebuild, a port, a stop and a start, each server action but one of each, and each rule
+for offering an action, the Changes section's Commit, Push, Commit & Push and Sync without an
+author or a token among them; focus, Escape, outside presses and the keyboard anywhere else, in
+the drawer, the tabs, the switcher and after each action among them; what a page shows but does
+not do, its layout, classes but which button leads, a button busy, and the drawer open; headers,
+help lines, pills, dots and live regions; how often a page polls and an older answer dropped;
+the terminal's other close reasons, its fitting, colours and strict mode; the formats but sizes
+and moments; and the tests of the tests' own helpers, the fake dialog, the stylesheet's reader
+and the guides' table reader among them.
+
+The installer, the upgrade from the web interface and rcman's side of it are held to one test
+for each thing an administrator relies on, on the path where it works, and to their guards
+([installer.md](installer.md#tests), [backend.md](backend.md#upgrading-rcman)). Every other
+input they would meet, and every refusal but a rollback's to a release older than the database,
+is given up there: among them the installer's refusals of a setting, a Caddyfile it cannot edit
+or Caddy refuses, a lock that is a link, held or in a folder others can write, a home or status
+folder that is a link, a kernel, an OCI runtime, a built tree with a link, a download or a tmux
+that is not the pinned or whole one, and a clone the upgrade's checks refuse but for one path
+anyone can write; the warnings for a missing cgroup controller; the order of the installer's
+steps but those of the upgrade from the web interface; two callers filling one toolchain at
+once; the health check's failures; the guide's prose beyond the options and the removal section;
+and, on rcman's side, malformed `systemctl show` output, a second request while one is under
+way, the limit on requests, the grace for a start, the admission's races and its interlocks with
+a rebuild, a Stop or Start, an image collection and a roll-out's sweep, and the report for an
+administrator only. No test probes whether `git archive` omits what `.gitattributes` marks. The
+stubbed installation checks only the first installation's Caddyfile and Caddy's restart. Given
+up with the rest of its checks: the release's contents and owners, the accounts, rcman's
+subordinate ids and linger, the drop-ins' owners, the unit's options, the images built under
+their names, the Claude Code store, the saved settings' and configuration files' owners and
+modes, the first administrator, `rcman-admin` run by name, the socket's folder and group, no
+listener letting a local user be someone in rcman, a second run and saved settings, a dirty
+clone or one that cannot fast-forward refused, self-update and rollback, and the upgrade from
+the web interface turned on, off and run; `tests/test_install.py` holds what of these the
+installer decides.
+
+A workspace made from a repository's devcontainer.json, the image built for it and the builder
+are held to one test for each section of the file and each step a person relies on, on the path
+where it works, and to their guards, each with one planted twin: the policy table against
+[the administrators' page](../docs/devcontainer.md), the workspaces' seccomp profile, the pins of
+the repository's own build file, and the wrapper's lists of Podman's options against its
+recorded help. The failure paths kept are those that are the rule itself: a key the policy
+refuses, in the pure module and failing a workspace; the name of an image rcman built refused as
+a file's image; a built image's label that asks for what a file may not; an archive that carries
+a name or is also an OCI layout; a build command that fails, said in plain words with nothing
+left; and a load that moves a name of rcman's own, put back and the build refused. Every other
+input is given up: among them each key of the policy one by one, the reader's limits and links,
+values of the wrong kind or depth, reserved variables and those that move git's configuration,
+users and ids outside the range, image names, transports and registries, feature references and
+options, and ports beyond their merge; every other failure in plain words, of a pull, a build, a
+load or a lifecycle command; the archive's other checks; the pump's limit, cancel and timeout;
+the build's limits, timeouts and cancels and the sweep of its staging folders; a cancel or a
+deletion at each step and closing while a build waits; a restore's concurrency and its bound; a
+musl image, an image with no git and missing instructions for Claude; and every spelling of a
+published port but `podman run -p`. No test holds the recorder of
+`tests/container/test_builder_in_podman.py` to the build's own steps.
+
+The runtimes, the workspaces, their limits, the rebuild, the Terminal tab and the exec channel
+are held likewise: the runtime contract on the host runtime, one argv check for each kind of
+container rcman makes, and one test for each thing a workspace does, on the path where it works,
+a channel busy with a request never closed as idle among them, with the guards on the wrappers'
+record folder, the lock order, the images' lock in a rebuild, a slice never stopped and the
+terminal's protocol, each with one planted twin. The failure paths kept are those that are the
+behaviour: a rebuild's new command that fails, rolled back; a Rebuild refused while rcman is
+upgraded; a container whose making fails after its run, removed with its volume kept; a limit
+that could not be applied, left unstored; a memory limit below what is in use, refused, and a
+cap never lowered below it at a restore; a clone git refuses, failing the workspace in plain
+words; another person's workspace, and their terminal, answered as one that is not there; a
+pidfile that no longer names its session's leader; and a session that ignores the hangup, killed
+after its grace. Given up: every other refusal of a name, a value, a Stop, a Start, a Rebuild, a
+limit or a terminal, a volume of another installation among them; every race and window, a
+deletion, cancel, restart or sign-out at each step of making, rebuilding, opening a terminal or
+a channel, a channel's close racing its shell's start, `close()` called while a request is in
+flight, and a channel opened again during a stop; putting the old container back when the
+rollback itself fails; the timeouts and give-ups of a pull, a copy, `systemctl`, rcman's close,
+a person's deletion and the limits report, whose time limit is not checked; every other failure
+of Podman, `systemctl` or git and its logging, a workspace whose container could not be made,
+git's words in a failed clone with the token redacted, and a channel's open tried again on
+conmon's error among them; a workspace's log cut to its last characters; the minimums of the
+limits held to the shared rules; a person's deletion waiting on one wait with no look at the
+rows; malformed limits, pidfiles, process-table entries and terminal frames; the variants of
+image collection; threads of one process kept apart by the file lock; and whether the Terminal
+tab's shell holds no file of rcman's.
+
+Claude Code's versions, the fake `claude`, its recordings, the screens rcman reads and a
+workspace's server are held to one test for each thing a person or an administrator relies on,
+on the path where it works, to the round trip and the contract tests that hold the fake to the
+real program ([fake-claude.md](fake-claude.md#how-the-fake-is-checked-against-the-real-binary)),
+and to their guards, each with one planted twin: the fixtures' manifest against their files and
+the recorder's sequences, the tested version against the recorded one, the kept screens against
+every kind of leak and each leak mark against a sample of it, the observed screens' manifest and
+their `kept_for`, the round trip's case for every sequence, every fixture and observed screen
+accounted for by a state, the questions and the reconnected screens held to every screen, no
+test reaching the command line's watch, and every use of Claude's path through the command
+builder. The failure paths kept are those that are the behaviour: a candidate the canary's
+checks fail, refused with the checks and their reports and the approved version left as it was;
+a rollback to a version approved before, with neither a download nor a canary; a version marked
+as failed, refused for a rollout; a download whose checksum differs, refused with nothing left;
+a server that ignores Ctrl+C, ended with its process group after its grace; a screen rcman does
+not know, read as unrecognised, audited, logged once without its text and named to
+administrators; a wait on a pane that gives up with the screen it last showed; and the home the
+run was started from, refused as a recorded `claude`'s home. Given up: every other refusal of a
+route, a rule, a verb or a mark, and every other failure to get, check, store or switch to a
+version, the canary's environment and a candidate that is not there among them, and the release
+bundle's derivation from the fake's imports; the link's repair and adoption of an empty or
+missing version; approvals append-only; the grace that keeps a version an upgrade of rcman has
+just stored; every order of a rollout, a sweep, a prune, a start and a mark; a stop's prune and
+a prune that fails; each check's judging of a program's streams, its timeouts, a candidate's
+children, a report's limits, tail and cuts, and each kind of secret through a whole report
+rather than the redaction alone, its other spellings, wrapped or written over on a terminal
+among them; every terminal escape but those of the recorded logout, and the real `claude` with a
+long configuration path; what the fake does that the round trip does not replay, its answers at
+the Remote Control question but `y`, its spawn-mode question, a credentials file it cannot
+remove or rename, and its refusals but that of an answer too early; a server's own refusals and
+timeouts, a workspace that cannot be reached listed with why, a declined trust, a server that
+died or was signed out, the reconnected screens through a server's verbs, its audit, the journal
+and the administrators' warnings, a stop of a session of its own or of a server that ignores
+SIGTERM, the workspace's folder and environment read from `/proc`, the window's pinned size and
+`tmux.conf`'s global options, and a status read across a server's end; every variant of the
+reconnected, answered and question screens; sanitising each placeholder alone, the recorder's
+held folders, a killed version reading, the hand-over of a sign-in code, a capture that changes
+while it settles, the choice of sequences and the environment of a sequence that needs the
+account; tmuxctl's trimming, its rerun, a death by signal and the exit status of an unreaped
+process read from `/proc`; and the journal's forgetting, its bound on the calls it remembers and
+the people it keeps apart.
+
+The routes, people, Claude sign-ins, git, the monitor, port forwarding, the audit trail and the
+database are held to one test for each thing a person or an administrator relies on, on the path
+where it works, to the contract tests against real git and the machine's own `/proc`, and to
+their guards, each with one planted twin: every route under `/api/` but the frontend's, every
+problem code with a status and a message, every route that takes parameters given a valid
+request, every route answering a missing identity with a problem, every WebSocket route refusing
+one before its upgrade, the administrators' routes refusing everyone else, every change without
+an Origin a named navigation, every upgrade needing the public origin, no parameter's
+constraints dropped, no refusal in a library's words, every field message reached, every
+published pattern a helpers' rule, every changing route audited or exempt with a documented
+reason, every WebSocket route recording its open and close, every action and result in the audit
+guide, every audited route driven, every handler of the forwarding server audited or exempt,
+every setting in the configuration guide, the settings guide and the journal's table of a page's
+reports, no product code giving Podman a size of the tests, no migration controlling its own
+transaction, a monitor round's cost in programs run, every verb of `repository.py` driven, the
+backend and the helpers reading each rule alike, the limits' sentences holding only their
+constants, and a failure reason refusing every unseen character. The failure paths kept are
+those that are the behaviour: a stranger and a removed person refused at once; a change and an
+upgrade from another origin refused; someone who is not an administrator refused an
+administrator's route; another person's workspace answered as one that is not there, for every
+git route and the administrators' workspace limits; a credentials file emptied while its account
+is connected, reported as signed out unexpectedly; a push that fails after the commit of a
+commit and push, reported with the commit; git's words and exit status in a refusal; a refused
+change audited with its error code; a request to a forwarded port from another port's host
+refused, and every way in ended when forwarding is turned off; a page's reports over their limit
+refused; a path outside the frontend's build never served; an address, a slot and the removal of
+a person with workspaces refused by the database, and a migration that fails part way leaving
+nothing changed. Given up: every other refusal of a route, a value, a field or a person, among
+them the bounds and kinds of the monitor's and forwarding's settings, each rule's values one by
+one (the limits', an author's name's invisible characters, a token's shapes, Hangul fillers) and
+each rule's `or_empty()` form read alike by the backend and the helpers, an address in other
+letters and slot 0 refused by the database, the author's address for a sign-in in other letters,
+a credential git asks for a host other than GitHub, the server's words for each field error and
+each parameter's kind, a commit with no author, a branch name git refuses, a push of a detached
+head, a branch with no commit or no remote, a sync that diverged or whose upstream is gone, a
+push to GitHub with no token, a clone the timeout ended, and a body that is not JSON or not
+UTF-8; every race and order, a sign-in, a sign-out, a start or a deletion crossing another, a
+sweep that waits for a person's lock, two refreshes of the monitor at once, the forwarding
+server's caps, requests at once and its kept relays, and the monitor's loops overlapping or a
+round that ends late; every timeout and deadline, of a sign-in's screens and code, git's network
+and clone deadlines, a disk read killed, a head or body that never ends, and a session's reaper;
+every other failure, of a runtime, a disk read, an inspect, a save of a token or an author,
+SQLite refusing a write, a forwarding listener that raises, a monitor round and its logging, and
+a seccomp profile or instructions file missing at start; what `forwards.sweep` refuses to act
+on, a sweep called alone, and a relay removing its own pidfile; the order in which the
+forwarding settings call their listeners; a list of files, a commit message and a clone's token
+in no argv; the monitor's readings of what is malformed, not known or another installation's; a
+constraint dropped in a dependency, a partial or an embedded body, beyond the one planted twin;
+audit rows that cannot be changed and a workspace name used twice; the forwarding server's
+identity per request on a pooled connection, its frame policy, its half-closed requests and its
+headers of an answer that sets its own; `rcman-admin`'s refusals, its runs of Podman with the
+product's sizes and a deletion it leaves to the service; the listing of ports while forwarding
+is off, for a workspace not ready or being rebuilt, and to an administrator listing everyone; a
+workspace whose server cannot be read in everyone's listing; the service's start checking its
+seccomp profile and instructions and telling the monitor of the restore; the schema of each
+migration since the first one by one; the route enumeration's own checks beyond its planted
+twins; audit retention run again while rcman runs, and the refill of the limit on a page's
+reports; and the security headers on an answer to an error nobody expected.
+
+The repository's guards and the tests' own tooling are held to their guards, each with its
+real-tree check and one planted twin, and to one test for each thing the tooling does, on the
+path where it works: the timing guard to one planted case for each way its scan detects a form
+and one clean twin for each allowance; the hang guard to a hung test ended and named, in one
+process and under pytest-xdist, its teardown guarded after a failed call, its children ended,
+and a test that finishes left alone; `until`, the tier's guard, `runs_out` and `pace`; the time
+doubles' hang bound, a notify, a set and an advance ending a wait, and their registry; a killed
+run's reports, paths, `scrub` and stems; held folders refused outside `/tmp`, the next run
+clearing a killed run's folders and tmux servers and leaving a live run's alone, another
+program's listener passed over, and a removal following no link; the tests' engine keeping its
+storage in its own folder and removed whole after a run that ends or is killed; and the
+stand-ins for GitHub, github.com and `systemctl`, the collection, the snapshot, the edit-time
+hook and the screenshots' world. Given up: every other spelling of a timing form, each tier's
+and each named pattern's own twins; the hang guard ending a test whose stop of its processes or
+whose terminal fails, a process forked past its first look and a pid given again; the doubles'
+other waits, matches and expiries, `FakeTime`'s counts and its parking by a test of the seconds,
+a test's own wait failing at its bound, and a double made outside a test refused; `until`'s
+refusals; reports read only once complete, a planted script's report, and each unsafe path one
+by one; the sweep of a socket another program listens on anywhere in a folder, a `kill-server`
+that does not return, a tmux replaced on disk, a socket gone meanwhile, a folder without a lock
+file, what cannot be removed, and the lock file taken last; an engine killed during a build or
+left with a mount in its storage, the unmounting passes, a process it may not signal and a pid
+given again; a run killed with SIGTERM; the stand-in GitHub's addresses with and without `.git`,
+a wrong token, a credential stored for github.com, and a listening socket it is handed; the
+snapshot from a clone or a worktree elsewhere, its folder modes, an inherited `GIT_DIR` and a
+global or personal ignore file; a worktree mounted as it is in a container; the collection's
+handling of options and of the environment; the docs guard's each kind of reference and each
+historical phrase, the make database's comments, variables and branches, and make reading its
+Makefile in a held folder; the privilege guard's each allowed form, product file and account
+call, an exemption covering only its own site, and every way a root service goes beyond its
+exemption; the fixed-resources guard's ports held in a module's constant, the listing of every
+kind of frontend file, a file that does not parse and the frontend's packages missing; every
+other way a target of `make` goes wrong, `make screenshot`'s recipe, and `make lint` on a
+finding Biome reports as an info, on `index.html` and without the frontend's packages; the
+edit-time hook's other pairings; the screenshots' world failing to build or to take its port;
+the relay's refusals; and whether the recordings of Podman the host tests read
+(`tests/fakes/podman-monitor/`, `podman-images/` and `podman-seccomp.json`) are still what real
+Podman gives: they are copies of one point in time, recorded again when the product starts
+failing against real Podman.
+
 A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in them, and
 an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would leave them
 running and `end_leader` polling. So `tests/conftest.py`'s `pytest_configure` catches an ignored
@@ -556,7 +784,10 @@ folder, reading the mounts again after each pass, since mounts stack, until none
 pass unmounts nothing, or `UNMOUNT_PASSES` passes have run, and says what is left with why its last
 unmount failed (a killed engine leaves its storage's mounts there, the layer of a build's working
 container among them, which `podman rm --all` does not remove) and empties its storage; one a killed
-run left is removed by the next run that starts one. `tests/test_podman_service.py` holds this, the killed run among it. Every module
+run left is removed by the next run that starts one. `tests/test_podman_service.py` holds an
+engine's storage in its own folder, its service and its own podman calls run there, and an
+engine removed whole, with its processes and its folder, when its run ends and when the next run
+finds it killed with a container running. Every module
 of `tests/container/` is collected wherever the suite runs, and every test in it uses the engine,
 so carries the container marker; `tests/test_conftest.py` holds every module to that, with a
 twin.
@@ -580,8 +811,10 @@ per slot, people in the first slots and the builder after them, the engine's own
 slices, which Podman takes only with cgroups and the systemd manager. The engine's own network is
 the network namespace of the user who runs the suite, so a test workspace on a developer's
 machine shares that machine's network and reaches its loopback, which a workspace of rcman's does
-not; nothing the suites serve listens there on a fixed port, and what has to be on a fixed one
-(the stand-in GitHub on 443, Caddy, oauth2-proxy) is in a network of its own. A range of the
+not; nothing the suites serve listens there on a fixed port: the stand-in GitHub
+(`tests/container/test_builder_in_podman.py`) listens on a port of its own on the engine's
+loopback, and the workspaces, in a network of their own, reach it as `github.com:443` through
+the relay (`Relay` in `tests/container/network.py`). A range of the
 suites' size holds no id as high as the group `nogroup` (65534), which apt drops to: nothing in a
 test workspace or build runs `apt-get` as Ubuntu ships it. `tests/container/conftest.py` holds the
 shared fixtures: the tools as the installer writes them, tmux built on the engine with the
@@ -645,39 +878,14 @@ makes them a git origin and a clone of the user `dev`'s, and `tests/container/in
 the installation with the fake `claude` as the release it downloads. The frontend's and the
 backend's packages come from caches filled beforehand in a container of the same image with the
 network (`offline_caches`), so npm and uv run offline; the toolchain is a copy of the user's
-cache, which the installer, as root there, takes its lock in. The first installation is made once; each
-test runs its check of `tests/container/install_checks.py` of the same name, as root in the
-container, in order (see [installer.md](installer.md#tests)).
-
-#### The whole stack
-
-`tests/container/stack.py` is the whole of rcman in one container of the system image with no
-network but its own loopback, which the stack's workspaces join:
-rcman's app made as `devtools/world.py` makes one but with the Podman runtime at the suites'
-sizes on the engine, whose socket it is given, alice its first administrator, bob let
-in; oauth2-proxy from the installer's toolchain with the installer's own configuration, its
-Google endpoints pointed at `tests/container/oidc_stub.py`; Caddy with the installer's own site
-block for `rcman.test`, its own certificate authority, its admin API off and on-demand
-certificates asked of a site on its loopback (`global_options` in `stack.py`), in front of
-`rcman.test`, `auth.test` and `github.com`; the stand-in GitHub, `tests/github_server.py` through
-`github_stand_in.py serve`, with a public repository, under a certificate of an
-authority of its own; the fake `claude`'s releases, served; and `systemctl` the stand-in. The
-tools, the store and the stack's own state are at the same paths in the container as on the
-machine, as the engine resolves what the stack's rcman asks it to mount. The backend's packages
-and the built frontend are made once per run from the checkout's files in a container with the
-network (`stack_prepared`). `stack.py` says what each of its verbs does.
-
-No container test runs the stack now; `stack.py` stays for the host tests that read it.
-
-A person's first workspace in the stack is slow, because rootless Podman keeps one copy of the
-default image per range of ids and copies it into the person's range; the tests wait for it, as
-for anything, with `until`.
+cache, which the installer, as root there, takes its lock in. The first installation is made once; the
+one test runs its check of `tests/container/install_checks.py` of the same name, as root in the
+container (see [installer.md](installer.md#tests)).
 
 #### What the container suite holds of its own
 
 `tests/test_container_suite.py`: the engine usable; a checkout that is a git worktree reaching a
-container as a snapshot that `tests/container/clone.py` commits, against the worktree mounted as
-it is, whose `.git` names a folder the container does not have; and a run's own containers going,
+container as a snapshot that `tests/container/clone.py` commits; and a run's own containers going,
 with their volumes, when it ends, and no other's (see
 [What a killed run leaves](#what-a-killed-run-leaves)). What a container sees of the
 checkout is a snapshot of its files, made once per pytest session by the `source` fixture in
@@ -694,11 +902,11 @@ snapshot is removed when the session ends.
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman, and `system df --format json`'s summary (`podman-monitor/df-summary.json`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds, with the runtime's own `disk_summary`, to that Podman; `podman images -a --format json` of a plain build's leaf, its nameless step image and its base, recorded from Podman on the tests' engine (`podman-images/images-a.json`), which `tests/test_runtime.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
+| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` derives the workspaces' profile from; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, `container inspect`, `podman info` and `system df --format json`'s summary), which `tests/test_monitor.py` reads; `podman images -a --format json` of a plain build's leaf, its nameless step image and its base, recorded from Podman on the tests' engine (`podman-images/images-a.json`), which `tests/test_runtime.py` reads, these and the seccomp profile copies of one point in time, recorded again when the product starts failing against real Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and the screenshot capture — see [frontend.md](frontend.md) |
-| `tests/container/` | The container suites, what they run in their containers, and the system image they run rcman's installer and the whole stack in (`tests/container/system/`) |
+| `tests/container/` | The container suites, what they run in their containers, and the system image they run rcman's installer in (`tests/container/system/`) |
 | `install.sh`, `installer/` | The installer — see [installer.md](installer.md) |
 | `devtools/` | Development tooling, run by hand, by the edit-time hook or by the tests, which never imports the tests; each module's docstring says what it is |
 
@@ -769,14 +977,12 @@ a test makes depends on its own run to remove it:
 
 `tests/killed_runs.py`, which is not a test module, tests all of this as the
 suite runs: a real `python -m pytest -n 2` over small test files, in a session
-of its own, killed with SIGTERM and with SIGKILL; the test then checks that
+of its own, killed with SIGKILL; the test then checks that
 the next run clears what the killed one left. A killed run is gone once no
 process of its session is running, by `running` in `devtools/held_folders.py`:
 a process runs while its state is not Z, or is Z with other threads still
 running, which is how a process whose first thread has ended reads; such a
-process still holds its open files, and with them a held folder's lock.
-`FirstThreadEnded` in `tests/killed_runs.py` makes such a process for the
-tests of `held_folders`, `killed_runs`, `podman_service` and `terminals`. The
+process still holds its open files, and with them a held folder's lock. The
 test reads what the small tests made from reports written under another name
 and then renamed, only once a report is complete; it takes a path from a
 report only under the test's own `tmp_path`, itself a folder a removal may
@@ -866,8 +1072,8 @@ it can fail, and a positive control that keeps an empty input from passing.
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
   unprivileged port. It reads the Python files in `tests/`, `tests/container/` among them
   but for the files that run only inside a container of the suites' own, whose `/tmp` and
-  ports are that container's (`IN_CONTAINERS` in the test, each with its reason; the whole
-  stack's fixed ports, on its own network, are named exemptions), every Python module in
+  ports are that container's (`IN_CONTAINERS` in the test, each with its reason), every Python
+  module in
   `devtools/`, which the tests and
   the recorder run, and every TypeScript and JavaScript file in `frontend/`
   that git does not ignore, of the kinds `SOURCES` in `tests/typescript.py` names — the
@@ -934,7 +1140,7 @@ it can fail, and a positive control that keeps an empty input from passing.
   `make test-container` and `make benchmark`. The benchmark's part of that is
   read without make, from the Makefile's rules and pyproject's `addopts`, each pytest call's
   `-m` worked out for every set of the markers a test may carry: `make benchmark` runs the
-  `benchmark` tests, in one process, with `-s` and `RCMAN_REQUIRE_CONTAINER=1`, no other
+  `benchmark` tests, in one process, with `-s`, no other
   target's pytest call, nor a bare `pytest`, runs one, and no target makes `make benchmark`, as
   a prerequisite or with `$(MAKE)` in its recipe; the two other runs' split is read from
   what make ran. `make test-container` runs the `container` tests, with
@@ -944,12 +1150,9 @@ it can fail, and a positive control that keeps an empty input from passing.
   `-m` of pyproject's `addopts`; and every test that any target
   `.PHONY` names runs is under its tier's hang guard, as pytest-timeout itself works out
   each test's settings (see [The hang guard](#the-hang-guard)). `make lint` and
-  `make format` run ruff and the frontend's script of the same name, `make screenshot`
-  builds the frontend and runs `devtools/screenshots.py` with `PAGE` and `STATE`, and the
-  real `make lint`, run over a frontend file planted in a scratch tree, fails
-  when Biome would reformat it, when Biome finds a lint finding it reports as
-  an info, and when the frontend's packages are missing; it checks the
-  frontend's `index.html`, and fails on a lint finding there. Every rule Biome runs
+  `make format` run ruff and the frontend's script of the same name, and the
+  real `make lint`, run over a frontend file planted in a scratch tree, checks it
+  and fails when Biome would reformat it. Every rule Biome runs
   at info, as `biome rage` and `biome explain` report, is raised to a warning
   in `frontend/biome.jsonc`.
 - **Every make target is documented** (`tests/test_docs_guard.py`). This
@@ -965,9 +1168,9 @@ it can fail, and a positive control that keeps an empty input from passing.
   planted twin, and the real index is shown to be read.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
-  checks that every development-only file is marked `export-ignore`, that the
-  files a deployment needs are not, and — in a scratch repository — that
-  `git archive` really omits what the patterns mark.
+  checks that every development-only file is marked `export-ignore` and that the
+  files a deployment needs are not; a scratch repository whose `.gitattributes`
+  no longer marks a development folder is its planted twin.
 
 ## Screenshots
 
@@ -1056,7 +1259,7 @@ every path, a failure of its own included, and the wired command exits 0
 without running anything when the project folder has no
 `devtools/pre_test_commit.py`, as a checkout of an older branch has. Its git calls share one deadline,
 `DEADLINE` in the module, and the longest it can run, `LONGEST_RUN`, is
-inside the timeout the wiring gives it, which a test checks; `git add`,
+inside the timeout the wiring gives it; `git add`,
 `git commit` and `git push` stopped at the deadline are reported as such.
 Git runs with no terminal prompt, and ssh, unless configured otherwise, in
 batch mode. A failure is reported to the operator and to the agent; a commit

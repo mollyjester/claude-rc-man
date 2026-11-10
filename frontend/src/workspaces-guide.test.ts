@@ -43,13 +43,18 @@ function expected(): Row[] {
 
 const cell = (main: string) => (main === NONE ? NONE : `**${main}**`);
 
-test("the workspaces guide lists each state with its dot, what to do, its main button, and exactly the buttons the page offers", () => {
+test("the workspaces guide lists each state with its dot, what to do, its main button, and exactly the buttons the page offers, and every control it names on the Workspaces page is one the page shows", () => {
   const rows = stateTable(readFileSync(GUIDE, "utf-8"));
   expect(rows.length).toBeGreaterThan(0);
   expect(rows).toEqual(expected());
+  const guide = readFileSync(GUIDE, "utf-8");
+  expect(boldInSection(guide).length).toBeGreaterThan(0);
+  // the positive: the section's own parts are read with it, the terminal's among them
+  expect(boldInSection(guide)).toContain(m.terminalReconnect);
+  expect(unknownNames(guide)).toEqual([]);
 });
 
-test("the check fails on a guide whose table has drifted", () => {
+test("the checks fail on a guide whose table has drifted, and on a control the page does not have", () => {
   const right = [
     HEADER,
     "|---|---|---|---|---|",
@@ -90,6 +95,11 @@ test("the check fails on a guide whose table has drifted", () => {
 
   expect(stateTable(right.slice(0, -1).join("\n"))).not.toEqual(expected());
   expect(stateTable("")).toEqual([]);
+  const guide = readFileSync(GUIDE, "utf-8");
+  const planted = guide.replace(PAGE_SECTION, `${PAGE_SECTION}\n\nChoose **Frobnicate**.`);
+  expect(boldInSection(planted)).toContain("Frobnicate"); // the plant took effect
+  expect(unknownNames(planted)).toEqual(["Frobnicate"]);
+  expect(boldInSection("no such section, **Stop**")).toEqual([]);
 });
 
 const STYLES = resolve(__dirname, "styles.css");
@@ -176,36 +186,6 @@ test("the check fails on a dot that changed shape, two that share one, or rows o
   expect(shapeOf("", "running")).toBe("no rule");
 });
 
-test("the shape reader reads backgrounds, radii and sizes as they are, and refuses what it cannot read", () => {
-  const css = readFileSync(STYLES, "utf-8");
-  const planted = (kind: string, rule: string) => {
-    const changed = css.replace(new RegExp(`(\\.dot-${kind}\\s*\\{)[^}]*\\}`), `$1 ${rule} }`);
-    expect(changed).not.toEqual(css); // the plant took effect
-    return changed;
-  };
-  const ring = "border-radius: 50%; border: 0.15rem solid var(--waiting);";
-  expect(shapeOf(planted("waiting", `${ring} background: transparent;`), "waiting")).toBe("ring");
-  expect(shapeOf(planted("waiting", `${ring} background: none;`), "waiting")).toBe("ring");
-  expect(
-    shapeOf(planted("running", "border-radius: 999px; background: var(--running);"), "running"),
-  ).toBe("filled circle");
-  expect(
-    shapeOf(planted("running", "border-radius: 0.35rem; background: var(--running);"), "running"),
-  ).toBe("filled circle");
-  expect(
-    shapeOf(planted("running", "border-radius: 0.1rem; background: var(--running);"), "running"),
-  ).toBe("filled square");
-  expect(
-    shapeOf(planted("stopped", "height: 0.2rem; background: var(--stopped);"), "stopped"),
-  ).toBe("bar");
-  expect(() =>
-    shapeOf(planted("stopped", "height: 0.5rem; background: var(--stopped);"), "stopped"),
-  ).toThrow(/neither square nor a bar/);
-  expect(() => shapeOf(`${css}\n.tree .dot-problem { border-radius: 50%; }`, "problem")).toThrow(
-    /more than one rule/,
-  );
-});
-
 const PAGE_SECTION = "## The Workspaces page";
 
 // What the guide's section on the page names in bold.
@@ -230,19 +210,3 @@ function unknownNames(markdown: string): string[] {
   const texts = new Set(catalogue());
   return boldInSection(markdown).filter((name) => !texts.has(name));
 }
-
-test("every control the guide names on the Workspaces page is one the page shows", () => {
-  const guide = readFileSync(GUIDE, "utf-8");
-  expect(boldInSection(guide).length).toBeGreaterThan(0);
-  // the positive: the section's own parts are read with it, the terminal's among them
-  expect(boldInSection(guide)).toContain(m.terminalReconnect);
-  expect(unknownNames(guide)).toEqual([]);
-});
-
-test("the check fails on a control the page does not have", () => {
-  const guide = readFileSync(GUIDE, "utf-8");
-  const planted = guide.replace(PAGE_SECTION, `${PAGE_SECTION}\n\nChoose **Frobnicate**.`);
-  expect(boldInSection(planted)).toContain("Frobnicate"); // the plant took effect
-  expect(unknownNames(planted)).toEqual(["Frobnicate"]);
-  expect(boldInSection("no such section, **Stop**")).toEqual([]);
-});

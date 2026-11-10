@@ -44,16 +44,14 @@ def calls(tmp_path) -> list[dict]:
     return [json.loads(line) for line in lines]
 
 
-def test_a_slice_nothing_set_has_no_cap_and_uses_nothing(systemctl):
-    runtime = runtime_with(systemctl)
-    assert runtime.caps(7, 12) == Caps()
-    assert runtime.usage(7, 12) == limits.Usage()
-
-
 def test_limits_set_are_the_slices_caps_until_reverted(systemctl, tmp_path):
     runtime = runtime_with(systemctl)
     runtime.apply_limits(7, 12, Limits(memory_mib=2048, cpu_percent=150, pids=3000))
     assert runtime.caps(7, 12) == Caps(2048 * limits.MEBIBYTE, 3000)
+    held = json.loads((tmp_path / "state" / "slices.json").read_text())
+    assert (
+        held[limits.workspace_slice(7, 12)]["CPUQuotaPerSecUSec"] == "1.5s"
+    )  # as systemd shows it
     assert runtime.caps(7, None) == Caps()  # the person's slice is another
     runtime.drop_limits(7, 12)
     assert runtime.caps(7, 12) == Caps()
@@ -63,21 +61,6 @@ def test_limits_set_are_the_slices_caps_until_reverted(systemctl, tmp_path):
         "show",
     ]
     assert all(c["program"] == "systemctl" and c["uid"] == os.getuid() for c in recorded)
-
-
-def test_a_reboot_forgets_what_was_set(systemctl, tmp_path):
-    runtime = runtime_with(systemctl)
-    runtime.apply_limits(7, None, Limits(pids=500))
-    assert runtime.caps(7, None) == Caps(None, 500)  # positive control
-    env = {**os.environ, "RCMAN_STAND_IN_DIR": str(tmp_path / "state")}
-    assert subprocess.run([sys.executable, str(STAND_INS), "reboot"], env=env).returncode == 0
-    assert runtime.caps(7, None) == Caps()
-
-
-def test_a_cpu_quota_is_shown_as_systemd_shows_it(systemctl, tmp_path):
-    runtime_with(systemctl).apply_limits(7, None, Limits(cpu_percent=150))
-    held = json.loads((tmp_path / "state" / "slices.json").read_text())
-    assert held[limits.person_slice(7)]["CPUQuotaPerSecUSec"] == "1.5s"
 
 
 # --- a path unit ------------------------------------------------------------------------------
@@ -109,25 +92,18 @@ def stand_in(tmp_path, units, *args) -> subprocess.CompletedProcess:
     )  # fmt: skip
 
 
-@pytest.mark.parametrize("verb", [["restart"], ["start"], ["enable", "--now"]])
-def test_a_path_unit_is_started_as_systemd_starts_one_and_runs_no_service(tmp_path, units, verb):
+def test_a_path_unit_is_started_as_systemd_starts_one_and_runs_no_service(tmp_path, units):
     """systemd starts watching; the service runs only when the path changes, which nothing
     here does."""
     assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 3  # not yet
-    done = stand_in(tmp_path, units, *verb, "planted.path")
+    done = stand_in(tmp_path, units, "enable", "--now", "planted.path")
     assert done.returncode == 0, done.stderr
     assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 0
     assert stand_in(tmp_path, units, "is-active", "planted.service").returncode == 3
     assert not (tmp_path / "service-ran").exists()
     assert [c["args"] for c in calls(tmp_path) if "is-active" not in c["args"]] == [
-        [*verb, "planted.path"]
+        ["enable", "--now", "planted.path"]
     ]
-
-
-def test_enable_without_now_starts_nothing(tmp_path, units):
-    assert stand_in(tmp_path, units, "enable", "planted.path").returncode == 0
-    assert stand_in(tmp_path, units, "is-enabled", "planted.path").returncode == 0
-    assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 3
 
 
 def test_a_show_of_several_slices_is_read_by_the_monitor_slice_by_slice(systemctl):

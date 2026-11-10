@@ -39,13 +39,10 @@ function unknownNames(markdown: string): string[] {
 // The names the guide should give in bold and does not.
 const missingNames = (markdown: string) => NAMED.filter((name) => !names(markdown).includes(name));
 
-test("every name the Claude Code versions guide gives in bold is text the interface shows", () => {
+test("every name the Claude Code versions guide gives in bold is text the interface shows, and it names the page and the controls that roll a version out and mark one as failed", () => {
   const guide = readFileSync(GUIDE, "utf-8");
   expect(names(guide).length).toBeGreaterThan(0); // positive control: the guide was read
   expect(unknownNames(guide)).toEqual([]);
-});
-
-test("the guide names the page and the controls that roll a version out and mark one as failed", () => {
   expect(missingNames(readFileSync(GUIDE, "utf-8"))).toEqual([]);
 });
 

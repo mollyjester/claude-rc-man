@@ -58,10 +58,3 @@ def workspace(client):
 def test_what_is_typed_reaches_the_shell_and_comes_back(client, workspace):
     with opened(client, ALICE, workspace["id"]) as peer:
         peer.ask("echo $((6*7))", rb"[\r\n]42\r\n")
-
-
-def its_exec_runs(now: list[str], before: list[str]) -> bool:
-    """Whether a terminal opened since ``before`` was read has its exec running ``now``: an exec
-    not in ``before``. Not a count: the exec of a terminal still ending when ``before`` was read
-    may be gone by ``now``."""
-    return bool(set(now) - set(before))

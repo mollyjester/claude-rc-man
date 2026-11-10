@@ -23,13 +23,10 @@ const NAMED = [
 ];
 const missingNames = (markdown: string) => missing(NAMED, markdown);
 
-test("every name the Monitor guide gives in bold is text the page shows", () => {
+test("every name the Monitor guide gives in bold is text the page shows, and it names the page, its parts, its rounds and where its settings are", () => {
   const guide = readFileSync(GUIDE, "utf-8");
   expect(names(guide).length).toBeGreaterThan(0); // positive control: the guide was read
   expect(unknownNames(guide)).toEqual([]);
-});
-
-test("the guide names the page, its parts, its rounds and where its settings are", () => {
   expect(missingNames(readFileSync(GUIDE, "utf-8"))).toEqual([]);
 });
 

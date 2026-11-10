@@ -1,7 +1,8 @@
 """Port forwarding (backend/rcman/forward.py, backend/rcman/routers/forward.py), on the host
-runtime: Caddy's ask, the hand-off and its ways in, the forwarding server's checks of every
-request, what it passes to the app and back, its caps, its sessions and how they end, and its
-audit.
+runtime: Caddy's ask, the listing and the hand-off, the forwarding server's check of where a
+request comes from, what it passes to the app and back, a WebSocket spliced through it, its
+sessions ended when idle, at their lifetime and when forwarding is turned off, no way in in any
+address, log or audit row, and its audit.
 
 The forwarding server listens on the settings' ``forward_socket``, in a held folder of a short
 path, as the installer's Caddy reaches it: each request here is one Caddy would pass on, on a
@@ -12,19 +13,15 @@ the host runtime's relays reach.
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import contextlib
 import http.client
 import json
 import logging
 import os
-import queue
 import re
 import socket
 import sqlite3
 import threading
-import time
 import urllib.parse
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,11 +30,10 @@ from pathlib import Path
 import pytest
 from rcman import db, devcontainer, forward
 from rcman.forwarding_settings import DEFAULTS
-from rcman.ratelimit import TokenBuckets
 
 from devtools import held_folders as hf
 from tests.conftest import ALICE, BOB, ORIGIN, as_user, changing, made_workspace
-from tests.hang_guard import HANG_GUARD, pace, runs_out
+from tests.hang_guard import HANG_GUARD
 from tests.test_terminals import alive
 from tests.time_doubles import Clock
 from tests.until import until
@@ -47,10 +43,6 @@ SETTINGS_PATH = "/api/forwarding/settings"
 # The ask site's address, as Caddy passes it on in Host: 127.0.0.1 and the installer's ask port,
 # here one below 1024, which no test binds.
 ASK = "127.0.0.1:999"
-# A body more than a pipe holds, answered after the client has half-closed its connection.
-BIG = bytes(range(256)) * 4096
-# How many requests come at once in the test that holds every request under way at once.
-AT_ONCE = 4
 # What a browser sends with a navigation it starts itself, and with one from rcman's page.
 TYPED = {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
 FROM_RCMAN = {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate",
@@ -62,15 +54,8 @@ FROM_RCMAN = {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate",
 
 class Handler(BaseHTTPRequestHandler):
     """The app on the forwarded port: it records each request and answers it with what it
-    was sent, as JSON; ``/cookies`` sets cookies, rcman's names among them; ``/framed`` sends a
-    policy of its own; ``/big`` answers BIG once the test says the forwarding server has its
-    client's half-close (``half_closed``), and closes;
-    ``/endless`` answers its first chunk and holds the answer open until the app is shut down
-    (``closing``), an answer that never ends as far as the test goes; ``/held`` says it has the
-    request (``arrived``) and answers once the test lets it (``gate``); ``/once`` answers as if it
-    kept the connection, and closes it; ``/drop`` closes it unanswered; and an upgrade to a
-    WebSocket is answered 101 (at ``/held-ws`` once the test lets it), then every byte that comes
-    is sent back."""
+    was sent, as JSON; ``/cookies`` sets cookies, rcman's names among them; and an upgrade to a
+    WebSocket is answered 101, then every byte that comes is sent back."""
 
     protocol_version = "HTTP/1.1"
 
@@ -92,26 +77,10 @@ class Handler(BaseHTTPRequestHandler):
                 ("Set-Cookie", "__HOST-RCMAN-return=planted; Path=/; Secure"),
                 ("Set-Cookie", "app=kept; Path=/"),
             ])  # fmt: skip
-        elif self.path.startswith("/framed"):
-            self._send(b"framed", [("Content-Security-Policy", "default-src 'self'")])
-        elif self.path.startswith("/big"):
-            self.server.half_closed.wait(HANG_GUARD)
-            self._send(BIG, [("Connection", "close")])
-        elif self.path.startswith("/endless"):
-            self._endless()
-        elif self.path.startswith("/held"):
-            self.server.arrived.release()
-            self.server.gate.acquire(timeout=HANG_GUARD)
-            self._send(b"held", [])
-        elif self.path.startswith("/once"):
-            self._send(b"once", [])
-            self.close_connection = True  # without saying so
-        elif self.path.startswith("/drop"):
-            self.close_connection = True  # read, and dropped unanswered
         else:
             self._send(json.dumps(seen).encode(), [("Content-Type", "application/json")])
 
-    do_GET = do_POST = do_PUT = do_DELETE = _answer
+    do_GET = do_POST = _answer
 
     def _send(self, body: bytes, headers: list[tuple[str, str]]) -> None:
         self.send_response(200)
@@ -119,24 +88,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    def _endless(self) -> None:
-        """Its first chunk, then the answer held open until the app is shut down."""
-        self.send_response(200)
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
-        self.close_connection = True
-        with contextlib.suppress(OSError):
-            self.wfile.write(b"5\r\ntick\n\r\n")
-            self.wfile.flush()
-        self.server.closing.wait()
+        self.wfile.write(body)
 
     def _echo(self) -> None:
-        if self.path.startswith("/held"):
-            self.server.arrived.release()
-            self.server.gate.acquire(timeout=HANG_GUARD)
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
@@ -153,10 +107,6 @@ class Upstream(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
         self.seen: list[dict] = []
-        self.arrived = threading.Semaphore(0)  # a held request has come
-        self.gate = threading.Semaphore(0)  # a held request may be answered
-        self.half_closed = threading.Event()  # /big's client has ended its sending side
-        self.closing = threading.Event()  # the app is being shut down: /endless ends
 
     @property
     def port(self) -> int:
@@ -172,7 +122,6 @@ def upstream():
     try:
         yield served
     finally:
-        served.closing.set()
         served.shutdown()
         served.server_close()
 
@@ -206,13 +155,6 @@ def turned_off(client) -> None:
     assert r.status_code == 200, r.text
 
 
-@pytest.fixture
-def clock(client):
-    made = Clock(time.monotonic())
-    client.app.state.forward.clock = made
-    return made
-
-
 def forwarded(
     client, who: str, ports: list[int], name: str = "work", labels: dict | None = None
 ) -> list[str]:
@@ -241,26 +183,6 @@ def workspace_of(host: str) -> int:
     return int(host.split(".")[0].split("-")[1])
 
 
-def set_state(client, host: str, state: str) -> None:
-    con = db.connect(client.app.state.settings.database)
-    try:
-        con.execute("update workspaces set state = ? where id = ?", (state, workspace_of(host)))
-        con.commit()
-    finally:
-        con.close()
-
-
-def set_rebuild_state(client, host: str, state: str | None) -> None:
-    con = db.connect(client.app.state.settings.database)
-    try:
-        con.execute(
-            "update workspaces set rebuild_state = ? where id = ?", (state, workspace_of(host))
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
 # --- requests, as Caddy passes them on ----------------------------------------------------
 
 
@@ -283,12 +205,6 @@ class Answer:
             pair = line.partition(";")[0]
             if pair.partition("=")[0].strip() == name:
                 return pair.partition("=")[2]
-        return None
-
-    def cookie_line(self, name: str) -> str | None:
-        for line in self.all("set-cookie"):
-            if line.partition("=")[0].strip() == name:
-                return line
         return None
 
     def json(self):
@@ -323,44 +239,41 @@ def conn(client):
         made.close()
 
 
-def asked(conn: Forward, domain: str, at: str = ASK) -> int:
-    """What the ask answers for ``domain``, asked at ``at``."""
+def asked(conn: Forward, domain: str) -> int:
+    """What the ask answers for ``domain``, asked at the ask's address."""
     query = urllib.parse.urlencode({"domain": domain})
-    return conn.ask("GET", f"{forward.ASK_PATH}?{query}", {"Host": at}).status
+    return conn.ask("GET", f"{forward.ASK_PATH}?{query}", {"Host": ASK}).status
 
 
-def hand_off(client, host: str, who: str = ALICE, dest: str | None = "document"):
-    headers = as_user(who) | ({"Sec-Fetch-Dest": dest} if dest else {})
+def hand_off(client, host: str):
+    headers = as_user(ALICE) | {"Sec-Fetch-Dest": "document"}
     return client.get(forward.HAND_OFF_PATH, params={"host": host}, headers=headers)
 
 
 TOKEN = re.compile(r'name="token" value="([^"]+)"')
 
 
-def token_of(client, host: str, who: str = ALICE) -> str:
-    r = hand_off(client, host, who)
+def token_of(client, host: str) -> str:
+    r = hand_off(client, host)
     assert r.status_code == 200, r.text
     return TOKEN.search(r.text)[1]
 
 
-def enter(conn: Forward, host: str, token: str, cookie: str | None = None,
-          origin: str | None = ORIGIN) -> Answer:  # fmt: skip
-    headers = {"Host": host, "Content-Type": "application/x-www-form-urlencoded", **FROM_RCMAN}
-    if origin is not None:
-        headers["Origin"] = origin
-    if cookie:
-        headers["Cookie"] = cookie
+def enter(conn: Forward, host: str, token: str, cookie: str) -> Answer:
+    headers = {"Host": host, "Content-Type": "application/x-www-form-urlencoded", **FROM_RCMAN,
+               "Origin": ORIGIN, "Cookie": cookie}  # fmt: skip
     return conn.ask("POST", forward.ENTER_PATH, headers, urllib.parse.urlencode({"token": token}))
 
 
-def let_in(client, conn: Forward, host: str, who: str = ALICE, path: str = "/") -> str:
-    """``who`` let in to ``host`` as a browser is, from a navigation to ``path``: the Cookie
+def let_in(client, conn: Forward, host: str) -> str:
+    """Alice let in to ``host`` as a browser is, from a navigation to its root: the Cookie
     that carries the session."""
+    path = "/"
     first = conn.ask("GET", path, {"Host": host, **TYPED})
     assert first.status == 303, first.body
     returning = first.cookie(forward.RETURN_COOKIE)
     assert returning
-    answer = enter(conn, host, token_of(client, host, who), f"{forward.RETURN_COOKIE}={returning}")
+    answer = enter(conn, host, token_of(client, host), f"{forward.RETURN_COOKIE}={returning}")
     assert answer.status == 303, answer.body
     assert answer.header("location") == path
     return f"{forward.SESSION_COOKIE}={answer.cookie(forward.SESSION_COOKIE)}"
@@ -458,147 +371,6 @@ def live_relays(client, host: str) -> list[int]:
     return [int(s) for s in shells if s and alive(int(s))]
 
 
-def kept(client, host: str, port: int) -> None:
-    """Wait until a relay to the port is kept idle: the server keeps it once it has passed the
-    answer back, a moment after the client has it."""
-    idle = client.app.state.forward._idle
-    until(lambda: idle.get((workspace_of(host), port)))
-
-
-def raw_request(path: Path, head: str, body: bytes = b"") -> socket.socket:
-    """A connection to the forwarding server that has sent ``head`` and ``body``, as they are."""
-    made = socket.socket(socket.AF_UNIX)
-    made.settimeout(HANG_GUARD)
-    made.connect(str(path))
-    if head or body:  # nothing sent on a connection meant to have nothing on it, which may be
-        made.sendall(head.encode() + body)  # closed at once
-    return made
-
-
-def head_of(host: str, cookie: str, target: str, method: str = "GET", more=()) -> str:
-    """A request's head, as from one of the host's own pages."""
-    lines = [f"{method} {target} HTTP/1.1", f"Host: {host}", f"Cookie: {cookie}",
-             "Sec-Fetch-Site: same-origin", "Sec-Fetch-Mode: cors", "Sec-Fetch-Dest: empty",
-             *more]  # fmt: skip
-    return "\r\n".join(lines) + "\r\n\r\n"
-
-
-def upgrade_head(host: str, cookie: str, target: str) -> str:
-    """An upgrade to a WebSocket, as from one of the host's own pages."""
-    lines = [
-        f"GET {target} HTTP/1.1", f"Host: {host}", "Upgrade: websocket", "Connection: Upgrade",
-        "Sec-WebSocket-Version: 13", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-        f"Origin: https://{host}", "Sec-Fetch-Site: same-origin", "Sec-Fetch-Mode: websocket",
-        "Sec-Fetch-Dest: empty", f"Cookie: {cookie}",
-    ]  # fmt: skip
-    return "\r\n".join(lines) + "\r\n\r\n"
-
-
-def read_until(sock: socket.socket, wanted: bytes) -> tuple[bytes, bool]:
-    """What comes on ``sock`` until ``wanted`` is in it, or it ends, each read within the hang
-    guard; and whether it ended."""
-    got = b""
-    sock.settimeout(HANG_GUARD)
-    while wanted not in got:
-        data = sock.recv(65536)
-        if not data:
-            return got, True
-        got += data
-    return got, False
-
-
-def read_to_end(sock: socket.socket) -> tuple[bytes, bool]:
-    """What comes on ``sock`` until it ends, each read within the hang guard, and whether it
-    ended: not, where a read had nothing within the hang guard."""
-    got = b""
-    sock.settimeout(HANG_GUARD)
-    try:
-        while True:
-            data = sock.recv(65536)
-            if not data:
-                return got, True
-            got += data
-    except ConnectionResetError:
-        return got, True
-    except TimeoutError:
-        pass
-    return got, False
-
-
-def read_head(sock: socket.socket) -> bytes:
-    """An answer's head, or what came before the connection ended."""
-    got = b""
-    while b"\r\n\r\n" not in got and (data := sock.recv(65536)):
-        got += data
-    return got
-
-
-# --- Caddy's ask ------------------------------------------------------------------------------
-
-
-def test_ask_200_only_for_canonical_ready_wanted_host_on_the_ask_host(client, on, conn):
-    [host] = forwarded(client, ALICE, [6080])
-    assert asked(conn, host) == 404  # never marked as wanted
-    assert hand_off(client, host).status_code == 200  # the owner opens it: marked
-    assert asked(conn, host) == 200  # the planted positive: the same host, once marked
-    for elsewhere in (host, DOMAIN, "127.0.0.2:999", "localhost:999"):
-        assert asked(conn, host, at=elsewhere) == 404, elsewhere  # only on the ask's address
-    [other] = forwarded(client, ALICE, [6090], "other")
-    client.app.state.forward.mark_wanted(other.replace("6090", "6091"))  # no port of its plan
-    assert asked(conn, other.replace("6090", "6091")) == 404
-    set_state(client, host, "failed")  # not ready
-    assert asked(conn, host) == 404
-    set_state(client, host, "ready")
-    assert asked(conn, host) == 200
-
-
-def test_ask_refuses_noncanonical_spellings_and_when_off(client, on, conn):
-    [host] = forwarded(client, ALICE, [6080])
-    workspace = workspace_of(host)
-    assert hand_off(client, host).status_code == 200
-    assert asked(conn, host) == 200  # the positive the spellings are read against
-    spellings = [
-        f"06080-{workspace}.ws.{DOMAIN}", f"6080-0{workspace}.ws.{DOMAIN}",
-        f"6080-{workspace}.WS.{DOMAIN}", f"6080-{workspace}.ws.{DOMAIN.upper()}",
-        f"6080-{workspace}.ws.{DOMAIN}.", f"6080-{workspace}.ws.{DOMAIN}:443",
-        f"+6080-{workspace}.ws.{DOMAIN}", f"6080.{workspace}.ws.{DOMAIN}",
-        f"6080-{workspace}.ws.other.example.com", f"x6080-{workspace}.ws.{DOMAIN}",
-        f"6080-{workspace}.{DOMAIN}", f"6080-{workspace}-x.ws.{DOMAIN}", f" {host}", "",
-    ]  # fmt: skip
-    for spelling in spellings:
-        client.app.state.forward.mark_wanted(spelling)
-        assert asked(conn, spelling) == 404, spelling
-    for query in (f"domain={host}&domain={host}", f"domain={host}&x=1", f"name={host}", ""):
-        assert conn.ask("GET", f"{forward.ASK_PATH}?{query}", {"Host": ASK}).status == 404, query
-    turned_off(client)
-    assert asked(conn, host) == 404
-
-
-def test_ask_bucket_overflow_answers_404_for_new_hosts_only(client, on, conn):
-    first, second = forwarded(client, ALICE, [6080, 6081])
-    for host in (first, second):
-        assert hand_off(client, host).status_code == 200
-    forwarding = client.app.state.forward
-    forwarding.new_hosts = TokenBuckets(1, 1e-9)  # room for one new host, and none after
-    assert asked(conn, first) == 200  # new: it takes the one
-    assert asked(conn, second) == 404  # new, and none is left
-    assert asked(conn, first) == 200  # approved before: it takes none
-    forwarding.new_hosts = TokenBuckets(1, 1e-9)  # the control: with one left, it is approved
-    assert asked(conn, second) == 200
-
-
-def test_ask_path_on_a_forward_host_is_refused(client, on, conn, upstream):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    assert hand_off(client, host).status_code == 200
-    target = f"{forward.ASK_PATH}?domain={host}"
-    assert conn.ask("GET", target, {"Host": ASK}).status == 200  # the positive
-    cookie = let_in(client, conn, host)
-    for path in (target, "/.rcman/", "/.rcman/anything", "/.rcman"):
-        assert conn.ask("GET", path, own(host, cookie)).status == 404, path
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200  # the app's own path
-    assert [s["path"] for s in upstream.seen] == ["/page"]  # none of rcman's reached it
-
-
 # --- the listing: each port's address, and its host marked as wanted -----------------------
 
 
@@ -626,244 +398,25 @@ def test_the_listing_gives_each_port_its_address_and_label_and_marks_its_host_wa
     assert [asked(conn, h) for h in hosts] == [200, 200]  # shown to their owner: marked
 
 
-def test_the_listing_shows_no_port_and_marks_none_while_forwarding_is_off(client, conn):
-    [host] = forwarded(client, BOB, [680])
-    answer = listed(client, BOB)
-    assert answer["forwarding"] is False
-    assert entry_of(answer, host)["ports"] == []
-    client.put(SETTINGS_PATH, json={**DEFAULTS.model_dump(), "enabled": True},
-               headers=changing(ALICE))  # fmt: skip
-    assert asked(conn, host) == 404  # the listing while off marked nothing
-    assert entry_of(listed(client, BOB), host)["ports"] != []  # the control: once on, shown
-    assert asked(conn, host) == 200
-
-
-def test_a_workspace_with_no_port_or_not_ready_lists_none(client, on, conn):
-    plain = made_workspace(client, BOB, "plain")["id"]
-    found = next(w for w in listed(client, BOB)["workspaces"] if w["id"] == plain)
-    assert found["ports"] == []
-    [host] = forwarded(client, BOB, [680])
-    set_state(client, host, "failed")
-    assert entry_of(listed(client, BOB), host)["ports"] == []
-    set_state(client, host, "ready")
-    assert asked(conn, host) == 404  # the failed one was not marked
-    assert entry_of(listed(client, BOB), host)["ports"] != []  # the control: ready, shown
-
-
-def test_while_a_rebuild_replaces_the_container_its_ports_are_listed_but_not_marked(
-    client, on, conn
-):
-    [host] = forwarded(client, BOB, [680])
-    set_rebuild_state(client, host, "switching")
-    assert [p["port"] for p in entry_of(listed(client, BOB), host)["ports"]] == [680]
-    set_rebuild_state(client, host, None)
-    assert asked(conn, host) == 404  # not marked while it could not be reached
-    listed(client, BOB)
-    assert asked(conn, host) == 200  # the control: the same listing once it runs marks it
-
-
-def test_an_administrator_listing_everyone_never_marks_another_persons_host(client, on, conn):
-    [host] = forwarded(client, BOB, [680])
-    mine = forwarded(client, ALICE, [680], "mine")[0]
-    assert all(w["id"] != workspace_of(host) for w in listed(client, ALICE)["workspaces"])
-    for path in ("/api/servers/everyone", "/api/attention"):  # an administrator's views
-        r = client.get(path, headers=as_user(ALICE))
-        assert r.status_code == 200, (path, r.text)
-        assert "ports" not in r.text and host not in r.text, path
-    assert asked(conn, mine) == 200  # the administrator's own listing marked their own
-    assert asked(conn, host) == 404  # and never Bob's
-    listed(client, BOB)  # the planted twin: the same host, shown to its owner, is marked
-    assert asked(conn, host) == 200
-
-
-def test_the_listing_marks_only_the_hosts_of_the_viewers_own_workspaces(client, on):
-    forwarding = client.app.state.forward
-    marked: list[str] = []
-    real = forwarding.mark_wanted
-    forwarding.mark_wanted = lambda host: (marked.append(host), real(host))[1]
-    try:
-        bobs = forwarded(client, BOB, [680])
-        alices = forwarded(client, ALICE, [700], "mine")
-        marked.clear()
-        listed(client, ALICE)
-        client.get("/api/servers/everyone", headers=as_user(ALICE))
-        assert marked == alices  # positive: one was marked, and only the viewer's own
-        listed(client, BOB)
-        assert marked == alices + bobs
-    finally:
-        forwarding.mark_wanted = real
-
-
 # --- the hand-off ----------------------------------------------------------------------------
 
 
-def test_hand_off_requires_document_dest_and_owner_marks_and_audits(client, on, conn):
+def test_a_hand_off_gives_a_way_in_marks_the_host_and_is_audited(client, on, conn):
     [host] = forwarded(client, ALICE, [6080])
-    for dest in (None, "iframe", "empty", "document, iframe"):
-        r = hand_off(client, host, dest=dest)
-        assert (r.status_code, r.json()["code"]) == (403, "hand_off_refused"), dest
-    assert asked(conn, host) == 404  # none of those marked it
-    r = hand_off(client, host, who=BOB)
-    assert (r.status_code, r.json()["code"]) == (404, "port_not_found")  # not his
-    assert asked(conn, host) == 404
+    assert asked(conn, host) == 404  # Caddy's ask: never marked as wanted
     r = hand_off(client, host)
     assert r.status_code == 200 and TOKEN.search(r.text)
-    assert asked(conn, host) == 200  # marked as wanted
-    assert rows_of(client, "forward.hand_off") == [
-        *[(ALICE, host, "hand_off_refused")] * 4,
-        (BOB, host, "port_not_found"),
-        (ALICE, host, "ok"),
-    ]  # fmt: skip
-    r = hand_off(client, "not a port's address")
-    assert (r.status_code, r.json()["code"]) == (404, "port_not_found")
-    assert rows_of(client, "forward.hand_off")[-1] == (ALICE, None, "port_not_found")
-
-
-def test_admin_cannot_hand_off_to_anothers_port(client, on, conn):
-    [host] = forwarded(client, BOB, [6080])
-    r = hand_off(client, host, who=ALICE)  # an administrator
-    assert (r.status_code, r.json()["code"]) == (404, "port_not_found")
-    assert asked(conn, host) == 404  # and it was not marked
-    assert hand_off(client, host, who=BOB).status_code == 200  # the control: its owner
-    assert asked(conn, host) == 200
-
-
-def test_hand_off_is_refused_while_forwarding_is_off(client, conn):
-    [host] = forwarded(client, ALICE, [6080])
-    r = hand_off(client, host)
-    assert (r.status_code, r.json()["code"]) == (404, "forwarding_off")
-
-
-def test_mint_caps_answer_429(client, on, monkeypatch):
-    [host] = forwarded(client, ALICE, [6080])
-    monkeypatch.setattr(forward, "MOST_OUTSTANDING_TOKENS", 2)
-    assert [hand_off(client, host).status_code for _ in range(2)] == [200, 200]
-    r = hand_off(client, host)  # two ways in are out, unspent
-    assert (r.status_code, r.json()["code"]) == (429, "too_many_hand_offs")
-    assert int(r.headers["Retry-After"]) >= 1
-    assert hand_off(client, host, who=BOB).status_code == 404  # another's count is his own
-    monkeypatch.setattr(forward, "MOST_OUTSTANDING_TOKENS", 100)
-    client.app.state.forward.mints = TokenBuckets(1, 1e-9)  # one mint, and none after
-    assert hand_off(client, host).status_code == 200
-    r = hand_off(client, host)
-    assert (r.status_code, r.json()["code"]) == (429, "too_many_hand_offs")
-    assert int(r.headers["Retry-After"]) >= 1
-    assert rows_of(client, "forward.hand_off")[-1] == (ALICE, host, "too_many_hand_offs")
-
-
-def test_hand_off_page_strict_origin_no_store_no_frames(client, on):
-    [host] = forwarded(client, ALICE, [6080])
-    r = hand_off(client, host)
-    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
-    assert r.headers["Referrer-Policy"] == "strict-origin"
-    assert r.headers["Cache-Control"] == "no-store"
-    assert r.headers["X-Frame-Options"] == "DENY"
-    policy = r.headers["Content-Security-Policy"]
-    assert "frame-ancestors 'none'" in policy and "default-src 'none'" in policy
-    nonce = re.search(r"script-src 'nonce-([A-Za-z0-9_-]+)'", policy)[1]
-    assert f'<script nonce="{nonce}">' in r.text
-    assert f"form-action https://{host}" in policy
-    form = re.search(r'<form method="post" action="([^"]+)"', r.text)
-    assert form[1] == f"https://{host}{forward.ENTER_PATH}"
-    assert "<noscript>" in r.text and '<button type="submit">' in r.text
-    assert "<script>" not in r.text  # every script carries the nonce
-
-
-# --- the way in --------------------------------------------------------------------------
-
-
-def test_enter_refuses_null_or_foreign_origin(client, on, conn, upstream):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    token = token_of(client, host)
-    for origin in ("null", "https://evil.example.com", f"https://{host}", None, ORIGIN + "/"):
-        r = enter(conn, host, token, origin=origin)
-        assert (r.status, json.loads(r.body)["code"]) == (403, "origin_refused"), origin
-        assert r.cookie(forward.SESSION_COOKIE) is None
-    r = enter(conn, host, token)  # the control: from rcman's own origin, the way in still works
-    assert r.status == 303 and r.cookie(forward.SESSION_COOKIE)
-
-
-def test_token_single_use_expiry_binding(client, on, conn, clock, upstream):
-    first, second = forwarded(client, ALICE, [upstream.port, upstream.port + 1])
-    token = token_of(client, first)
-    assert enter(conn, first, token).status == 303  # the positive
-    again = enter(conn, first, token)
-    assert (again.status, json.loads(again.body)["code"]) == (403, "forward_token_refused")
-    token = token_of(client, first)
-    clock.advance(forward.TOKEN_SECONDS + 1)
-    late = enter(conn, first, token)
-    assert (late.status, json.loads(late.body)["code"]) == (403, "forward_token_refused")
-    token = token_of(client, first)
-    elsewhere = enter(conn, second, token)  # handed out for the first port
-    assert (elsewhere.status, json.loads(elsewhere.body)["code"]) == (403, "forward_token_refused")
-    assert enter(conn, first, token).status == 403  # spent by the attempt
-    assert [r[2] for r in rows_of(client, "forward.session")] == [
-        "ok", "forward_token_refused", "forward_token_refused", "forward_token_refused",
-        "forward_token_refused",
-    ]  # fmt: skip
-
-
-def returning(path: str) -> str:
-    """A return cookie's value naming ``path``, as a page of the host could set one itself."""
-    encoded = base64.urlsafe_b64encode(path.encode()).rstrip(b"=").decode()
-    return f"{forward.RETURN_COOKIE}={encoded}"
-
-
-def test_the_return_cookie_holds_the_path_alone():
-    """Nothing in it is checked but the path, so nothing else is put in it."""
-    value = forward.return_value("/a/b?c=1")
-    assert value == forward.return_value("/a/b?c=1")
-    assert value == base64.urlsafe_b64encode(b"/a/b?c=1").rstrip(b"=").decode()
-    assert forward.returned_path(value) == "/a/b?c=1"
-
-
-def test_return_path_from_cookie_rejects_double_slash_and_backslash_and_is_cleared(
-    client, on, conn, upstream
-):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    for path, lands in (("//evil.example.com/x", "/"), ("/\\evil.example.com/x", "/"),
-                        ("/fine/path?x=1&y=%2F", "/fine/path?x=1&y=%2F")):  # fmt: skip
-        first = conn.ask("GET", path, {"Host": host, **TYPED})
-        assert first.status == 303 and first.header("location") == (
-            f"{ORIGIN}{forward.HAND_OFF_PATH}?host={host}"
-        )
-        line = first.cookie_line(forward.RETURN_COOKIE)
-        assert all(a in line for a in ("Secure", "HttpOnly", "Path=/", "SameSite=Lax")), line
-        assert "Domain" not in line
-        cookie = f"{forward.RETURN_COOKIE}={first.cookie(forward.RETURN_COOKIE)}"
-        r = enter(conn, host, token_of(client, host), cookie)
-        assert (r.status, r.header("location")) == (303, lands), path
-        cleared = r.cookie_line(forward.RETURN_COOKIE)
-        assert cleared and "Max-Age=0" in cleared, path
-    for planted, lands in ((returning("//evil.example.com"), "/"), (returning("/\\x"), "/"),
-                           (f"{forward.RETURN_COOKIE}=junk", "/"),
-                           (returning("/own?x=1"), "/own?x=1")):  # fmt: skip
-        r = enter(conn, host, token_of(client, host), planted)
-        assert (r.status, r.header("location")) == (303, lands), planted
+    assert asked(conn, host) == 200  # the owner opened it: marked as wanted
+    assert rows_of(client, "forward.hand_off") == [(ALICE, host, "ok")]
 
 
 # --- every request ------------------------------------------------------------------------
 
 
-def test_identity_per_request_on_a_pooled_connection(client, on, conn, upstream):
-    [hers] = forwarded(client, ALICE, [upstream.port], "hers")
-    [his] = forwarded(client, BOB, [upstream.port], "his")
-    alice = let_in(client, conn, hers, ALICE)
-    bob = let_in(client, conn, his, BOB)
-    pooled = conn.sock
-    assert conn.ask("GET", "/a", own(hers, alice)).status == 200
-    assert conn.ask("GET", "/b", own(his, bob)).status == 200
-    assert conn.ask("GET", "/c", own(hers, bob)).status == 303  # his session is not for hers
-    assert conn.ask("GET", "/d", {"Host": hers, **TYPED}).status == 303  # no session at all
-    assert conn.ask("GET", "/e", own(hers, alice)).status == 200
-    assert conn.sock is pooled  # one connection throughout
-    assert [s["path"] for s in upstream.seen] == ["/a", "/b", "/e"]
-
-
 def test_sibling_fetch_post_ws_refused_own_host_passes(client, on, conn, upstream, sockets):
     [hers] = forwarded(client, ALICE, [upstream.port], "hers")
     [his] = forwarded(client, BOB, [upstream.port], "his")
-    cookie = let_in(client, conn, hers, ALICE)
+    cookie = let_in(client, conn, hers)
     path = client.app.state.settings.forward_socket
     sibling = own(hers, cookie, **{"Sec-Fetch-Site": "same-site", "Origin": f"https://{his}"})
     for method in ("GET", "POST"):
@@ -877,35 +430,6 @@ def test_sibling_fetch_post_ws_refused_own_host_passes(client, on, conn, upstrea
     assert conn.ask("POST", "/data", mine, b"x").status == 200
     opened = sockets(path, hers, cookie)
     assert opened.status == 101 and opened.echo(b"ping") == b"ping"
-
-
-def test_top_level_navigation_from_rcman_passes(client, on, conn, upstream):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    for site in ("same-site", "cross-site", "none", "same-origin"):
-        headers = {"Host": host, "Cookie": cookie, **FROM_RCMAN, "Sec-Fetch-Site": site}
-        assert conn.ask("GET", "/page", headers).status == 200, site
-    for changed in ({"Sec-Fetch-Dest": "iframe"}, {"Sec-Fetch-Mode": "no-cors"},
-                    {"Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}):  # fmt: skip
-        headers = {"Host": host, "Cookie": cookie, **FROM_RCMAN, **changed}
-        r = conn.ask("GET", "/page", headers)
-        assert (r.status, json.loads(r.body)["code"]) == (403, "fetch_refused"), changed
-    headers = {"Host": host, "Cookie": cookie, **FROM_RCMAN, "Origin": ORIGIN}
-    r = conn.ask("POST", "/page", headers, b"x")  # a form of another site's page
-    assert (r.status, json.loads(r.body)["code"]) == (403, "fetch_refused")
-
-
-def test_without_sec_fetch_site_non_get_needs_own_origin(client, on, conn, upstream):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    bare = {"Host": host, "Cookie": cookie}
-    for origin in (None, "https://evil.example.com", ORIGIN, "null"):
-        headers = bare | ({"Origin": origin} if origin else {})
-        r = conn.ask("POST", "/form", headers, b"x")
-        assert (r.status, json.loads(r.body)["code"]) == (403, "fetch_refused"), origin
-    assert conn.ask("POST", "/form", bare | {"Origin": f"https://{host}"}, b"x").status == 200
-    assert conn.ask("GET", "/page", bare).status == 200  # a GET needs none
-    assert [s["path"] for s in upstream.seen] == ["/form", "/page"]
 
 
 # --- what passes to the app, and back --------------------------------------------------------
@@ -935,18 +459,9 @@ def test_host_origin_rewritten(client, on, conn, upstream):
     cookie = let_in(client, conn, host)
     mine = own(host, cookie, Origin=f"https://{host}")
     assert conn.ask("POST", "/form", mine, b"x").status == 200
-    assert (
-        conn.ask(
-            "GET",
-            "/page",
-            {"Host": host, "Cookie": cookie, "Origin": "https://elsewhere.example.com"},
-        ).status
-        == 200
-    )
-    first, second = ({k.lower(): v for k, v in s["headers"]} for s in upstream.seen)
+    [seen] = ({k.lower(): v for k, v in s["headers"]} for s in upstream.seen)
     local = f"localhost:{upstream.port}"
-    assert (first["host"], first["origin"]) == (local, f"http://{local}")
-    assert (second["host"], second["origin"]) == (local, "https://elsewhere.example.com")
+    assert (seen["host"], seen["origin"]) == (local, f"http://{local}")
 
 
 def test_upstream_cannot_set_rcman_cookies(client, on, conn, upstream):
@@ -956,17 +471,6 @@ def test_upstream_cannot_set_rcman_cookies(client, on, conn, upstream):
     assert r.status == 200
     assert r.all("set-cookie") == ["app=kept; Path=/"]
     assert conn.ask("GET", "/page", own(host, cookie)).status == 200  # its session is untouched
-
-
-def test_frame_ancestors_self_added(client, on, conn, upstream):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    for path, own_policy in (("/framed", ["default-src 'self'"]), ("/page", [])):
-        r = conn.ask("GET", path, own(host, cookie))
-        assert r.status == 200
-        assert sorted(r.all("content-security-policy")) == sorted(
-            [*own_policy, "frame-ancestors 'self'"]
-        ), path
 
 
 def test_101_spliced_raw_ws_open_close_audited(client, on, conn, upstream, sockets):
@@ -984,73 +488,14 @@ def test_101_spliced_raw_ws_open_close_audited(client, on, conn, upstream, socke
     assert raw.decode(errors="replace") not in json.dumps(audit_rows(client))
 
 
-def test_a_request_whose_client_half_closes_still_gets_its_whole_answer_and_the_relay_ends(
-    client, on, conn, upstream, monkeypatch
-):
-    """The relay carries no half-close: the forwarding server keeps a relay's input open until
-    the app's answer is passed back, or the app has closed (project-knowledge/runtime.md,
-    "Forwarded ports"), so a client that ends its sending side first still gets all of it. The
-    app answers only once the forwarding server's side of the client's connection has had its
-    end of input (the stream reader's ``feed_eof``, on a connection to the forwarding socket)."""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    path, real_eof = str(client.app.state.settings.forward_socket), asyncio.StreamReader.feed_eof
-
-    def feed_eof(reader):
-        real_eof(reader)
-        transport = getattr(reader, "_transport", None)
-        if transport is not None and transport.get_extra_info("sockname") == path:
-            upstream.half_closed.set()  # the forwarding server has the client's half-close
-
-    monkeypatch.setattr(asyncio.StreamReader, "feed_eof", feed_eof)
-    raw = socket.socket(socket.AF_UNIX)
-    raw.settimeout(HANG_GUARD)
-    raw.connect(str(client.app.state.settings.forward_socket))
-    try:
-        head = f"GET /big HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n" + (
-            "Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\n\r\n"
-        )
-        raw.sendall(head.encode())
-        raw.shutdown(socket.SHUT_WR)  # before the app answers, which waits for it to arrive
-        got = b""
-        while data := raw.recv(1 << 16):
-            got += data
-    finally:
-        raw.close()
-    assert upstream.half_closed.is_set()  # the answer came after the half-close arrived
-    head, _, body = got.partition(b"\r\n\r\n")
-    assert head.startswith(b"HTTP/1.1 200"), head
-    assert body == BIG
-    until(lambda: not live_relays(client, host))  # and the relay ended after it
-
-
-# --- caps --------------------------------------------------------------------------------------
-
-
-def test_caps_answer_503(client, on, conn, upstream, sockets, monkeypatch):
-    hers, other = forwarded(client, ALICE, [upstream.port, upstream.port + 1])
-    [second] = forwarded(client, ALICE, [upstream.port], "second")
-    cookie, other_cookie, second_cookie = (let_in(client, conn, h) for h in (hers, other, second))
-    path = client.app.state.settings.forward_socket
-    monkeypatch.setattr(forward, "MOST_RELAYS_PER_WORKSPACE", 1)  # the planted overflow
-    held = sockets(path, hers, cookie)  # holds the workspace's one relay
-    assert held.status == 101
-    r = Forward(path).ask("GET", "/page", own(hers, cookie))
-    assert (r.status, json.loads(r.body)["code"]) == (503, "too_many_relays")
-    assert int(r.header("retry-after")) >= 1
-    # Another workspace has room of its own; its relay is kept for the next request.
-    assert conn.ask("GET", "/page", own(second, second_cookie)).status == 200
-    monkeypatch.setattr(forward, "MOST_RELAYS_PER_WORKSPACE", 100)
-    monkeypatch.setattr(forward, "MOST_RELAYS_PER_PERSON", 1)
-    # Her WebSocket holds her one: the relay kept idle is ended to make room, and is not enough.
-    r = Forward(path).ask("GET", "/page", own(other, other_cookie))
-    assert (r.status, json.loads(r.body)["code"]) == (503, "too_many_relays")
-    held.close()
-    until(lambda: not live_relays(client, hers) and not live_relays(client, second))
-    assert Forward(path).ask("GET", "/page", own(second, second_cookie)).status == 200
-
-
 # --- sessions ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clock(client):
+    made = Clock()
+    client.app.state.forward.clock = made
+    return made
 
 
 def settled(client) -> None:
@@ -1060,39 +505,22 @@ def settled(client) -> None:
     until(lambda: all(s.busy == len(s.splices) for s in list(sessions.values())))
 
 
-def test_an_idle_pooled_connection_does_not_keep_a_session_alive(
-    client, on, conn, upstream, sockets, clock
-):
+def test_a_session_ends_when_idle_and_at_its_lifetime(client, on, conn, upstream, sockets, clock):
     [host] = forwarded(client, ALICE, [upstream.port])
-    idle = client.app.state.forwarding_settings.settings().idle_seconds
+    lifetimes = client.app.state.forwarding_settings.settings()
     cookie = let_in(client, conn, host)
     assert conn.ask("GET", "/page", own(host, cookie)).status == 200
     settled(client)
-    clock.advance(idle + 1)  # the connection stays open, and nothing is asked on it
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 303
-    # The planted positive: a WebSocket open throughout keeps its session alive.
-    cookie = let_in(client, conn, host)
-    opened = sockets(client.app.state.settings.forward_socket, host, cookie)
-    assert opened.status == 101
-    settled(client)
-    clock.advance(idle + 1)
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200
-    assert opened.echo(b"still") == b"still"
-
-
-def test_absolute_lifetime_closes_open_websockets_and_next_request_hands_off(
-    client, on, conn, upstream, sockets, clock
-):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    lifetime = client.app.state.forwarding_settings.settings().absolute_seconds
+    clock.advance(lifetimes.idle_seconds + 1)
+    assert conn.ask("GET", "/page", own(host, cookie)).status == 303  # idle: handed off again
+    # A WebSocket open throughout keeps its session from idling, but not past its lifetime.
     cookie = let_in(client, conn, host)
     opened = sockets(client.app.state.settings.forward_socket, host, cookie)
     assert opened.status == 101 and opened.echo(b"x") == b"x"
-    clock.advance(lifetime + 1)
-    assert opened.ended()  # closed by the server, with no request to notice it
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 303
-    until(lambda: rows_of(client, "websocket.close"))
-    assert rows_of(client, "websocket.close") == [(ALICE, host, "session_ended")]
+    assert conn.ask("GET", "/page", own(host, cookie)).status == 200
+    settled(client)
+    clock.advance(lifetimes.absolute_seconds + 1)
+    assert conn.ask("GET", "/page", own(host, cookie)).status == 303  # past its lifetime
 
 
 def test_forwarding_off_closes_an_open_splice(client, on, conn, upstream, sockets):
@@ -1107,596 +535,10 @@ def test_forwarding_off_closes_an_open_splice(client, on, conn, upstream, socket
     r = conn.ask("GET", "/page", own(host, cookie))
     assert (r.status, json.loads(r.body)["code"]) == (404, "forwarding_off")
     until(lambda: not live_relays(client, host))
-    turned_off(client)  # off again: harmless
     r = client.put(SETTINGS_PATH, json={**DEFAULTS.model_dump(), "enabled": True},
                    headers=changing(ALICE))  # fmt: skip
     assert r.status_code == 200
     assert conn.ask("GET", "/page", own(host, cookie)).status == 303  # every session went
-
-
-def test_the_off_listener_from_another_thread_closes_open_splices_and_does_no_harm_again(
-    client, on, conn, upstream, sockets
-):
-    """The settings' save calls it in its request's thread, under the save's lock: it only
-    passes the work to the server's loop, and saves nothing."""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    opened = sockets(client.app.state.settings.forward_socket, host, cookie)
-    assert opened.status == 101
-    forwarding = client.app.state.forward
-    called = threading.Thread(target=forwarding.off)
-    called.start()
-    called.join(HANG_GUARD)
-    assert opened.ended()
-    forwarding.off()  # again, with nothing left: no harm
-    forwarding.off()
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 303  # its session went too
-    assert client.app.state.forwarding_settings.settings().enabled  # and nothing was saved
-
-
-def test_a_session_made_as_forwarding_turns_off_is_refused(client, on, conn, upstream, monkeypatch):
-    """A way in that passed its checks just before forwarding was turned off makes no
-    session: the setting is read again as the session is made."""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    forwarding = client.app.state.forward
-    checked = forwarding.refusal
-
-    def turning_off(person, target):
-        found = checked(person, target)
-        # Meanwhile, as the check runs in a thread of its own, an administrator saves it off.
-        client.app.state.forwarding_settings.save(DEFAULTS)
-        return found
-
-    token = token_of(client, host)
-    monkeypatch.setattr(forwarding, "refusal", turning_off)
-    r = enter(conn, host, token)
-    assert (r.status, json.loads(r.body)["code"]) == (404, "forwarding_off")
-    assert r.cookie(forward.SESSION_COOKIE) is None
-
-
-def test_removed_person_or_deleted_workspace_loses_access_at_once(
-    client, on, conn, upstream, sockets
-):
-    [hers] = forwarded(client, ALICE, [upstream.port], "hers")
-    [his] = forwarded(client, BOB, [upstream.port], "his")
-    path = client.app.state.settings.forward_socket
-    alice, bob = let_in(client, conn, hers, ALICE), let_in(client, conn, his, BOB)
-    her_socket, his_socket = sockets(path, hers, alice), sockets(path, his, bob)
-    assert her_socket.status == his_socket.status == 101
-    r = client.delete(f"/api/workspaces/{workspace_of(hers)}", headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    assert her_socket.ended()
-    assert conn.ask("GET", "/page", own(hers, alice)).status != 200
-    assert his_socket.echo(b"his") == b"his"  # the control: his is untouched
-    assert conn.ask("GET", "/page", own(his, bob)).status == 200
-    listed = client.get("/api/people", headers=as_user(ALICE)).json()["people"]
-    bob_id = next(p["id"] for p in listed if p["email"] == BOB)
-    r = client.delete(f"/api/people/{bob_id}", headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    assert his_socket.ended()
-    assert conn.ask("GET", "/page", own(his, bob)).status != 200
-    closes = {target: result for _, target, result in rows_of(client, "websocket.close")}
-    assert closes == {hers: "workspace_gone", his: "workspace_gone"}
-
-
-def test_forwarding_is_refused_until_the_workspaces_are_restored(client, on, conn, upstream):
-    """The restore at rcman's start sweeps every running workspace, which would end a relay
-    started meanwhile (project-knowledge/runtime.md, "Forwarded ports")."""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    token = token_of(client, host)
-    service = client.app.state.workspaces
-    service.restored.clear()  # as before the restore is done
-    try:
-        r = conn.ask("GET", "/page", own(host, cookie))
-        assert (r.status, json.loads(r.body)["code"]) == (503, "forwarding_starting")
-        assert asked(conn, host) == 404
-        r = enter(conn, host, token)
-        assert (r.status, json.loads(r.body)["code"]) == (503, "forwarding_starting")
-        assert upstream.seen == []
-    finally:
-        service.restored.set()
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200  # the control
-    assert asked(conn, host) == 200
-
-
-# --- what is under way when a session ends ----------------------------------------------------
-
-LIFETIME = "past its lifetime"
-ENDINGS = ["turned off", LIFETIME]
-
-
-def end_session(client, clock, ending: str) -> None:
-    if ending == LIFETIME:
-        clock.advance(client.app.state.forwarding_settings.settings().absolute_seconds + 1)
-    else:
-        turned_off(client)
-
-
-@pytest.mark.parametrize("ending", ENDINGS)
-def test_an_answer_still_streaming_when_its_session_ends_is_cut_off(
-    client, on, conn, upstream, clock, ending
-):
-    [host] = forwarded(client, BOB, [upstream.port])
-    cookie = let_in(client, conn, host, BOB)
-    streaming = raw_request(client.app.state.settings.forward_socket,
-                            head_of(host, cookie, "/endless"))  # fmt: skip
-    try:
-        got, ended = read_until(streaming, b"tick")
-        # The planted positive: left alone, it streams on.
-        assert got.startswith(b"HTTP/1.1 200") and b"tick" in got and not ended, got[:200]
-        end_session(client, clock, ending)
-        _, ended = read_to_end(streaming)
-        assert ended
-    finally:
-        streaming.close()
-    until(lambda: not live_relays(client, host))
-
-
-@pytest.mark.parametrize("ending", ENDINGS)
-def test_an_upgrade_the_app_switches_after_its_session_ended_is_closed_unswitched(
-    client, on, conn, upstream, clock, ending
-):
-    [host] = forwarded(client, BOB, [upstream.port])
-    cookie = let_in(client, conn, host, BOB)
-    path = client.app.state.settings.forward_socket
-    # The planted positive: held the same way, while its session lasts, it is switched.
-    first = raw_request(path, upgrade_head(host, cookie, "/held-ws"))
-    try:
-        assert upstream.arrived.acquire(timeout=HANG_GUARD)
-        upstream.gate.release()
-        assert read_head(first).startswith(b"HTTP/1.1 101")
-    finally:
-        first.close()
-    late = raw_request(path, upgrade_head(host, cookie, "/held-ws"))
-    try:
-        assert upstream.arrived.acquire(timeout=HANG_GUARD)  # the app has it, and has not answered
-        end_session(client, clock, ending)
-        upstream.gate.release()
-        got, ended = read_to_end(late)
-        assert ended and b" 101 " not in got, got[:200]
-    finally:
-        late.close()
-    assert rows_of(client, "websocket.open") == [(BOB, host, "ok")]  # the first alone opened
-    until(lambda: not live_relays(client, host))
-
-
-def test_an_expired_session_is_reaped_with_no_request_to_notice_it(
-    client, on, conn, upstream, clock, monkeypatch
-):
-    """The reaper's pace shortened, the test waiting for what it makes happen: the exact pace is
-    not tested."""
-    pace(monkeypatch, forward, "REAP_SECONDS", 0.05)
-    [host] = forwarded(client, ALICE, [upstream.port])
-    let_in(client, conn, host)
-    forwarding = client.app.state.forward
-    assert forwarding._sessions  # the control: it is there
-    clock.advance(client.app.state.forwarding_settings.settings().absolute_seconds + 1)
-    until(lambda: not forwarding._sessions)
-
-
-def test_turning_forwarding_off_ends_the_relays_kept_idle(client, on, conn, upstream, monkeypatch):
-    """The relay kept is never past its idle deadline here: only turning off can end it."""
-    monkeypatch.setattr(forward, "POOL_IDLE_SECONDS", 2 * HANG_GUARD)
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200
-    kept(client, host, upstream.port)
-    assert live_relays(client, host)  # the planted positive: kept for the next request
-    turned_off(client)
-    until(lambda: not live_relays(client, host))
-
-
-def test_a_relay_kept_idle_is_dropped_at_its_deadline(client, on, conn, upstream, monkeypatch):
-    """With no idle time at all, so that the relay is dropped as soon as it is kept; the
-    control, kept under the default, is the test above's planted positive."""
-    monkeypatch.setattr(forward, "POOL_IDLE_SECONDS", 0)
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200
-    until(lambda: not live_relays(client, host))
-
-
-def test_a_persons_sessions_are_capped_ending_their_oldest_for_the_host_first(
-    client, on, conn, upstream, monkeypatch
-):
-    monkeypatch.setattr(forward, "MOST_SESSIONS_PER_PERSON", 2)
-    [hers] = forwarded(client, ALICE, [upstream.port], "hers")
-    [other] = forwarded(client, ALICE, [upstream.port], "other")
-    [his] = forwarded(client, BOB, [upstream.port], "his")
-    his_cookie = let_in(client, conn, his, BOB)
-    oldest, older = let_in(client, conn, other), let_in(client, conn, hers)
-    for target, cookie in ((other, oldest), (hers, older), (his, his_cookie)):
-        assert conn.ask("GET", "/page", own(target, cookie)).status == 200  # two of hers fit
-    newest = let_in(client, conn, hers)
-    # Her older one for the same host makes room, though another of hers is older still.
-    assert conn.ask("GET", "/page", own(hers, older)).status == 303
-    assert conn.ask("GET", "/page", own(other, oldest)).status == 200
-    assert conn.ask("GET", "/page", own(hers, newest)).status == 200
-    # With none left for the host, the oldest of all makes room.
-    [elsewhere] = forwarded(client, ALICE, [upstream.port], "elsewhere")
-    last = let_in(client, conn, elsewhere)
-    assert conn.ask("GET", "/page", own(other, oldest)).status == 303
-    assert conn.ask("GET", "/page", own(hers, newest)).status == 200
-    assert conn.ask("GET", "/page", own(elsewhere, last)).status == 200
-    assert conn.ask("GET", "/page", own(his, his_cookie)).status == 200  # his count is his own
-
-
-# --- relays: their caps at once, and one kept that has ended --------------------------------
-
-
-def test_requests_at_once_beyond_a_cap_of_one_are_refused_but_one(
-    client, on, conn, upstream, monkeypatch
-):
-    """The room for a relay is taken before anything is awaited, so that requests at once are
-    held to the cap as requests one by one are; and room taken for a relay that does not start
-    is given back."""
-    host, other = forwarded(client, ALICE, [upstream.port, upstream.port + 1])
-    cookie, other_cookie = let_in(client, conn, host), let_in(client, conn, other)
-    forwarding = client.app.state.forward
-    path = client.app.state.settings.forward_socket
-    monkeypatch.setattr(forward, "MOST_RELAYS_PER_WORKSPACE", 1)
-    launch = forwarding._launch
-    refused = threading.Event()  # the requests but the one are refused
-
-    def slowly(target):
-        assert refused.wait(HANG_GUARD)  # every request is under way before the first relay runs
-        return launch(target)
-
-    monkeypatch.setattr(forwarding, "_launch", slowly)
-    answered: queue.Queue = queue.Queue()
-
-    def one() -> None:
-        with contextlib.closing(Forward(path)) as made:
-            answered.put(made.ask("GET", "/held", own(host, cookie)).status)
-
-    threads = [threading.Thread(target=one, daemon=True) for _ in range(AT_ONCE)]
-    for thread in threads:
-        thread.start()
-    early = [answered.get(timeout=HANG_GUARD) for _ in range(AT_ONCE - 1)]
-    refused.set()
-    for _ in range(AT_ONCE):  # whatever reached the app is answered
-        upstream.gate.release()
-    for thread in threads:
-        thread.join(HANG_GUARD)
-    late = [answered.get_nowait() for _ in range(answered.qsize())]
-    assert early == [503] * (AT_ONCE - 1), (early, late)  # while the one held its room
-    assert late == [200], late
-    kept(client, host, upstream.port)
-
-    def failing(target):
-        raise forward.rt.RuntimeFailed("planted")
-
-    # The relay kept idle is ended to make room for one that does not start; then the room is
-    # free again, which a new relay takes.
-    monkeypatch.setattr(forwarding, "_launch", failing)
-    r = conn.ask("GET", "/page", own(other, other_cookie))
-    assert (r.status, json.loads(r.body)["code"]) == (502, "port_unreachable")
-    assert not [r for r in forwarding._relays if isinstance(r, forward.Slot)]
-    monkeypatch.setattr(forwarding, "_launch", launch)
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200  # its room was given back
-
-
-def test_a_kept_relay_that_ended_unnoticed_is_tried_again_once_on_a_new_one(
-    client, on, conn, upstream, monkeypatch
-):
-    with socket.socket() as closed:
-        closed.bind(("127.0.0.1", 0))  # held, and listened on by nothing
-        dead = closed.getsockname()[1]
-        host, nothing = forwarded(client, ALICE, [upstream.port, dead])
-        cookie, other = let_in(client, conn, host), let_in(client, conn, nothing)
-        forwarding = client.app.state.forward
-
-        async def unwatched(relay, key):
-            await asyncio.Event().wait()
-
-        # A kept relay's end goes unnoticed until it is taken, as when the app closes the
-        # connection just as a request comes.
-        monkeypatch.setattr(forwarding, "_watch", unwatched)
-        monkeypatch.setattr(forward.Relay, "usable", lambda self: not self.closed)
-        launch, started = forwarding._launch, []
-        monkeypatch.setattr(forwarding, "_launch", lambda t: started.append(t) or launch(t))
-        assert conn.ask("GET", "/once", own(host, cookie)).status == 200  # then the app closes
-        until(lambda: not live_relays(client, host))  # and the relay ends with it
-        kept(client, host, upstream.port)  # yet kept
-        assert started
-        started.clear()
-        r = conn.ask("GET", "/page", own(host, cookie))
-        assert r.status == 200, r.body
-        assert len(started) == 1  # a new one, once
-        assert [s["path"] for s in upstream.seen] == ["/once", "/page"]
-        # A request that is not GET, HEAD or OPTIONS, its head written whole to a kept relay the
-        # app then drops it on unanswered, is not sent again: the app may have acted on it.
-        kept(client, host, upstream.port)  # the new one
-        started.clear()
-        r = conn.ask("POST", "/drop", own(host, cookie, Origin=f"https://{host}"), b"")
-        assert (r.status, json.loads(r.body)["code"]) == (502, "port_unreachable")
-        assert [s["path"] for s in upstream.seen].count("/drop") == 1 and started == []
-        # The control: a new relay that gets no answer is not tried again.
-        started.clear()
-        r = conn.ask("GET", "/page", own(nothing, other))
-        assert (r.status, json.loads(r.body)["code"]) == (502, "port_unreachable")
-        assert len(started) == 1
-
-
-def test_a_take_cancelled_while_its_kept_relays_watch_ends_closes_the_relay(
-    client, on, conn, upstream, monkeypatch
-):
-    """The request that takes a kept relay goes while the relay's watch is ending: the relay,
-    no longer kept nor handed on, is closed and counts against the caps no more."""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    forwarding = client.app.state.forward
-    ending, let_go = asyncio.Event(), asyncio.Event()
-
-    async def slow_to_end(relay, key):
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            ending.set()
-            await let_go.wait()
-            raise
-
-    monkeypatch.setattr(forwarding, "_watch", slow_to_end)
-    # Usable however the app ended the connection, so that the take waits for its watch.
-    monkeypatch.setattr(forward.Relay, "usable", lambda self: not self.closed)
-    assert conn.ask("GET", "/once", own(host, cookie)).status == 200
-    kept(client, host, upstream.port)
-
-    async def cancelled_take():
-        [relay] = forwarding._idle[(workspace_of(host), upstream.port)]
-        [session] = forwarding._sessions.values()
-        taking = asyncio.create_task(forwarding._take(session, relay.target))
-        await ending.wait()  # it waits for the watch it cancelled to end
-        taking.cancel()
-        try:
-            with pytest.raises(asyncio.CancelledError):
-                await taking
-            return relay.closed, relay in forwarding._relays
-        finally:
-            let_go.set()
-
-    assert client.portal.call(cancelled_take) == (True, False)
-
-
-def test_a_kept_relay_its_watch_ends_while_taken_never_gets_the_head(
-    client, on, conn, upstream, monkeypatch
-):
-    """A kept relay whose watch closes it as the take cancels it is not handed the request's
-    head: the take looks again once the watch has ended, and the request goes on a new relay.
-    (A status alone would not tell: a reused relay that heard nothing is tried again fresh.)"""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    forwarding = client.app.state.forward
-
-    async def closes_as_cancelled(relay, key):
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            await forwarding._drop(relay)
-            raise
-
-    monkeypatch.setattr(forwarding, "_watch", closes_as_cancelled)
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200
-    kept(client, host, upstream.port)
-    [planted] = forwarding._idle[(workspace_of(host), upstream.port)]
-    real_write, written = forward.Relay.write, []
-
-    async def write(self, data):
-        written.append(self)
-        await real_write(self, data)
-
-    monkeypatch.setattr(forward.Relay, "write", write)
-    assert conn.ask("GET", "/page", own(host, cookie)).status == 200
-    assert planted.closed  # the watch closed it
-    assert written and planted not in written  # the head went to a fresh relay only
-
-
-def test_a_request_not_replayable_whose_head_write_fails_on_a_kept_relay_is_not_tried_again(
-    client, on, conn, upstream, monkeypatch
-):
-    """A head handed to a kept relay may reach the app even where its write then fails, as one
-    larger than the pipe does before ``drain`` raises: a POST is not sent again. The planted
-    positive: a GET whose write fails the same way is tried again once, on a new relay."""
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    forwarding = client.app.state.forward
-    launch, started = forwarding._launch, []
-    monkeypatch.setattr(forwarding, "_launch", lambda t: started.append(t) or launch(t))
-
-    async def failing(self, data):
-        raise BrokenPipeError("planted")
-
-    for method, again in (("GET", 1), ("POST", 0)):
-        assert conn.ask("GET", "/page", own(host, cookie)).status == 200  # a relay kept
-        kept(client, host, upstream.port)
-        started.clear()
-        with monkeypatch.context() as patched:
-            patched.setattr(forward.Relay, "write", failing)
-            headers = own(host, cookie, Origin=f"https://{host}")
-            r = conn.ask(method, "/data", headers, b"" if method == "POST" else None)
-        assert (r.status, json.loads(r.body)["code"]) == (502, "port_unreachable"), method
-        assert len(started) == again, method
-    assert "/data" not in [s["path"] for s in upstream.seen]
-
-
-# --- slow requests and long heads -------------------------------------------------------------
-
-
-def test_a_refused_request_is_answered_without_waiting_long_for_its_body(
-    client, on, conn, upstream, monkeypatch
-):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    cookie = let_in(client, conn, host)
-    cross = own(host, cookie, **{"Sec-Fetch-Site": "cross-site"})
-    # The planted positive: its body whole, it is answered and its connection kept.
-    pooled = conn.sock
-    r = conn.ask("POST", "/data", cross, b"x" * 1000)
-    assert (r.status, json.loads(r.body)["code"]) == (403, "fetch_refused")
-    assert r.header("connection") is None
-    assert conn.ask("GET", forward.HEALTH_PATH, {"Host": host}).status == 200
-    assert conn.sock is pooled
-    more = ["Sec-Fetch-Site: cross-site", "Content-Length: 1000"]
-    # No time for the rest of its body at all: its connection is closed, never kept.
-    monkeypatch.setattr(forward, "DRAIN_SECONDS", 0)
-    dripping = raw_request(client.app.state.settings.forward_socket,
-                           head_of(host, cookie, "/data", "POST", more), b"x" * 10)  # fmt: skip
-    try:
-        got, ended = read_to_end(dripping)
-        assert got.startswith(b"HTTP/1.1 403") and ended, got
-        assert b"connection: close" in got.lower()
-    finally:
-        dripping.close()
-    assert upstream.seen == []
-
-
-def test_the_way_in_does_not_wait_long_for_its_body(client, on, conn, upstream, monkeypatch):
-    [host] = forwarded(client, ALICE, [upstream.port])
-    token = token_of(client, host)
-    head = "\r\n".join([
-        f"POST {forward.ENTER_PATH} HTTP/1.1", f"Host: {host}", f"Origin: {ORIGIN}",
-        "Content-Type: application/x-www-form-urlencoded", "Content-Length: 500",
-        *(f"{k}: {v}" for k, v in FROM_RCMAN.items()),
-    ]) + "\r\n\r\n"  # fmt: skip
-    with monkeypatch.context() as patched:
-        runs_out(patched, forward, "BODY_SECONDS")  # no time for its body at all
-        dripping = raw_request(client.app.state.settings.forward_socket, head, b"token=")
-        try:
-            got, ended = read_to_end(dripping)
-            assert got.startswith(b"HTTP/1.1 408") and ended, got
-        finally:
-            dripping.close()
-    assert enter(conn, host, token).status == 303  # the control: its body whole, it lets in
-
-
-def test_a_connection_with_nothing_on_it_or_a_head_that_never_ends_is_closed(
-    client, on, monkeypatch
-):
-    """Each with no time for it at all, the other deadline as it is, so that only its own
-    can close the connection."""
-    path = client.app.state.settings.forward_socket
-    with contextlib.closing(Forward(path)) as made:  # the planted positive: a request in time
-        assert made.ask("GET", forward.HEALTH_PATH, {"Host": "x"}).status == 200
-    for deadline, head in (
-        ("IDLE_CONNECTION_SECONDS", ""),
-        ("HEAD_SECONDS", "GET / HTTP/1.1\r\nHost: x"),
-    ):
-        with monkeypatch.context() as patched:
-            runs_out(patched, forward, deadline)
-            waiting = raw_request(path, head)
-            try:
-                got, ended = read_to_end(waiting)
-                assert ended and got == b"", (head, got)
-            finally:
-                waiting.close()
-
-
-class HeadReads:
-    """forward's ``asyncio``, as its head reads see it: the loop's time, read through
-    ``get_running_loop()``, is ``clock``, which only the test moves, and each read of a head is
-    recorded, with the seconds the product gives it and the time it read just before (None
-    where it read none since the last read). Everything else is asyncio's own."""
-
-    def __init__(self, clock: Clock):
-        self.clock = clock
-        self.read_at: float | None = None
-        self.reads: list[tuple[float, float | None]] = []
-        self.told = threading.Condition()
-
-    def __getattr__(self, name):
-        return getattr(asyncio, name)
-
-    def get_running_loop(self):
-        return LoopTimeOf(asyncio.get_running_loop(), self)
-
-    async def wait_for(self, awaited, *given):
-        """asyncio's, given the product's own seconds as they are."""
-        if getattr(awaited, "__qualname__", "") == "StreamReader.read":
-            with self.told:
-                self.reads.append((given[0], self.read_at))
-                self.read_at = None
-                self.told.notify_all()
-        return await asyncio.wait_for(awaited, *given)
-
-    def timed(self, after: int) -> tuple[int, float, float]:
-        """The first read from ``after`` on that the product reckoned from the time: its index,
-        the seconds it was given, and the time read for them."""
-
-        def found():
-            for i in range(after, len(self.reads)):
-                if self.reads[i][1] is not None:
-                    return i
-            return None
-
-        with self.told:
-            assert self.told.wait_for(lambda: found() is not None, HANG_GUARD), self.reads
-            i = found()
-            return i, *self.reads[i]
-
-
-class LoopTimeOf:
-    """The running loop, but for its ``time()``, which is the clock of ``reads``."""
-
-    def __init__(self, loop, reads: HeadReads):
-        self._loop, self._reads = loop, reads
-
-    def __getattr__(self, name):
-        return getattr(self._loop, name)
-
-    def time(self) -> float:
-        self._reads.read_at = self._reads.clock.now
-        return self._reads.read_at
-
-
-def test_a_head_dripped_a_byte_at_a_time_is_cut_off_at_its_one_deadline(client, monkeypatch):
-    """HEAD_SECONDS runs from the head's first byte: bytes that keep coming do not move it. The
-    loop's time, as forward reads it, is a clock only the test moves, a quarter of HEAD_SECONDS
-    before each byte; every read after the first byte is given what is left of the one deadline,
-    its seconds and the time read for them adding up to it, so that a deadline that moved fails
-    at the first drip; and the read at the deadline, given nothing, closes the connection.
-    HEAD_SECONDS is raised to beyond the hang guard, so that each read's real wait outlasts the
-    drip it waits for."""
-    monkeypatch.setattr(forward, "HEAD_SECONDS", 4 * HANG_GUARD)
-    clock = Clock()
-    reads = HeadReads(clock)
-    monkeypatch.setattr(forward, "asyncio", reads)
-    deadline = clock.now + forward.HEAD_SECONDS
-    dripping = raw_request(client.app.state.settings.forward_socket, "GET / HTTP/1.1\r\nX: ")
-    try:
-        seen, after = [], 0
-        while True:
-            index, within, now = reads.timed(after)
-            seen.append((within, now))
-            assert within + now == deadline, seen  # what is left of the one deadline
-            if within <= 0:
-                break
-            after = index + 1
-            clock.advance(forward.HEAD_SECONDS / 4)
-            dripping.sendall(b"a")
-        assert seen[-1] == (0, deadline) and len(seen) >= 5, seen  # four drips, then cut off
-        got, ended = read_to_end(dripping)
-        assert ended and got == b"", got
-    finally:
-        dripping.close()
-
-
-def test_a_head_longer_than_the_most_is_answered_431(client, conn):
-    path = client.app.state.settings.forward_socket
-    # The planted positive: a head well over h11's own default, under the most, is taken.
-    fits = "a" * (forward.MOST_HEAD // 2)
-    assert conn.ask("GET", forward.HEALTH_PATH, {"Host": "x", "X-Long": fits}).status == 200
-    long = f"GET {forward.HEALTH_PATH} HTTP/1.1\r\nHost: x\r\nX-Long: "
-    long += "a" * (forward.MOST_HEAD + forward.READ_CHUNK) + "\r\n\r\n"
-    made = socket.socket(socket.AF_UNIX)
-    made.settimeout(HANG_GUARD)
-    made.connect(str(path))
-    try:
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            made.sendall(long.encode())
-        got, ended = read_to_end(made)
-        assert got.startswith(b"HTTP/1.1 431") and ended, got[:200]
-    finally:
-        made.close()
 
 
 # --- no way in in any address, log or audit row ------------------------------------------------

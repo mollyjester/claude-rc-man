@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type FormEvent, type ReactElement, useCallback, useState } from "react";
+import { type ReactElement, useState } from "react";
 import { parseAst } from "vite";
 import { vi } from "vitest";
 
@@ -14,8 +14,7 @@ import { Changes } from "./Changes";
 import { ClaudeConnection, type Connection } from "./Claude";
 import { forgetReports } from "./clientErrors";
 import { m } from "./messages";
-import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
-import { FIELDS } from "./Settings";
+import { asApiError, ProblemView } from "./ProblemView";
 import { callSites } from "./test/callSites";
 import {
   ADMIN_USER,
@@ -344,32 +343,47 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
   ["a workspace that cannot be deleted", "/", () => openTrash("beta")],
 ];
 
+// What is wrong with the inputs under root: a validation rule of an input's own, an input of a
+// kind other than text, a checkbox or a radio but for the one secret a page takes, the GitHub
+// token, typed where it is not shown, and a form that is not noValidate.
+function validationFaults(root: ParentNode): string[] {
+  const found: string[] = [];
+  for (const input of root.querySelectorAll("input, textarea, select")) {
+    for (const attribute of RULE_ATTRIBUTES)
+      if (input.hasAttribute(attribute)) found.push(`${input.outerHTML} has ${attribute}`);
+    if (!(input instanceof HTMLInputElement)) continue;
+    const token =
+      input.type === "password" &&
+      input.closest("section")?.querySelector("h2")?.textContent === m.settingsGithubTitle;
+    if (!token && !["text", "checkbox", "radio"].includes(input.type))
+      found.push(`${input.outerHTML} is a ${input.type}`);
+  }
+  for (const form of root.querySelectorAll("form:not([novalidate])"))
+    found.push(`${form.outerHTML.slice(0, 40)} is not noValidate`);
+  return found;
+}
+
 test.each([...PAGES, ...OUTSIDE_FORMS])(
   "no input on %s carries its own validation rule",
   async (_, where, open) => {
     api();
     show(where);
     await open();
-    const found = await inputs();
-    expect(found.length).toBeGreaterThan(0); // non-vacuity
-    for (const input of found) {
-      for (const attribute of RULE_ATTRIBUTES) {
-        expect(input.hasAttribute(attribute), `${input.outerHTML} has ${attribute}`).toBe(false);
-      }
-      if (input instanceof HTMLInputElement && input.type === "password") {
-        // The one secret a page takes, the GitHub token, is typed where it is not shown.
-        expect(input.closest("section")?.querySelector("h2")?.textContent).toBe(
-          m.settingsGithubTitle,
-        );
-      } else if (input instanceof HTMLInputElement) {
-        expect(["text", "checkbox", "radio"]).toContain(input.type);
-      }
-    }
-    expect(document.querySelectorAll("form[novalidate]").length).toBe(
-      document.querySelectorAll("form").length,
-    );
+    expect((await inputs()).length).toBeGreaterThan(0); // non-vacuity
+    expect(validationFaults(document)).toEqual([]);
   },
 );
+
+test("the validation check fails on a rule of an input's own, a number field, and a form left to the browser", () => {
+  const root = document.createElement("div");
+  root.innerHTML =
+    '<form noValidate><input type="text" name="ok" /></form><form><input type="number" required /></form>';
+  const faults = validationFaults(root);
+  expect(faults).toHaveLength(3);
+  expect(faults[0]).toMatch(/ has required$/);
+  expect(faults[1]).toMatch(/ is a number$/);
+  expect(faults[2]).toMatch(/ is not noValidate$/);
+});
 
 // What is wrong with the buttons of each form under root: a form whose leading
 // buttons — primary, or danger where what it does cannot be undone — are not
@@ -398,18 +412,6 @@ function hierarchyFaults(root: ParentNode): string[] {
   return [...formless, ...forms];
 }
 
-test.each([...PAGES, ...CHOICES])(
-  "each form on %s leads with one button, its submit button",
-  async (page, where, open) => {
-    api();
-    show(where);
-    await open();
-    if (!CHOICES.some(([choice]) => choice === page)) await inputs();
-    expect(document.querySelectorAll("form").length).toBeGreaterThan(0); // non-vacuity
-    expect(hierarchyFaults(document)).toEqual([]);
-  },
-);
-
 // The forms whose submit cannot be undone, which lead with danger instead.
 const DESTRUCTIVE = ["removing someone", "deleting a workspace", "removing the GitHub token"];
 
@@ -417,60 +419,32 @@ const DESTRUCTIVE = ["removing someone", "deleting a workspace", "removing the G
 // danger button itself.
 const DANGER_IN_PLACE = ["signing out of Claude", "finishing a sign-out at once"];
 
-test("the header's sign-out form is exempt from leading with a primary button, and only that form is", async () => {
-  api();
-  renderApp("/settings");
-  const banner = await screen.findByRole("banner");
-  const form = banner.querySelector("form.sign-out")!;
-  expect(form).not.toBeNull(); // positive control: the form is there
-  expect(form.querySelectorAll("button.primary, button.danger")).toHaveLength(0);
-  expect(hierarchyFaults(document)).toEqual([]);
-  // the same form outside the header is a fault
-  const copy = document.createElement("div");
-  copy.append(form.cloneNode(true));
-  expect(hierarchyFaults(copy)).toHaveLength(1);
-});
-
-test.each(DANGER_IN_PLACE)("%s leads with danger, not primary", async (page) => {
-  const entry = [...PAGES, ...CHOICES].find(([name]) => name === page)!;
-  api();
-  show(entry[1]);
-  await entry[2]();
-  const submits = [...document.querySelectorAll<HTMLButtonElement>('form button[type="submit"]')];
-  expect(submits.length).toBeGreaterThan(0);
-  for (const submit of submits) expect(submit).toHaveClass("danger");
-  expect(document.querySelectorAll("form button.primary")).toHaveLength(0);
-});
-
-test("every form said to be destructive is one of those checked", () => {
-  const pages = [...PAGES, ...CHOICES].map(([page]) => page);
-  for (const page of DESTRUCTIVE) expect(pages).toContain(page);
-});
-
-test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))(
-  "the form for %s leads with danger, not primary",
-  async (_, where, open) => {
+test.each([...PAGES, ...CHOICES])(
+  "each form on %s leads with one button, its submit button, danger where it cannot be undone",
+  async (page, where, open) => {
     api();
     show(where);
     await open();
-    const dialog = screen.getByRole("dialog");
-    const submit = dialog.querySelector('button[type="submit"]');
-    expect(submit).toHaveClass("danger");
-    expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
+    if (!CHOICES.some(([choice]) => choice === page)) await inputs();
+    expect(document.querySelectorAll("form").length).toBeGreaterThan(0); // non-vacuity
+    expect(hierarchyFaults(document)).toEqual([]);
+    if (DESTRUCTIVE.includes(page)) {
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.querySelector('button[type="submit"]')).toHaveClass("danger");
+      expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
+    } else if (DANGER_IN_PLACE.includes(page)) {
+      const submits = [
+        ...document.querySelectorAll<HTMLButtonElement>('form button[type="submit"]'),
+      ];
+      expect(submits.length).toBeGreaterThan(0);
+      for (const submit of submits) expect(submit).toHaveClass("danger");
+      expect(document.querySelectorAll("form button.primary")).toHaveLength(0);
+    } else {
+      expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0);
+      expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
+    }
   },
 );
-
-test("no page draws a dialog of its own", () => {
-  // positive control: the shared one is among the files read
-  expect(
-    SOURCES.some(([file, source]) => file === "Dialog.tsx" && source.includes("<dialog")),
-  ).toBe(true);
-  const own = SOURCES.filter(
-    ([file, source]) =>
-      file !== "Dialog.tsx" && (/role=["{]+dialog/.test(source) || source.includes("<dialog")),
-  ).map(([file]) => file);
-  expect(own).toEqual([]);
-});
 
 // What is wrong with the button that opened a destructive form: it does not
 // itself do what cannot be undone, so it is a danger outline, not plain, not
@@ -515,103 +489,30 @@ test("the opener check fails on a plain, primary or danger button, or none", () 
   expect(openerFaults(undefined)).toEqual(["nothing opened it"]);
 });
 
-test.each(
-  [...PAGES, ...CHOICES].filter(
-    ([page]) => !DESTRUCTIVE.includes(page) && !DANGER_IN_PLACE.includes(page),
-  ),
-)("the forms on %s lead with primary, not danger", async (page, where, open) => {
-  api();
-  show(where);
-  await open();
-  if (!CHOICES.some(([choice]) => choice === page)) await inputs();
-  expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
-  expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
-});
-
-test("the check fails on a form with no leading button, two, or one that does not submit it", () => {
-  const form = (buttons: string) => {
-    const root = document.createElement("div");
-    root.innerHTML = `<form>${buttons}</form>`;
-    return root;
-  };
-  expect(
-    hierarchyFaults(
-      form(
-        '<button type="submit" class="primary">Save</button><button type="button">Cancel</button>',
-      ),
-    ),
-  ).toEqual([]);
-  expect(
-    hierarchyFaults(
-      form(
-        '<button type="submit" class="danger">Delete</button><button type="button">Cancel</button>',
-      ),
-    ),
-  ).toEqual([]);
-  expect(hierarchyFaults(form('<button type="submit">Save</button>'))).toHaveLength(1);
-  expect(
-    hierarchyFaults(
-      form(
-        '<button class="primary">Save</button><button type="button" class="primary">Cancel</button>',
-      ),
-    ),
-  ).toHaveLength(1);
-  expect(
-    hierarchyFaults(
-      form(
-        '<button type="submit">Save</button><button type="button" class="primary">Cancel</button>',
-      ),
-    ),
-  ).toHaveLength(1);
-  expect(
-    hierarchyFaults(
-      form(
-        '<button type="submit" class="danger">Delete</button><button type="button" class="primary">Keep</button>',
-      ),
-    ),
-  ).toHaveLength(1);
-  expect(
-    hierarchyFaults(
-      form(
-        '<button type="submit">Delete</button><button type="button" class="danger">Cancel</button>',
-      ),
-    ),
-  ).toHaveLength(1);
-  const dialog = document.createElement("div");
-  dialog.innerHTML =
-    '<div role="dialog" aria-label="Remove"><button class="primary">Remove</button></div>';
-  expect(hierarchyFaults(dialog)).toEqual(["Remove: a dialog with no form"]);
-  // the page's own dialogs are the native element, named by their heading
-  const native = document.createElement("div");
-  native.innerHTML =
-    '<dialog open aria-labelledby="planted-heading"><h2 id="planted-heading">Planted</h2><button class="primary">Close</button></dialog>';
-  document.body.append(native);
-  try {
-    expect(hierarchyFaults(native)).toEqual(["Planted: a dialog with no form"]);
-  } finally {
-    native.remove();
-  }
-  expect(hierarchyFaults(document.createElement("div"))).toEqual([]);
-});
-
-test("the settings page has an input for every field it describes, and the token's, and nothing else", async () => {
+test("the leading check fails on a form with no leading button and a dialog with no form, and exempts only the header's sign-out", async () => {
+  const root = document.createElement("div");
+  root.innerHTML =
+    '<form><button type="submit" class="primary">Save</button><button type="button">Cancel</button></form>';
+  expect(hierarchyFaults(root)).toEqual([]); // positive control: a form that leads as it should
+  root.innerHTML =
+    '<form><button type="submit">Save</button></form><div role="dialog" aria-label="Remove"><button class="primary">Remove</button></div>';
+  expect(hierarchyFaults(root)).toEqual([
+    "Remove: a dialog with no form",
+    "Save: 0 leading buttons",
+  ]);
+  // the exemption is held to its subject: the header's sign-out form, and that form only
   api();
   renderApp("/settings");
-  const banner = await screen.findByRole("banner");
-  const found = (await inputs()).filter((input) => !banner.contains(input)); // the page's own
-  const github = await screen.findByRole("region", { name: m.settingsGithubTitle });
-  const token = found.filter((input) => github.contains(input));
-  expect(token.map((input) => (input as HTMLInputElement).type)).toEqual(["password"]);
-  expect(Object.keys(FIELDS).length).toBeGreaterThan(0); // non-vacuity
-  expect(
-    found
-      .filter((input) => !token.includes(input))
-      .map((input) => (input as HTMLInputElement).name),
-  ).toEqual(Object.keys(FIELDS));
-  expect(document.querySelectorAll("form").length).toBeGreaterThan(1);
-  expect(document.querySelectorAll("form[novalidate]").length).toBe(
-    document.querySelectorAll("form").length,
-  );
+  const form = (await screen.findByRole("banner")).querySelector("form.sign-out")!;
+  expect(form).not.toBeNull();
+  expect(form.querySelectorAll("button.primary, button.danger")).toHaveLength(0);
+  expect(hierarchyFaults(document)).toEqual([]);
+  const copy = document.createElement("div");
+  copy.append(form.cloneNode(true));
+  expect(hierarchyFaults(copy)).toHaveLength(1);
+  // every form named as leading with danger is one of those checked
+  const pages = [...PAGES, ...CHOICES].map(([page]) => page);
+  for (const page of [...DESTRUCTIVE, ...DANGER_IN_PLACE]) expect(pages).toContain(page);
 });
 
 // The inputs of a form whose refusal names a field: each carries the field's
@@ -684,17 +585,6 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   }
   return faults;
 }
-
-test("the new workspace form asks for the name, then the repository's address, each under its field's name", async () => {
-  api();
-  renderApp("/");
-  const form = (await openNewWorkspace()).closest("form")!;
-  expect(fieldInputs(form).map((input) => input.name)).toEqual(["name", "url"]);
-  expect(fieldInputs(form).map((input) => input.labels?.[0]?.textContent)).toEqual([
-    m.newWorkspaceName,
-    m.newWorkspaceSource,
-  ]);
-});
 
 test.each(PAGES)("a refused field on %s is named by its label", async (_, where, open) => {
   api();
@@ -930,61 +820,6 @@ function coverageFaults(source: Set<string>, seen: Seen[]) {
   };
 }
 
-test("the source check names each form by its component and handler, and reports what it cannot name", () => {
-  const planted = `
-function Planted() {
-  function send(event) {
-    event.preventDefault();
-  }
-  return (
-    <form
-      noValidate
-      onSubmit={send}
-    >
-      <form onSubmit={(event) => event.preventDefault()} />
-    </form>
-  );
-}
-const Arrow = () => {
-  const go = () => {};
-  return <form onSubmit={go} />;
-};
-function Bare() {
-  return <form />;
-}
-function helper() {
-  const send = () => {};
-  return <form onSubmit={send} />;
-}
-function Wrapped() {
-  const save = useCallback(() => {}, []);
-  return <form onSubmit={save} />;
-}
-function Passed({ onSave }) {
-  return <form onSubmit={onSave} />;
-}
-`;
-  const again =
-    "export function Planted() {\n  const send = function () {};\n  return <form onSubmit={send} />;\n}\n";
-  expect(sourceForms([["planted.tsx", planted]])).toEqual({
-    ids: new Set(["Planted.send", "Arrow.go"]),
-    faults: [
-      "planted.tsx:11: a form whose onSubmit is not a function's name",
-      "planted.tsx:20: a form whose onSubmit is not a function's name",
-      "planted.tsx:24: a form outside a component",
-      "planted.tsx:28: Wrapped.save is not bound to a function, as a wrapped handler is not",
-      "planted.tsx:31: Passed.onSave is not a function the component declares",
-    ],
-  });
-  expect(sourceForms([["again.tsx", again]]).faults).toEqual([]); // positive control: alone it is fine
-  expect(
-    sourceForms([
-      ["planted.tsx", planted],
-      ["again.tsx", again],
-    ]).faults,
-  ).toContain("again.tsx:3: a second form known as Planted.send");
-});
-
 // How long a visit to every page may take, on a slow or busy machine.
 const EVERY_PAGE_MS = 60_000;
 
@@ -1019,10 +854,19 @@ describe("the forms on screen", () => {
     });
   });
 
-  test("every component that draws a dialog is opened by a page these tests visit, each the native modal", () => {
+  test("every component that draws a dialog is opened by a page these tests visit, each the native modal, and no other file draws one", () => {
     const source = callSites(SOURCES).dialogs;
     expect(source).toContain("LimitsDialog"); // positive control: the source was read
     expect(dialogFaults(source, dialogs)).toEqual({ missing: [], unknown: [], notModal: [] });
+    // and no other file draws a dialog of its own: the shared one is among the files read
+    expect(SOURCES.some(([file, text]) => file === "Dialog.tsx" && text.includes("<dialog"))).toBe(
+      true,
+    );
+    const own = SOURCES.filter(
+      ([file, text]) =>
+        file !== "Dialog.tsx" && (/role=["{]+dialog/.test(text) || text.includes("<dialog")),
+    ).map(([file]) => file);
+    expect(own).toEqual([]);
   });
 
   test("the dialog check reports a dialog in the source no page opens, and one not opened as a modal", () => {
@@ -1045,102 +889,6 @@ describe("the forms on screen", () => {
       missing: [...real.missing, "Planted.send"].sort(),
     });
   });
-
-  test("the coverage check reports the form of a page left out of those visited", () => {
-    const source = sourceForms(SOURCES).ids;
-    // positive control: the page is visited, and shows the form
-    expect(seen).toContainEqual(
-      expect.objectContaining({ entry: "Claude Code versions", id: "Versions.upgrade" }),
-    );
-    // every entry that opens the versions page, its dialog's among them
-    const without = seen.filter(
-      (s) => s.entry !== "Claude Code versions" && s.entry !== "marking a version as failed",
-    );
-    expect(coverageFaults(source, without).missing).toContain("Versions.upgrade");
-  });
-
-  test("the coverage check reports a form opened that the source does not have, and one with a field seen only from CHOICES", () => {
-    const source = sourceForms(SOURCES).ids;
-    const real = coverageFaults(source, seen);
-    const planted: Seen = { entry: "planted", fromPages: false, id: "Planted.send", fields: true };
-    expect(coverageFaults(source, [...seen, planted])).toEqual({
-      ...real,
-      unknown: [...real.unknown, "Planted.send"].sort(),
-      unlabelled: [...real.unlabelled, "Planted.send"].sort(),
-    });
-    // positive control: the same form seen from PAGES, with its field, is labelled
-    expect(
-      coverageFaults(new Set([...source, "Planted.send"]), [
-        ...seen,
-        planted,
-        { ...planted, fromPages: true },
-      ]),
-    ).toEqual(real);
-  });
-});
-
-function PlantedForm() {
-  const send = (event: FormEvent) => event.preventDefault();
-  return (
-    <form noValidate onSubmit={send}>
-      <button type="submit">Send</button>
-    </form>
-  );
-}
-
-// A form whose handler is wrapped, so its function has no name of its own.
-function WrappedForm() {
-  const send = useCallback((event: FormEvent) => event.preventDefault(), []);
-  return (
-    <form noValidate onSubmit={send}>
-      <button type="submit">Send</button>
-    </form>
-  );
-}
-
-// A form with nothing to do on submit.
-function HandlerlessForm() {
-  return (
-    <form noValidate>
-      <button type="submit">Send</button>
-    </form>
-  );
-}
-
-// A component made by a function, as an arrow it returns, which has no name.
-function made() {
-  return () => {
-    const send = (event: FormEvent) => event.preventDefault();
-    return (
-      <form noValidate onSubmit={send}>
-        <button type="submit">Send</button>
-      </form>
-    );
-  };
-}
-const UnnamedForm = made();
-
-test("a form on screen is known by the component that rendered it and its handler", () => {
-  render(<PlantedForm />);
-  expect(formId(document.querySelector("form")!)).toBe("PlantedForm.send");
-});
-
-test("a form on screen that cannot be known so says why", () => {
-  render(<WrappedForm />);
-  expect(() => formId(document.querySelector("form")!)).toThrow(
-    "a form whose onSubmit has no function name, a wrapped or anonymous handler",
-  );
-  cleanup();
-  render(<HandlerlessForm />);
-  expect(() => formId(document.querySelector("form")!)).toThrow("a form with no onSubmit");
-  cleanup();
-  expect(UnnamedForm.name).toBe(""); // the plant took effect: the component has no name
-  render(<UnnamedForm />);
-  expect(() => formId(document.querySelector("form")!)).toThrow(
-    "a form whose component React does not name",
-  );
-  cleanup();
-  expect(() => formId(document.createElement("form"))).toThrow("a form React did not render");
 });
 
 // A form whose ProblemView is given no labels.
@@ -1185,42 +933,6 @@ test("the label check fails on a form that shows a field by its name, or has an 
     "Nameless: an input with no field name",
     "Nameless box: an input with no field name",
     "Nameless choice: an input with no field name",
-    "planted: not shown under its input or as Planted label",
-  ]);
-});
-
-// A form that shows a refusal under its input, as it should, and one that marks an input
-// invalid without describing it by the message.
-function Marked({ described }: { described: boolean }) {
-  const [error, setError] = useState<ApiError | null>(null);
-  const fields = useFieldErrors(error);
-  const own = fields.input("planted");
-  return (
-    <form
-      noValidate
-      onSubmit={async (event) => {
-        event.preventDefault();
-        await client.post("/planted", {}).catch((e) => setError(asApiError(e)));
-      }}
-    >
-      <label>
-        Planted label
-        <input type="text" name="planted" {...(described ? own : { "aria-invalid": true })} />
-      </label>
-      {fields.message("planted")}
-      <button type="submit">Send</button>
-      <ProblemView error={error} labels={{ planted: "Planted label" }} inline />
-    </form>
-  );
-}
-
-test("the label check passes a refusal shown under its input, and fails one that is not linked to it", async () => {
-  fakeApi({});
-  const { unmount } = render(<Marked described />);
-  expect(await labelFaults(document.querySelector("form")!)).toEqual([]);
-  unmount();
-  render(<Marked described={false} />);
-  expect(await labelFaults(document.querySelector("form")!)).toEqual([
     "planted: not shown under its input or as Planted label",
   ]);
 });

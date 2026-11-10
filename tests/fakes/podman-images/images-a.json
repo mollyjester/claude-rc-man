@@ -1,27 +1,27 @@
 [
  {
-  "Id": "ebc39f4c882f0704529021d31c5e6bcb2ea86248503ef5d06ad0eee017a11abd",
-  "ParentId": "68d8dc27dfe3dab28b8c0751d7ab2f152a90ab6342cae512a5c34d994e5e1d9c",
+  "Id": "6d304369457c5399ba10bf428e115bac74eb1e464627b7927c6f084b8c2d6673",
+  "ParentId": "15be1de73686c75d0f98bae470cd436f64ee352974978f91e645e71cf5fd6ca1",
   "Names": [
    "localhost/rcman-test-steps:leaf"
   ],
-  "Created": 1794239023,
+  "Created": 1794341890,
   "Containers": 0
  },
  {
-  "Id": "68d8dc27dfe3dab28b8c0751d7ab2f152a90ab6342cae512a5c34d994e5e1d9c",
-  "ParentId": "69f919497cada9a8611f3de61df902d9f94bf20f84552ef5bd93125c38608ef9",
+  "Id": "15be1de73686c75d0f98bae470cd436f64ee352974978f91e645e71cf5fd6ca1",
+  "ParentId": "d9b8c34d61a9b9a3c44cab883d7d2f2619d674966ab520186f799cf32e3e0377",
   "Names": null,
-  "Created": 1794239023,
+  "Created": 1794341890,
   "Containers": 0
  },
  {
-  "Id": "69f919497cada9a8611f3de61df902d9f94bf20f84552ef5bd93125c38608ef9",
+  "Id": "d9b8c34d61a9b9a3c44cab883d7d2f2619d674966ab520186f799cf32e3e0377",
   "ParentId": "",
   "Names": [
-   "docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
+   "docker.io/library/ubuntu:24.04"
   ],
-  "Created": 1789766438,
+  "Created": 1792937867,
   "Containers": 1
  }
 ]

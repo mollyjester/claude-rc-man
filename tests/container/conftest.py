@@ -1,9 +1,8 @@
 """What the modules of tests/container/ share on the tests' own engine (tests/podman_service.py):
 the tools every workspace mounts, an empty Claude store and one holding the fake `claude`, the
 default workspace image and the builder image built from the installer's own files, Podman
-runtimes and rcman's settings made with the suites' sizes (tests/container/sizes.py), the
-stand-ins of tests/container/stand_ins.py as programs, and the whole stack
-(tests/container/stack.py) with what it is made of.
+runtimes and rcman's settings made with the suites' sizes (tests/container/sizes.py), and the
+stand-ins of tests/container/stand_ins.py as programs.
 
 The tools are those ``installer/install.py`` writes: busybox and its shell, the terminal
 descriptions, tmux's configuration, the Podman tools and the workspaces' seccomp profile of
@@ -16,7 +15,6 @@ container's ids are none of the user's, and pytest's own folders are the user's 
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import os
 import shutil
@@ -29,7 +27,7 @@ from rcman import runtime as rt
 from devtools import held_folders as hf
 from installer import install as ins
 from tests import podman_service as ps
-from tests.container import sizes, stack
+from tests.container import sizes
 from tests.hang_guard import CONTAINER_HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -123,18 +121,6 @@ def engine_scratch():
 
 
 @pytest.fixture(scope="session")
-def base_image(podman_service) -> str:
-    """The image the default image starts from, by its digest, pulled from its registry and
-    held for the session: an image with no Podman and no git."""
-    from tests.containers import digest_references
-
-    reference = digest_references(ins.CONTAINERFILE)[0]
-    pulled = podman_service.cli("pull", "-q", reference, timeout=CONTAINER_HANG_GUARD)
-    assert pulled.returncode == 0, pulled.stderr
-    return ps.hold(podman_service, reference)
-
-
-@pytest.fixture(scope="session")
 def default_image(podman_service, tmp_path_factory) -> str:
     """The default workspace image, built on the engine from the build context the installer
     makes for it, with the installer's own arguments."""
@@ -211,16 +197,6 @@ def image_of(runtime: rt.PodmanRuntime, name: str) -> str | None:
     return found.stdout.strip().removeprefix("sha256:")
 
 
-def on_host(runtime: rt.PodmanRuntime, path: str, format: str = "%u %g %a") -> list[str]:
-    """``stat`` of a path in the engine's storage, as the engine's user namespace sees ids: a
-    range's root is the range's base."""
-    found = engine_of(runtime).local(
-        "unshare", "stat", "-c", format, path, timeout=CONTAINER_HANG_GUARD
-    )
-    assert found.returncode == 0, found.stderr
-    return found.stdout.decode().split()
-
-
 def engine_settings(database: Path, store: Path, **more):
     """rcman's settings for a service on the engine: the database, and beside it the allowed
     list, and the Claude store of the module's runtime. No path of the settings' defaults, which
@@ -250,48 +226,3 @@ def stand_in(folder: Path, name: str, state: Path) -> Path:
     )
     program.chmod(0o755)
     return program
-
-
-# --- the whole stack (tests/container/stack.py) ----------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def stack_prepared(podman_service, system_image, source, toolchain, labelled):
-    """The backend's packages, as a virtual environment of the system image's Python, and the
-    built frontend, both made from the checkout's files in a container of the system image with
-    the engine's own network: a folder with ``venv`` and ``dist``."""
-    with hf.held("rcprep-") as folder:
-        os.chmod(folder, 0o755)
-        for name in ("venv", "dist"):
-            (folder / name).mkdir()
-        node, uv = ins.node_bin(ins.TOOLCHAIN), ins.uv_binary(ins.TOOLCHAIN)
-        script = (
-            "set -e; cp -a /src /tmp/s; cd /tmp/s/frontend; "
-            f"PATH={node}:$PATH npm ci --no-audit --no-fund; PATH={node}:$PATH npm run build; "
-            f"cp -a dist/. {stack.DIST}/; cd /tmp/s; UV_PROJECT_ENVIRONMENT={stack.VENV} {uv} sync "
-            "--frozen --no-dev --no-install-project --python /usr/bin/python3"
-        )
-        done = podman_service.cli(
-            "run", "--rm", "--pull=never", "--network=host", *labelled, "-v", f"{source}:/src:ro",
-            "-v", f"{toolchain}:{ins.TOOLCHAIN}:ro", "-v", f"{folder / 'venv'}:{stack.VENV}",
-            "-v", f"{folder / 'dist'}:{stack.DIST}", system_image, "sh", "-c", script,
-            timeout=CONTAINER_HANG_GUARD,
-        )  # fmt: skip
-        assert done.returncode == 0, (done.stdout + done.stderr).decode(errors="replace")[-8000:]
-        yield folder
-
-
-@contextlib.contextmanager
-def a_stack(engine, name, system_image, default_image, builder_image, engine_tools, prepared,
-            toolchain, source, labelled):  # fmt: skip
-    """A stack of its own, with a store of its own holding the fake claude as the tested
-    version, as the installer leaves the store."""
-    with hf.held("rcstore-") as store:
-        version = (REPO / "helpers" / "claude-version").read_text().strip()
-        fill_store(store, version)
-        with stack.launched(
-            engine, name=name, system_image=system_image, default_image=default_image,
-            builder_image=builder_image, tools=engine_tools, store=store, prepared=prepared,
-            toolchain=toolchain, source=source, labelled=labelled,
-        ) as found:  # fmt: skip
-            yield found

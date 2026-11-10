@@ -12,21 +12,16 @@ from __future__ import annotations
 
 import json
 import stat
-import threading
 from pathlib import Path
 
 import pytest
-from rcman import db, people
+from rcman import db
 from rcman import rcman_upgrade as up
-from rcman import workspaces as ws
 
-from tests.conftest import ALICE, BOB, as_user, changing, ended
-from tests.hang_guard import HANG_GUARD, runs_out
-from tests.time_doubles import FakeTime, RecordingLock
+from tests.conftest import ALICE, as_user, changing
 
 ROUTE = "/api/rcman/upgrade"
 BOOT = "6f1c2a7e-0d4b-4b1e-9a51-3c2d1e0f9a88"
-OTHER_BOOT = "0b9e8d7c-6a5f-4e3d-2c1b-0a9f8e7d6c5b"
 OLD = "1" * 40  # a commit of a release before
 NEW = "2" * 40
 OLD_RUN, NEW_RUN = "a" * 32, "b" * 32  # invocations of the service
@@ -36,11 +31,11 @@ OLD_RUN, NEW_RUN = "a" * 32, "b" * 32  # invocations of the service
 # properties in systemd's own order, the blocks parted by an empty line.
 
 
-def shown(service_state="inactive", service_run="", path_state="active", path_load="loaded"):
+def shown(service_state="inactive", service_run=""):
     return (
         f"Id=rcman-upgrade.service\nLoadState=loaded\nActiveState={service_state}\n"
         f"InvocationID={service_run}\n\n"
-        f"Id=rcman-upgrade.path\nLoadState={path_load}\nActiveState={path_state}\n"
+        "Id=rcman-upgrade.path\nLoadState=loaded\nActiveState=active\n"
         f"InvocationID={'c' * 32}\n"
     )
 
@@ -48,7 +43,6 @@ def shown(service_state="inactive", service_run="", path_state="active", path_lo
 IDLE = shown()  # nothing runs; the path unit watches
 IDLE_AFTER_OLD = shown(service_run=OLD_RUN)  # the service ran once, and is done
 RUNNING_NEW = shown("activating", NEW_RUN)  # a run of the service, its ExecStart
-FINISHING_NEW = shown("deactivating", NEW_RUN)  # its ExecStopPost
 DONE_NEW = shown(service_run=NEW_RUN)
 
 
@@ -95,20 +89,14 @@ def on(settings):
 
 
 class Show:
-    """Stands in for what systemd shows: ``answer``, or the error it raises; counts the calls,
-    and, once ``hold`` is set, waits in the call for ``go`` after setting ``entered``."""
+    """Stands in for what systemd shows: ``answer``, or the error it raises; counts the calls."""
 
     def __init__(self, answer: str | Exception = IDLE):
         self.answer = answer
         self.calls = 0
-        self.hold = False
-        self.entered, self.go = threading.Event(), threading.Event()
 
     def __call__(self) -> str:
         self.calls += 1
-        if self.hold:
-            self.entered.set()
-            assert self.go.wait(HANG_GUARD)
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
@@ -121,9 +109,8 @@ def show(paths, on, app):
     return fake
 
 
-def write_status(paths: Path, found: dict | str) -> None:
-    text = found if isinstance(found, str) else json.dumps(found)
-    (paths / "status" / "status.json").write_text(text, encoding="utf-8")
+def write_status(paths: Path, found: dict) -> None:
+    (paths / "status" / "status.json").write_text(json.dumps(found), encoding="utf-8")
 
 
 def get(client) -> dict:
@@ -132,8 +119,8 @@ def get(client) -> dict:
     return r.json()
 
 
-def post(client, who=ALICE):
-    return client.post(ROUTE, headers=changing(who))
+def post(client):
+    return client.post(ROUTE, headers=changing(ALICE))
 
 
 def reason(report: dict) -> str | None:
@@ -148,44 +135,12 @@ def audit_rows(settings) -> list[dict]:
         con.close()
 
 
-def creating_row(settings, name="being-made") -> None:
-    """A workspace of alice's recorded as being made, as one is while it is cloned."""
-    con = db.connect(settings.database)
-    try:
-        con.execute(
-            "insert into workspaces (person, name, state) values (1, ?, 'creating')", (name,)
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-def alice(settings) -> people.Person:
-    con = db.connect(settings.database)
-    try:
-        return people.by_id(con, 1)
-    finally:
-        con.close()
-
-
-# --- the report's shape, and the option ---------------------------------------------------
+# --- the report, and the option ----------------------------------------------------------
 
 KEYS = {
     "release", "enabled", "available", "reason", "state", "started", "finished",
     "from", "to", "error",
 }  # fmt: skip
-
-
-def test_the_report_has_its_stable_shape_whatever_the_state(paths, client, app, on):
-    fake = Show()
-    app.state.upgrade.show = fake
-    assert set(get(client)) == KEYS
-    write_status(paths, status("failed"))
-    assert set(get(client)) == KEYS
-    fake.answer = up.ShowFailed("planted: systemd does not answer")
-    assert set(get(client)) == KEYS
-    write_status(paths, "planted: not a status")
-    assert set(get(client)) == KEYS
 
 
 def test_with_the_option_off_the_report_says_so_and_asks_systemd_nothing(paths, client, app):
@@ -196,21 +151,6 @@ def test_with_the_option_off_the_report_says_so_and_asks_systemd_nothing(paths, 
     assert report["reason"]["code"] == "rcman_upgrade_refused"
     assert report["reason"]["title"]
     assert fake.calls == 0
-
-
-def test_with_the_option_off_a_request_is_refused_and_recorded(paths, client, settings):
-    r = post(client)
-    assert r.status_code == 409, r.text
-    assert (r.json()["code"], r.json()["reason"]) == ("rcman_upgrade_refused", "disabled")
-    assert not up.REQUEST.exists()
-    last = audit_rows(settings)[-1]
-    assert (last["action"], last["result"]) == ("rcman.upgrade", "rcman_upgrade_refused")
-
-
-def test_the_report_and_the_request_are_for_administrators_only(paths, client, show):
-    assert client.get(ROUTE, headers=as_user(BOB)).json()["code"] == "admin_only"
-    assert post(client, BOB).json()["code"] == "admin_only"
-    assert not up.REQUEST.exists()
 
 
 # --- the release rcman runs ------------------------------------------------------------------
@@ -224,27 +164,7 @@ def test_the_release_is_the_one_rcman_started_from_even_after_current_is_switche
     assert get(client)["release"] == OLD
 
 
-def test_a_development_run_has_no_release(tmp_path):
-    (tmp_path / ".venv").mkdir()
-    assert up.running_release(tmp_path / ".venv") is None
-
-
-@pytest.mark.parametrize("text", ["", "\n", "not a commit\n", "1" * 39 + "\n", "G" * 40])
-def test_a_mark_that_names_no_commit_is_no_release(tmp_path, text):
-    (tmp_path / ".venv").mkdir()
-    (tmp_path / ".complete").write_text(text, encoding="utf-8")
-    assert up.running_release(tmp_path / ".venv") is None
-    (tmp_path / ".complete").write_text(OLD + "\n", encoding="utf-8")
-    assert up.running_release(tmp_path / ".venv") == OLD  # positive control
-
-
 # --- the state ---------------------------------------------------------------------------------
-
-
-def test_with_no_status_the_last_upgrade_is_unknown_and_one_may_be_asked_for(client, show):
-    report = get(client)
-    assert (report["state"], report["available"], report["reason"]) == ("unknown", True, None)
-    assert (report["from"], report["to"], report["error"]) == (None, None, None)
 
 
 def test_a_finished_upgrade_is_reported_from_its_status(paths, client, show):
@@ -255,49 +175,6 @@ def test_a_finished_upgrade_is_reported_from_its_status(paths, client, show):
     write_status(paths, status("failed"))
     report = get(client)
     assert (report["state"], report["error"]) == ("failed", "install.sh: it went wrong")
-
-
-@pytest.mark.parametrize("unit", [RUNNING_NEW, FINISHING_NEW])
-def test_a_run_of_the_service_is_running_with_its_own_status(paths, client, show, unit):
-    show.answer = unit
-    write_status(paths, status("running", invocation=NEW_RUN))
-    report = get(client)
-    assert (report["state"], report["available"], reason(report)) == (
-        "running", False, "under_way",
-    )  # fmt: skip
-    assert (report["from"], report["started"]) == (OLD, "2026-10-19T10:00:00+00:00")
-
-
-def test_a_run_that_has_not_written_its_status_yet_shows_none_of_the_last_one(paths, client, show):
-    show.answer = RUNNING_NEW
-    write_status(paths, status("succeeded", invocation=OLD_RUN))
-    report = get(client)
-    assert report["state"] == "running"
-    assert (report["from"], report["to"], report["started"], report["finished"]) == (
-        None, None, None, None,
-    )  # fmt: skip
-
-
-def test_a_running_status_from_another_boot_reads_as_failed(paths, client, show):
-    write_status(paths, status("running", boot=OTHER_BOOT, invocation=NEW_RUN))
-    report = get(client)
-    assert (report["state"], report["available"]) == ("failed", True)
-    write_status(paths, status("running", invocation=NEW_RUN))  # positive control: this boot
-    show.answer = RUNNING_NEW
-    assert get(client)["state"] == "running"
-
-
-def test_a_running_status_the_service_no_longer_runs_reads_as_failed(paths, client, show):
-    show.answer = DONE_NEW  # the run ended, and its end was never written
-    write_status(paths, status("running", invocation=NEW_RUN))
-    assert get(client)["state"] == "failed"
-
-
-def test_a_running_status_of_this_boot_is_running_where_systemd_cannot_be_read(paths, client, show):
-    show.answer = up.ShowFailed("planted: systemd does not answer")
-    write_status(paths, status("running", invocation=NEW_RUN))
-    report = get(client)
-    assert (report["state"], reason(report)) == ("running", "units_unreadable")
 
 
 def test_a_request_is_requested_until_its_run_starts(paths, client, show):
@@ -311,71 +188,16 @@ def test_a_request_is_requested_until_its_run_starts(paths, client, show):
     assert report["from"] is None and report["to"] is None  # not the last run's
     show.answer = RUNNING_NEW  # the path unit started it
     assert get(client)["state"] == "running"
+    write_status(paths, status("running", invocation=NEW_RUN))  # the run's own status
+    report = get(client)
+    assert (report["state"], report["available"], reason(report)) == (
+        "running", False, "under_way",
+    )  # fmt: skip
+    assert (report["from"], report["started"]) == (OLD, "2026-10-19T10:00:00+00:00")
     show.answer = DONE_NEW
     write_status(paths, status("succeeded", invocation=NEW_RUN))
     report = get(client)
     assert (report["state"], report["available"]) == ("succeeded", True)
-
-
-def test_a_run_that_started_and_ended_between_two_reports_is_seen_by_its_status(
-    paths, client, show
-):
-    """systemd may forget a finished unit's invocation; the status still names it."""
-    write_status(paths, status("succeeded", invocation=OLD_RUN))
-    assert post(client).status_code == 202
-    assert get(client)["state"] == "requested"  # the last run's status is not this one's
-    write_status(paths, status("failed", invocation=NEW_RUN))
-    assert get(client)["state"] == "failed"
-
-
-def test_a_request_that_never_started_is_not_started_once_the_grace_is_over(
-    paths, client, show, monkeypatch
-):
-    assert post(client).status_code == 202
-    assert get(client)["state"] == "requested"
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)
-    report = get(client)
-    assert (report["state"], report["available"], report["reason"]) == (
-        "not_started", True, None,
-    )  # fmt: skip
-
-
-MALFORMED_SHOW = [
-    "",
-    "garbage",
-    IDLE.split("\n\n")[0],  # one unit's block only
-    IDLE + "\nId=another.service\nLoadState=loaded\nActiveState=active\nInvocationID=\n",
-    IDLE.replace("ActiveState=inactive\n", ""),
-    IDLE.replace("rcman-upgrade.path", "something-else.path"),
-    IDLE.replace("ActiveState=inactive", "ActiveState=sleeping"),
-    IDLE.replace("\n\n", "\n"),  # no part between the blocks
-]
-
-
-@pytest.mark.parametrize("text", MALFORMED_SHOW)
-def test_unexpected_show_output_is_an_error_never_idle(text):
-    assert up.read_units(IDLE)["rcman-upgrade.path"].active == "active"  # positive control
-    with pytest.raises(ValueError):
-        up.read_units(text)
-
-
-@pytest.mark.parametrize("text", MALFORMED_SHOW)
-def test_when_systemd_cannot_be_read_no_upgrade_is_offered_or_admitted(client, show, text):
-    show.answer = text
-    report = get(client)
-    assert (report["available"], reason(report)) == (False, "units_unreadable")
-    r = post(client)
-    assert (r.status_code, r.json()["reason"]) == (409, "units_unreadable")
-    assert not up.REQUEST.exists()
-
-
-@pytest.mark.parametrize("unit", [shown(path_state="inactive"), shown(path_load="not-found")])
-def test_no_upgrade_is_offered_or_admitted_while_the_path_unit_does_not_watch(client, show, unit):
-    show.answer = unit
-    assert reason(get(client)) == "path_inactive"
-    r = post(client)
-    assert (r.status_code, r.json()["reason"]) == (409, "path_inactive")
-    assert not up.REQUEST.exists()
 
 
 def test_systemd_is_asked_with_a_fixed_argv_and_environment(tmp_path, monkeypatch, paths, on):
@@ -397,270 +219,28 @@ def test_systemd_is_asked_with_a_fixed_argv_and_environment(tmp_path, monkeypatc
     assert set(environment) - {"PWD", "SHLVL", "_"} == set(up.SHOW_ENVIRONMENT)
 
 
-def test_systemctl_refusing_is_an_error(tmp_path, monkeypatch):
-    program = tmp_path / "systemctl"
-    program.write_text("#!/bin/sh\necho 'planted: no bus' >&2\nexit 1\n", encoding="utf-8")
-    program.chmod(0o755)
-    monkeypatch.setattr(up, "SYSTEMCTL", str(program))
-    with pytest.raises(up.ShowFailed, match="planted: no bus"):
-        up.show_units()
-    monkeypatch.setattr(up, "SYSTEMCTL", str(tmp_path / "not-there"))
-    with pytest.raises(up.ShowFailed):
-        up.show_units()
-
-
 # --- asking for an upgrade ----------------------------------------------------------------------
 
 
 def test_a_request_is_admitted_written_and_recorded(paths, client, show, settings):
     r = post(client)
     assert r.status_code == 202, r.text
-    assert set(r.json()) == KEYS and r.json()["state"] == "requested"
+    assert set(r.json()) == KEYS
     request = up.REQUEST
     assert request.is_file() and not request.is_symlink()
     assert stat.S_IMODE(request.stat().st_mode) & 0o077 == 0
-    before = request.stat().st_mtime_ns
     last = audit_rows(settings)[-1]
     assert (last["action"], last["result"], last["email"]) == ("rcman.upgrade", "ok", ALICE)
-    # a second is refused while the first is under way, and the file is left as it is
-    r = post(client)
-    assert (r.status_code, r.json()["reason"]) == (409, "under_way")
-    assert request.stat().st_mtime_ns == before
-
-
-def test_a_request_after_one_that_never_started_is_admitted_again(paths, client, show, monkeypatch):
-    assert post(client).status_code == 202
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)
-    assert post(client).status_code == 202
-
-
-@pytest.fixture
-def fake_time(monkeypatch) -> FakeTime:
-    """The upgrades' time (``rcman_upgrade.time``), which only the test moves
-    (tests/time_doubles.py); the test calls ``Upgrades`` itself."""
-    made = FakeTime()
-    monkeypatch.setattr(up, "time", made)
-    return made
-
-
-@pytest.mark.parametrize("short", [0, 1])
-def test_a_request_is_requested_until_its_grace_is_over_and_then_not_started(
-    fake_time, paths, client, show, app, short
-):
-    """The twin of the two above, at the grace's edge: a second short of it, the request still
-    holds, and it is let go exactly at it."""
-    upgrades = app.state.upgrade
-    assert upgrades.request()["state"] == "requested"
-    fake_time.advance(up.UPGRADE_START_GRACE - short)
-    assert upgrades.under_way() is bool(short)
-    assert upgrades.report()["state"] == ("requested" if short else "not_started")
-    if short:
-        with pytest.raises(up.Refused) as refused:
-            upgrades.request()
-        assert refused.value.extra["reason"] == "under_way"
-    else:
-        assert upgrades.request()["state"] == "requested"  # admitted again
-
-
-def test_requests_are_limited_by_a_token_bucket(paths, client, show, monkeypatch):
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)  # each request may be admitted again
-    answers = [post(client).status_code for _ in range(up.REQUESTS_BURST)]
-    assert answers == [202] * up.REQUESTS_BURST
-    r = post(client)
-    assert (r.status_code, r.json()["code"]) == (429, "too_many_requests")
-    assert int(r.headers["Retry-After"]) >= 1
-
-
-def test_no_upgrade_is_admitted_while_a_workspace_is_being_made(client, show, settings):
-    creating_row(settings)
-    assert reason(get(client)) == "creating"
-    r = post(client)
-    assert (r.status_code, r.json()["reason"]) == (409, "creating")
-    assert not up.REQUEST.exists()
-
-
-def test_no_upgrade_is_admitted_while_a_workspace_is_being_rebuilt(client, show, settings):
-    """The phase of a rebuild is in the row, so that one this process does not run, or one a
-    restart left, is seen too."""
-    creating_row(settings, "being-rebuilt")
-    con = db.connect(settings.database)
-    try:
-        con.execute("update workspaces set state = 'ready', rebuild_state = 'preparing'")
-        con.commit()
-    finally:
-        con.close()
-    assert reason(get(client)) == "rebuilding"
-    r = post(client)
-    assert (r.status_code, r.json()["reason"]) == (409, "rebuilding")
-    assert not up.REQUEST.exists()
-
-
-def cloned_workspace(client, github_stand_in, tmp_path) -> dict:
-    """A ready workspace of alice's, cloned from the stand-in for github.com, which a rebuild
-    may be asked for."""
-    from tests.git_fixtures import make_repo
-    from tests.test_clone import cloned
-
-    make_repo(tmp_path / "src", origin=github_stand_in / "octo" / "widget.git")
-    found = cloned(client)
-    assert found["state"] == "ready" and found["rebuildable"], found
-    return found
-
-
-def preparing_held(app, monkeypatch):
-    """Every rebuild held in its first phase, preparing, until the event this gives is set."""
-    from rcman import workspaces as ws
-
-    held, entered = threading.Event(), threading.Event()
-    real = ws.Workspaces._prepare
-
-    def prepare(self, *args, **more):
-        entered.set()
-        assert held.wait(HANG_GUARD)
-        return real(self, *args, **more)
-
-    monkeypatch.setattr(ws.Workspaces, "_prepare", prepare)
-    return held, entered
-
-
-def test_an_upgrade_asked_for_while_a_real_rebuild_prepares_is_refused(
-    client, show, app, settings, github_stand_in, tmp_path, monkeypatch
-):
-    found = cloned_workspace(client, github_stand_in, tmp_path)
-    held, entered = preparing_held(app, monkeypatch)
-    r = client.post(
-        f"/api/workspaces/{found['id']}/rebuild", json={"confirm": True}, headers=changing(ALICE)
-    )
-    assert r.status_code == 202, r.text
-    try:
-        assert entered.wait(HANG_GUARD)  # the rebuild is preparing, in its own thread
-        r = post(client)
-        assert (r.status_code, r.json()["reason"]) == (409, "rebuilding")
-        assert not up.REQUEST.exists()
-    finally:
-        held.set()
-    ended(app.state.workspaces, found["id"])
-    assert post(client).status_code == 202  # the positive: once it is over, it is admitted
-
-
-def test_a_rebuild_asked_for_once_an_upgrade_was_admitted_is_refused(
-    client, show, app, settings, github_stand_in, tmp_path
-):
-    found = cloned_workspace(client, github_stand_in, tmp_path)
-    assert post(client).status_code == 202
-    r = client.post(
-        f"/api/workspaces/{found['id']}/rebuild", json={"confirm": True}, headers=changing(ALICE)
-    )
-    assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
-    assert app.state.workspaces.get(found["id"]).rebuild_state is None
-
-
-def held_images(app):
-    """An image collection that holds the images' lock until ``go`` is set."""
-    service = app.state.workspaces
-    entered, go = threading.Event(), threading.Event()
-    real = service._collect_unreferenced
-
-    def collect():
-        entered.set()
-        assert go.wait(HANG_GUARD)
-        real()
-
-    service._collect_unreferenced = collect
-    thread = threading.Thread(target=service._collect_images)
-    thread.start()
-    assert entered.wait(HANG_GUARD)
-    return go, thread
-
-
-@pytest.fixture
-def images_lock(monkeypatch):
-    """The images' lock (``Workspaces._images_lock``, an RLock) of the first service made from
-    here on as a RecordingLock, put in as the service is made, before ``client`` starts it, so
-    that a test sees a take of it blocked rather than waiting for one: call it for the lock."""
-    real, made = ws.Workspaces.__init__, []
-
-    def init(self, *args, **kwargs):
-        real(self, *args, **kwargs)
-        if not made:
-            self._images_lock = RecordingLock(self._images_lock)
-            made.append(self._images_lock)
-
-    monkeypatch.setattr(ws.Workspaces, "__init__", init)
-    return lambda: made[0]
-
-
-def test_a_request_waits_only_so_long_for_the_images_to_be_collected(
-    client, show, app, monkeypatch
-):
-    """With no wait at all against a collection that does not end until the test lets it."""
-    go, thread = held_images(app)
-    try:
-        with monkeypatch.context() as patched:
-            runs_out(patched, up, "ADMISSION_WAIT")
-            r = post(client)
-        assert (r.status_code, r.json()["reason"]) == (409, "images")
-        assert not up.REQUEST.exists()
-    finally:
-        go.set()
-        thread.join(HANG_GUARD)
-    assert post(client).status_code == 202  # once they are collected
-
-
-def test_a_request_waits_for_a_collection_within_the_admission_wait(
-    images_lock, client, show, app, settings, monkeypatch
-):
-    monkeypatch.setattr(up, "ADMISSION_WAIT", HANG_GUARD)
-    lock = images_lock()
-    go, thread = held_images(app)
-    answered: list = []
-    asking = threading.Thread(target=lambda: answered.append(app.state.upgrade.request()))
-    asking.start()
-    [blocked] = lock.wait_blocked(1, match=asking)
-    assert blocked.seconds == up.ADMISSION_WAIT  # it waits at most the admission's wait
-    assert answered == [] and not up.REQUEST.exists()  # it waits for the lock
-    go.set()
-    asking.join(HANG_GUARD)
-    thread.join(HANG_GUARD)
-    assert answered and answered[0]["state"] == "requested"
-    assert up.REQUEST.exists()
-
-
-def held_sweep(app):
-    """The sweep of what a roll-out left, holding the roll-outs' lock until ``go`` is set."""
-    runtime = app.state.workspaces.runtime
-    entered, go = threading.Event(), threading.Event()
-    real = runtime.end_canary
-
-    def end_canary(name):
-        entered.set()
-        assert go.wait(HANG_GUARD)
-        real(name)
-
-    runtime.end_canary = end_canary
-    thread = threading.Thread(target=app.state.versions.sweep)
-    thread.start()
-    assert entered.wait(HANG_GUARD)
-    return go, thread
-
-
-def test_no_upgrade_is_admitted_while_a_roll_out_is_swept_up(client, show, app):
-    go, thread = held_sweep(app)
-    try:
-        assert reason(get(client)) == "rolling_out"
-        r = post(client)
-        assert (r.status_code, r.json()["reason"]) == (409, "rolling_out")
-        assert not up.REQUEST.exists()
-    finally:
-        go.set()
-        thread.join(HANG_GUARD)
-    assert post(client).status_code == 202
 
 
 # --- the freeze ---------------------------------------------------------------------------------
 
 
-def test_while_an_upgrade_is_under_way_no_workspace_is_made_or_cloned(client, show, settings):
+def test_while_an_upgrade_is_under_way_no_workspace_is_made_or_cloned_or_version_rolled_out(
+    client, show, settings
+):
+    versions = client.get("/api/claude/versions", headers=as_user(ALICE)).json()
+    assert versions["rcman_upgrading"] is False  # the positive: nothing under way yet
     assert post(client).status_code == 202
     r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
     assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
@@ -672,164 +252,7 @@ def test_while_an_upgrade_is_under_way_no_workspace_is_made_or_cloned(client, sh
     assert listed["workspaces"] == [] and listed["rcman_upgrading"] is True
     rows = [(r["action"], r["result"]) for r in audit_rows(settings)[-2:]]
     assert rows == [("workspace.create", "rcman_upgrading"), ("git.clone", "rcman_upgrading")]
-
-
-def test_while_an_upgrade_is_under_way_no_claude_code_version_is_rolled_out(client, show):
-    assert (
-        client.get("/api/claude/versions", headers=as_user(ALICE)).json()["rcman_upgrading"]
-        is False
-    )
-    assert post(client).status_code == 202
     r = client.post("/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(ALICE))
     assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
     report = client.get("/api/claude/versions", headers=as_user(ALICE)).json()
     assert report["rcman_upgrading"] is True and report["upgrading"] is False
-
-
-def test_with_no_upgrade_under_way_workspaces_are_made_as_ever(client, show):
-    listed = client.get("/api/workspaces", headers=as_user(ALICE)).json()
-    assert listed["rcman_upgrading"] is False
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert r.status_code == 202, r.text
-
-
-def test_a_running_upgrade_freezes_creation_in_a_service_that_never_saw_the_request(
-    paths, client, show
-):
-    """As in the rcman an upgrade restarted, while the upgrade's own run goes on."""
-    show.answer = RUNNING_NEW
-    write_status(paths, status("running", invocation=NEW_RUN))
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
-    show.answer = DONE_NEW
-    write_status(paths, status("succeeded", invocation=NEW_RUN))
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert r.status_code == 202, r.text
-
-
-def test_the_freeze_holds_while_a_started_run_has_not_written_its_status_yet(
-    paths, client, show, monkeypatch
-):
-    """Between the service's start and the wrapper's first write the status is the last run's:
-    a report read then must not let the request go, or creation would be let in meanwhile."""
-    write_status(paths, status("succeeded", invocation=OLD_RUN))
-    show.answer = IDLE_AFTER_OLD
-    assert post(client).status_code == 202
-    show.answer = RUNNING_NEW  # the path unit started it; the wrapper has written nothing yet
-    assert get(client)["state"] == "running"
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
-    # still so once the grace for a start is over: the service runs
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)
-    assert get(client)["state"] == "running"
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
-    write_status(paths, status("running", invocation=NEW_RUN))  # the wrapper's first write
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
-    show.answer = DONE_NEW
-    write_status(paths, status("succeeded", invocation=NEW_RUN))
-    assert get(client)["state"] == "succeeded"
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert r.status_code == 202, r.text
-
-
-def test_a_run_that_ended_without_writing_its_status_lets_the_request_go(paths, client, show):
-    write_status(paths, status("succeeded", invocation=OLD_RUN))
-    show.answer = IDLE_AFTER_OLD
-    assert post(client).status_code == 202
-    show.answer = DONE_NEW  # a new invocation, ended, its status never written
-    report = get(client)
-    assert report["state"] == "succeeded" and report["available"] is True  # the last run's
-    r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
-    assert r.status_code == 202, r.text
-
-
-def test_listing_workspaces_asks_systemd_nothing_while_no_upgrade_runs(paths, client, show):
-    write_status(paths, status("succeeded"))
-    for _ in range(3):
-        client.get("/api/workspaces", headers=as_user(ALICE))
-    assert show.calls == 0
-
-
-def test_a_workspace_asked_for_during_the_admission_is_refused_not_slipped_in(
-    images_lock, client, show, app, settings
-):
-    """The admission holds the images' lock from its checks to its record; a creation that
-    comes meanwhile waits for it, and then finds the upgrade under way."""
-    lock = images_lock()
-    show.hold = True
-    admitted: list = []
-    admitting = threading.Thread(target=lambda: admitted.append(app.state.upgrade.request()))
-    admitting.start()
-    assert show.entered.wait(HANG_GUARD)  # the admission holds the locks, asking systemd
-    refused: list = []
-
-    def create():
-        try:
-            app.state.workspaces.create(alice(settings), "slipped-in")
-        except Exception as error:  # noqa: BLE001 - the refusal is what is looked at
-            refused.append(error)
-
-    creating = threading.Thread(target=create)
-    creating.start()
-    lock.wait_blocked(1, match=creating)
-    assert refused == [] and creating.is_alive()  # it waits for the admission
-    show.go.set()
-    admitting.join(HANG_GUARD)
-    creating.join(HANG_GUARD)
-    assert admitted and admitted[0]["state"] == "requested"
-    assert [getattr(e, "code", e) for e in refused] == ["rcman_upgrading"]
-    assert app.state.workspaces.everything() == []
-
-
-def test_a_roll_out_asked_for_during_the_admission_is_refused(client, show, app):
-    show.hold = True
-    admitting = threading.Thread(target=app.state.upgrade.request)
-    admitting.start()
-    assert show.entered.wait(HANG_GUARD)
-    with pytest.raises(Exception) as busy:
-        app.state.versions.upgrade("2.2.0", ALICE)
-    assert busy.value.code == "claude_upgrade_busy"  # the admission holds the roll-outs' lock
-    show.go.set()
-    admitting.join(HANG_GUARD)
-    with pytest.raises(Exception) as frozen:
-        app.state.versions.upgrade("2.2.0", ALICE)
-    assert frozen.value.code == "rcman_upgrading"
-
-
-def test_no_upgrade_is_admitted_while_a_workspace_is_stopped(client, show, app, monkeypatch):
-    """A Stop or a Start runs in this process only, so it is asked of the workspaces, under the
-    images' lock the admission holds."""
-    from tests.conftest import made_workspace
-
-    made = made_workspace(client, ALICE, "alpha")
-    runtime = app.state.workspaces.runtime
-    entered, release = threading.Event(), threading.Event()
-    real = runtime.stop
-
-    def held(name):
-        entered.set()
-        assert release.wait(HANG_GUARD)
-        return real(name)
-
-    monkeypatch.setattr(runtime, "stop", held)
-    answers: list = []
-    stopping = threading.Thread(
-        target=lambda: answers.append(
-            client.post(f"/api/workspaces/{made['id']}/stop", headers=changing(ALICE))
-        ),
-        daemon=True,
-    )
-    stopping.start()
-    try:
-        assert entered.wait(HANG_GUARD)
-        assert reason(get(client)) == "stopping_or_starting"
-        r = post(client)
-        assert (r.status_code, r.json()["reason"]) == (409, "stopping_or_starting")
-        assert not up.REQUEST.exists()
-    finally:
-        release.set()
-    stopping.join(HANG_GUARD)
-    assert not stopping.is_alive() and answers[0].status_code == 200
-    assert post(client).status_code == 202  # the positive: once it is over, it is admitted

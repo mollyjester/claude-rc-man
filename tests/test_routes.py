@@ -11,20 +11,34 @@ def test_included_routers_are_enumerated_with_their_prefixes(app):
     assert ("/api/people/{person}/limits", "PUT") in found
 
 
+def outside_api(app) -> set[str]:
+    """The paths of the app's routes, WebSocket ones among them, not under ``/api/``."""
+    found = [*routes.api_routes(app), *routes.websocket_routes(app)]
+    return {r.path for r in found if not r.path.startswith("/api/")}
+
+
 def test_every_route_is_under_api_except_the_frontend(app):
     from rcman import spa
 
-    outside = {c.path for c in routes.api_routes(app) if not c.path.startswith("/api/")}
-    assert outside == {spa.CATCH_ALL}
-    assert routes.websocket_routes(app)  # the control for the next line
-    assert all(r.path.startswith("/api/") for r in routes.websocket_routes(app))
+    assert routes.websocket_routes(app)  # non-vacuity
+    assert outside_api(app) == {spa.CATCH_ALL}
 
 
-def test_websocket_routes_are_enumerated_with_their_prefixes(app):
-    assert {r.path for r in routes.websocket_routes(app)} >= {"/api/terminal"}
-    assert not {r.path for r in routes.websocket_routes(app)} & {
-        c.path for c in routes.api_routes(app)
-    }
+def test_a_route_outside_api_is_found():
+    """Planted twin: a WebSocket route outside ``/api/`` is found, one under it is not."""
+    from fastapi import FastAPI, WebSocket
+
+    planted = FastAPI()
+
+    @planted.websocket("/outside")
+    async def outside(websocket: WebSocket):
+        await websocket.close()
+
+    @planted.websocket("/api/inside")
+    async def inside(websocket: WebSocket):
+        await websocket.close()
+
+    assert outside_api(planted) == {"/outside"}
 
 
 def test_websocket_routes_finds_one_through_a_router_and_one_direct_and_no_http_route():

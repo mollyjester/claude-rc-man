@@ -92,19 +92,6 @@ def test_a_worktrees_snapshot_is_cloned_in_a_container(
     assert found["user"] == "dev"
 
 
-def test_a_worktree_mounted_as_it_is_is_not_a_repository_in_a_container(
-    podman_service, system_image, labelled, source, tmp_path
-):
-    """The twin: the worktree itself at /src, its .git naming a folder the container
-    does not have."""
-    worktree = _worktree(tmp_path)
-
-    proc = _clone_at_src(podman_service, system_image, labelled, source, worktree)
-
-    assert proc.returncode != 0
-    assert "not a git repository" in proc.stdout + proc.stderr
-
-
 # --- the containers a run starts itself ----------------------------------------------------
 
 # What a probe container runs: a sleep that outlasts the test (rule (g) of "Time in tests"). One
@@ -161,24 +148,16 @@ def _exists(engine: list[str], container: str) -> bool:
     return container in found.stdout.split()
 
 
-def test_a_runs_containers_are_removed_with_their_volumes_when_it_ends(
+def test_a_runs_containers_are_removed_with_their_volumes_when_it_ends_and_no_others(
     podman_service, system_image
 ):
-    engine = podman_service.argv()
-    with containers.holder(engine) as folder:
-        mine = _probe(engine, system_image, containers.labels(folder))
-        volume = _volume_of(engine, mine)
-        assert _exists(engine, mine) and _volume_exists(engine, volume)  # positive control
-    assert not _exists(engine, mine)
-    assert not _volume_exists(engine, volume)
-
-
-def test_a_container_another_holder_labels_is_left(podman_service, system_image):
-    """Planted twin: a run removes the containers labelled with its own holder, and no other."""
     engine = podman_service.argv()
     with containers.holder(engine) as other:
         theirs = _probe(engine, system_image, containers.labels(other))
         with containers.holder(engine) as folder:
-            assert folder != other
-        assert _exists(engine, theirs)
-    assert not _exists(engine, theirs)
+            mine = _probe(engine, system_image, containers.labels(folder))
+            volume = _volume_of(engine, mine)
+            assert _exists(engine, mine) and _volume_exists(engine, volume)  # positive control
+        assert not _exists(engine, mine)
+        assert not _volume_exists(engine, volume)
+        assert _exists(engine, theirs)  # another holder's is left

@@ -10,9 +10,9 @@ The checkout's files are at /src (tests/snapshot.py); a user ``dev`` clones them
 installer's own download code (the ``toolchain`` fixture); the frontend's and the backend's
 packages from caches filled beforehand in a container of the same image with the network
 (``offline_caches``); tmux is the one built on the engine with the installer's own argument list,
-which the stand-in podman hands the installer. The first installation is made once; each test then
-runs its check of tests/container/install_checks.py, of the same name, as root in the container,
-in order, on that installation. What needs systemd, rcman's own rootless Podman, the kernel's
+which the stand-in podman hands the installer. The first installation is made once; the one
+test then runs its check of tests/container/install_checks.py, of the same name, as root in the
+container, on that installation. What needs systemd, rcman's own rootless Podman, the kernel's
 limits or the journal is checked by hand (project-knowledge/real-claude-checklist.md).
 The container tier keeps only the first check, as a basic install-and-serve check.
 """

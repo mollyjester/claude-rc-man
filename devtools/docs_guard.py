@@ -1,6 +1,6 @@
 """Documentation guards.
 
-Two checks, driven by ``tests/test_docs_guard.py``:
+The checks, driven by ``tests/test_docs_guard.py``:
 
 - **References resolve.** Every relative link and every ``*.md`` mention in any
   text file of the repository names a file or directory that exists in the
@@ -9,6 +9,8 @@ Two checks, driven by ``tests/test_docs_guard.py``:
 - **Documentation describes the current state only.** Pages read by users of
   the service carry no historical phrasing. The phrase list is a regression net
   for known phrasings, not a completeness claim; review still enforces the rule.
+- **Every page is in the contents list.** Every Markdown page under ``docs/`` and
+  ``project-knowledge/`` has a link in ``CLAUDE.md``.
 """
 
 from __future__ import annotations

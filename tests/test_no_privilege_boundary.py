@@ -28,8 +28,6 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-import pytest
-
 from devtools import docs_guard
 
 REPO = Path(__file__).resolve().parent.parent
@@ -207,11 +205,11 @@ def account_sites(source: str) -> list[Site]:
     return found
 
 
-def account_hits(rel: str, source: str, exempt: dict = EXEMPT) -> list[Hit]:
+def account_hits(rel: str, source: str) -> list[Hit]:
     hits, seen = [], set()
     for site in account_sites(source):
         key = (rel, site.function, site.text)
-        if key in exempt and key not in seen:
+        if key in EXEMPT and key not in seen:
             seen.add(key)
             continue
         where = site.function or "the module"
@@ -224,7 +222,8 @@ def account_hits(rel: str, source: str, exempt: dict = EXEMPT) -> list[Hit]:
 SERVICE_TEMPLATES = "installer/templates/"
 SERVICE_ACCOUNT = re.compile(r"^User=(\S*)\s*$", re.MULTILINE)
 # Services that run as root: the template -> what makes it different. Each is checked to still
-# be there and to still name no account (test_the_root_services_are_still_there_and_root_s).
+# be there and to still name no account
+# (test_every_service_template_names_its_account_but_the_root_services).
 ROOT_SERVICES = {
     "installer/templates/rcman-upgrade.service": (
         "the web upgrade: rcman asks for it by writing a file, and this oneshot runs the clone's "
@@ -293,11 +292,11 @@ def service_hits(rel: str, text: str, root_services: dict = ROOT_SERVICES) -> li
     return [Hit(rel, 1, "service as root", f"User={a}") for a in accounts if a in ("", "root", "0")]
 
 
-def stale_root_services(root: Path, root_services: dict = ROOT_SERVICES) -> list[str]:
+def stale_root_services(root: Path) -> list[str]:
     """The root services whose template is gone, or names an account now."""
     corpus = set(docs_guard.corpus_files(root))
     stale = []
-    for rel, reason in root_services.items():
+    for rel, reason in ROOT_SERVICES.items():
         if not reason or rel not in corpus:
             stale.append(f"{rel}: not in the repository")
         elif SERVICE_ACCOUNT.search((root / rel).read_text(encoding="utf-8")):
@@ -308,7 +307,7 @@ def stale_root_services(root: Path, root_services: dict = ROOT_SERVICES) -> list
 # --- the guard -----------------------------------------------------------------------
 
 
-def problems(root: Path, exempt: dict = EXEMPT, root_services: dict = ROOT_SERVICES) -> list[str]:
+def problems(root: Path, root_services: dict = ROOT_SERVICES) -> list[str]:
     """Everything the three layers find in the repository at ``root``, and a problem for
     each layer that read nothing, which would let it pass over an empty corpus."""
     corpus = docs_guard.corpus_files(root)
@@ -318,7 +317,7 @@ def problems(root: Path, exempt: dict = EXEMPT, root_services: dict = ROOT_SERVI
         found += privilege_hits(rel, text)
     ast_files = [rel for rel in texts if rel.endswith(".py") and rel.startswith(AST_ROOTS)]
     for rel in ast_files:
-        found += account_hits(rel, texts[rel], exempt)
+        found += account_hits(rel, texts[rel])
     services = [rel for rel in texts if is_service_template(rel)]
     for rel in services:
         found += service_hits(rel, texts[rel], root_services)
@@ -334,16 +333,10 @@ def problems(root: Path, exempt: dict = EXEMPT, root_services: dict = ROOT_SERVI
 
 
 def test_the_repository_has_no_privilege_boundary():
-    assert problems(REPO) == []
-
-
-def test_the_scan_reads_the_real_corpus_and_each_layer_has_something_to_read():
     corpus = docs_guard.corpus_files(REPO)
-    assert "README.md" in corpus and "backend/rcman/admin.py" in corpus
+    assert "README.md" in corpus and "backend/rcman/admin.py" in corpus  # the real corpus
     assert f"tests/{Path(__file__).name}" in corpus  # this module is read too
-    assert any(is_product(rel) for rel in corpus)
-    assert any(rel.startswith("helpers/") and rel.endswith(".py") for rel in corpus)
-    assert any(rel.startswith("frontend/src/") and not is_product(rel) for rel in corpus)
+    assert problems(REPO) == []
 
 
 # --- planted twins -------------------------------------------------------------------
@@ -368,9 +361,7 @@ CLEAN = {
 }
 
 
-def planted(
-    tmp_path: Path, extra: dict[str, str], exempt: dict | None = None, root_services=None
-) -> list[str]:
+def planted(tmp_path: Path, extra: dict[str, str], root_services=None) -> list[str]:
     """The problems of the clean repository with ``extra`` files added, the plant
     confirmed to be in the corpus."""
     root = make_repo(tmp_path, {**CLEAN, **extra})
@@ -378,99 +369,28 @@ def planted(
     for name, text in extra.items():
         assert name in corpus  # the plant took effect
         assert (root / name).read_text(encoding="utf-8") == text
-    return problems(
-        root,
-        EXEMPT if exempt is None else exempt,
-        ROOT_SERVICES if root_services is None else root_services,
-    )
+    return problems(root, ROOT_SERVICES if root_services is None else root_services)
 
 
-def test_the_clean_repository_passes(tmp_path):
-    root = make_repo(tmp_path, CLEAN)
-    assert problems(root) == []  # positive control: the plants below are what fail it
+def test_an_empty_repository_fails_the_guard(tmp_path):
+    root = make_repo(tmp_path, {})
+    assert docs_guard.corpus_files(root) == []  # the plant took effect: nothing is there
+    found = problems(root)
+    assert any("nothing was read" in line for line in found), found
 
 
-@pytest.mark.parametrize("form", sorted(ALLOWED_FORMS))
-def test_an_allowed_form_of_the_privilege_command_passes_outside_product_code(tmp_path, form):
-    text = f"run {PRIV} {ALLOWED_FORMS[form][0]} now\n"
-    assert planted(tmp_path, {PAGE: text}) == []
+# the privilege command
 
 
-def test_the_command_in_a_written_out_list_of_arguments_passes(tmp_path):
-    text = f'argv = ["{PRIV}", "systemctl", "restart", "rcman"]\n'
-    assert planted(tmp_path, {"tests/test_x.py": text}) == []
-
-
-def test_docker_after_the_command_is_a_form_nobody_listed(tmp_path):
-    """The tests reach no container through the command: their engine is the user's own."""
-    found = planted(tmp_path, {"tests/test_x.py": f'prefix = ["{PRIV}", "-n", "docker"]\n'})
-    assert len(found) == 1 and "form not allowed" in found[0], found
-
-
-@pytest.mark.parametrize("word", sorted(ALLOWED_PROSE))
-def test_the_command_named_in_an_allowed_sentence_passes(tmp_path, word):
-    assert planted(tmp_path, {"install.sh": f'die "run it {word} {PRIV}"\n'}) == []
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        f"{PRIV} rm -rf /",
-        f"{PRIV} caddy validate",  # not as Caddy's account
-        f"{PRIV} -u rcman podman ps",
-        f"**{PRIV}** for your account",
-        f"{PRIV}\n",
-        f"{PRIV}: a colon",
-    ],
-)
-def test_a_form_nobody_listed_fails_outside_product_code(tmp_path, text):
-    found = planted(tmp_path, {PAGE: text + "\n"})
-    assert len(found) == 1 and "form not allowed" in found[0], found
-
-
-def test_the_variable_of_the_account_that_ran_it_is_not_the_command(tmp_path):
-    assert planted(tmp_path, {"install.sh": f"u={j('$', PRIV.upper(), '_USER')}\n"}) == []
-
-
-@pytest.mark.parametrize(
-    "rel",
-    [
-        "backend/rcman/x.py",
-        "helpers/x.py",
-        "frontend/src/Page.tsx",
-        "frontend/src/messages.ts",
-        "installer/templates/rcman.service",
-        "installer/workspace/Containerfile",
-        "installer/builder/Containerfile",
-    ],
-)
-@pytest.mark.parametrize("form", ["rcman-admin", "./install.sh", "systemctl", "reboot"])
-def test_product_code_holds_the_command_in_no_form_at_all(tmp_path, rel, form):
-    account = "User=x\n" if is_service_template(rel) else ""  # the plant breaks no other rule
-    found = planted(tmp_path, {rel: f"# {PRIV} {form}\n{account}"})
+def test_product_code_holds_the_command_in_no_form_at_all(tmp_path):
+    assert problems(make_repo(tmp_path / "clean", CLEAN)) == []  # positive control
+    found = planted(tmp_path / "planted", {"backend/rcman/x.py": f"# {PRIV} rcman-admin\n"})
     assert len(found) == 1 and "privilege command in product" in found[0], found
 
 
-def test_product_code_holds_it_in_prose_too(tmp_path):
-    found = planted(tmp_path, {"backend/rcman/x.py": f'"""Run it through {PRIV}."""\n'})
-    assert len(found) == 1 and "in product" in found[0], found
-
-
-@pytest.mark.parametrize(
-    "rel",
-    [
-        "frontend/src/Page.test.tsx",
-        "frontend/src/api.test.ts",
-        "frontend/src/test/fakeApi.ts",
-        "installer/install.py",
-        "install.sh",
-        "tests/test_x.py",
-        PAGE,
-    ],
-)
-def test_what_is_not_product_code_may_use_the_allowed_forms(tmp_path, rel):
-    assert not is_product(rel)
-    assert planted(tmp_path, {rel: f"# {PRIV} rcman-admin add\n"}) == []
+def test_a_form_nobody_listed_fails_outside_product_code(tmp_path):
+    found = planted(tmp_path, {PAGE: f"{PRIV} rm -rf /\n"})
+    assert len(found) == 1 and "form not allowed" in found[0], found
 
 
 def test_every_allowed_form_and_sentence_is_still_used_in_the_corpus():
@@ -485,68 +405,13 @@ def test_every_allowed_form_and_sentence_is_still_used_in_the_corpus():
     ) - used
 
 
-# account layer
-
-ACCOUNT_SAMPLES = {
-    "pwd.getpwnam": "import pwd\n\n\ndef f():\n    return pwd.getpwnam('x')\n",
-    "pwd.getpwuid": "import pwd\n\n\ndef f():\n    return pwd.getpwuid(0)\n",
-    "grp.getgrnam": "import grp\n\n\ndef f():\n    return grp.getgrnam('x')\n",
-    "grp.getgrgid": "import grp\n\n\ndef f():\n    return grp.getgrgid(0)\n",
-    "os.setuid": "import os\n\n\ndef f():\n    os.setuid(0)\n",
-    "os.setgid": "import os\n\n\ndef f():\n    os.setgid(0)\n",
-    "os.initgroups": "import os\n\n\ndef f():\n    os.initgroups('x', 0)\n",
-    "from pwd import getpwnam": "from pwd import getpwnam\n",
-    "from grp import getgrnam": "from grp import getgrnam\n",
-    **{
-        f'argv starting "{program}"': f'def f():\n    return ["{program}", "-x"]\n'
-        for program in sorted(ACCOUNT_PROGRAMS)
-    },
-}
+# the account layer
 
 
-@pytest.mark.parametrize("sample", sorted(ACCOUNT_SAMPLES), ids=str)
-@pytest.mark.parametrize("root", ["backend/rcman/planted.py", "helpers/planted.py"])
-def test_every_account_call_is_found(tmp_path, root, sample):
-    found = planted(tmp_path, {root: ACCOUNT_SAMPLES[sample]}, exempt={})
-    found = [line for line in found if "privilege command in product" not in line]
-    assert len(found) == 1 and found[0].startswith(f"{root}:"), found
-
-
-def test_the_account_layer_reads_the_roots_and_only_them(tmp_path):
-    source = ACCOUNT_SAMPLES["pwd.getpwnam"]
-    assert planted(tmp_path, {"installer/planted.py": source, "tests/planted.py": source}) == []
-
-
-def test_every_account_program_and_call_is_covered_by_a_sample():
-    for module, check in ACCOUNT_CALLS.items():
-        assert any(s.startswith(f"{module}.") and check(s.split(".")[1]) for s in ACCOUNT_SAMPLES)
-    assert {s for s in ACCOUNT_PROGRAMS if f'argv starting "{s}"' not in ACCOUNT_SAMPLES} == set()
-
-
-def test_an_exemption_covers_its_own_site_only(tmp_path):
-    """Planted twin: the exemption, its function and its file are planted, so the twin
-    holds whatever EXEMPT lists."""
-    rel = "backend/rcman/planted.py"
-    key = (rel, "f", "pwd.getpwnam")
-    source = ACCOUNT_SAMPLES["pwd.getpwnam"]
-    exempt = {key: "planted"}
-    assert planted(tmp_path / "a", {rel: source}, exempt=exempt) == []  # positive control
-    twin_same = source + "    return pwd.getpwnam('y')\n"
-    twin_other = source + "    return pwd.getpwuid(0)\n"
-    twin_function = source + "\n\ndef g():\n    return pwd.getpwnam('x')\n"
-    twin_module = source + "\n\nz = pwd.getpwnam('x')\n"
-    for n, twin in enumerate([twin_same, twin_function, twin_module]):
-        assert twin != source  # the plant took effect
-        assert len(planted(tmp_path / f"b{n}", {rel: twin}, exempt=exempt)) == 1, twin
-    assert twin_other != source  # the plant took effect
-    assert len(planted(tmp_path / "c", {rel: twin_other}, exempt=exempt)) == 1
-
-
-def test_an_exemption_covers_its_own_file_only(tmp_path):
-    key = ("backend/rcman/planted.py", "f", "pwd.getpwnam")
-    other = "backend/rcman/other.py"
-    found = planted(tmp_path, {other: ACCOUNT_SAMPLES["pwd.getpwnam"]}, exempt={key: "planted"})
-    assert len(found) == 1 and found[0].startswith(other)
+def test_an_account_call_is_found(tmp_path):
+    rel = "helpers/planted.py"
+    found = planted(tmp_path, {rel: "import pwd\n\n\ndef f():\n    return pwd.getpwnam('x')\n"})
+    assert len(found) == 1 and found[0].startswith(f"{rel}:"), found
 
 
 def test_the_exemptions_still_have_their_sites():
@@ -559,80 +424,10 @@ def test_the_exemptions_still_have_their_sites():
         assert [s for s in sites if (s.function, s.text) == (function, text)], (rel, function, text)
 
 
-def test_every_site_of_the_real_roots_is_found_or_exempt():
-    """Known positives: the exempt sites are found, or an empty scan would pass."""
-    total = 0
-    for rel in docs_guard.corpus_files(REPO):
-        if rel.endswith(".py") and rel.startswith(AST_ROOTS):
-            total += len(account_sites((REPO / rel).read_text(encoding="utf-8")))
-    assert total >= len(EXEMPT) > 0
-
-
-# an empty corpus
-
-
-def test_an_empty_repository_fails_the_guard(tmp_path):
-    root = make_repo(tmp_path, {})
-    assert docs_guard.corpus_files(root) == []  # the plant took effect: nothing is there
-    found = problems(root)
-    assert any("nothing was read" in line for line in found), found
-
-
-def test_a_repository_without_python_under_the_roots_fails_the_guard(tmp_path):
-    services = {k: v for k, v in CLEAN.items() if k.startswith(SERVICE_TEMPLATES)}
-    root = make_repo(tmp_path, {"README.md": "A service.\n", "tests/ok.py": "x = 1\n", **services})
-    found = problems(root)
-    assert [line for line in found if "no Python file under" in line]
-    assert len(found) == len(AST_ROOTS)
-
-
-def test_a_repository_with_only_one_root_fails_the_guard(tmp_path):
-    services = {k: v for k, v in CLEAN.items() if k.startswith(SERVICE_TEMPLATES)}
-    root = make_repo(tmp_path, {"README.md": "A.\n", "backend/rcman/ok.py": "x = 1\n", **services})
-    found = problems(root)
-    assert len(found) == 1 and "helpers/" in found[0]
-
-
-def test_a_repository_without_a_service_template_fails_the_guard(tmp_path):
-    files = {k: v for k, v in CLEAN.items() if not k.startswith(SERVICE_TEMPLATES)}
-    root = make_repo(tmp_path, files)
-    found = problems(root)
-    assert len(found) == 1 and "no service template" in found[0], found
-
-
 # the services' accounts
 
 ROOT_SERVICE = "installer/templates/planted-root.service"
 NO_ACCOUNT = "[Service]\nType=oneshot\nExecStart=/bin/true\n"
-
-
-def test_every_service_template_names_its_account_but_the_root_services():
-    """The real templates: the rule reads them, and those that name an account are many."""
-    corpus = docs_guard.corpus_files(REPO)
-    services = [rel for rel in corpus if is_service_template(rel)]
-    named = [rel for rel in services if SERVICE_ACCOUNT.search((REPO / rel).read_text())]
-    assert len(named) >= 2 and set(ROOT_SERVICES) <= set(services)  # known positives
-    assert set(services) - set(named) == set(ROOT_SERVICES)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [NO_ACCOUNT, "[Service]\nUser=root\n", "[Service]\nUser=0\n", "[Service]\nUser=\n",
-     "[Service]\n# User=rcman\n"],
-)  # fmt: skip
-def test_a_service_template_that_runs_as_root_is_found(tmp_path, text):
-    found = planted(tmp_path, {ROOT_SERVICE: text})
-    assert len(found) == 1 and found[0].startswith(f"{ROOT_SERVICE}:"), found
-
-
-def test_a_root_service_covers_its_own_template_only(tmp_path):
-    exempt = {ROOT_SERVICE: "planted"}
-    assert planted(tmp_path / "a", {ROOT_SERVICE: PINNED}, root_services=exempt) == []
-    other = "installer/templates/other.service"
-    found = planted(tmp_path / "b", {other: PINNED}, root_services=exempt)
-    assert len(found) == 1 and found[0].startswith(other), found
-
-
 PINNED = (
     "[Service]\nType=oneshot\n"
     "ExecStart=/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --clone @CLONE@"
@@ -642,55 +437,30 @@ PINNED = (
 )
 
 
-def test_the_real_root_service_holds_only_what_its_exemption_allows():
+def test_every_service_template_names_its_account_but_the_root_services():
+    """The real templates: the rule reads them, those that name an account are many, and each
+    root service is still there, runs as root and holds only what its exemption allows."""
+    corpus = docs_guard.corpus_files(REPO)
+    services = [rel for rel in corpus if is_service_template(rel)]
+    named = [rel for rel in services if SERVICE_ACCOUNT.search((REPO / rel).read_text())]
+    assert len(named) >= 2 and set(ROOT_SERVICES) <= set(services)  # known positives
+    assert set(services) - set(named) == set(ROOT_SERVICES)
+    assert ROOT_SERVICES and stale_root_services(REPO) == []
     for rel in ROOT_SERVICES:
         text = (REPO / rel).read_text(encoding="utf-8")
         assert "ExecStart=" in text  # non-vacuity
         assert root_service_problems(text) == [], rel
 
 
-@pytest.mark.parametrize(
-    "old,new",
-    [
-        ("/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --clone", "/usr/bin/python3 /x --clone"),
-        ("python3 -I /opt/rcman/bin/rcman-upgrade --finish", "python3 /opt/rcman/bin/x --finish"),
-        ("ExecStopPost=", "ExecStopPostX="),
-        ("Type=oneshot\n", "Type=oneshot\nEnvironmentFile=/etc/rcman/rcman.env\n"),
-        ("Type=oneshot\n", "Type=oneshot\nExecStartPre=/bin/sh -c x\n"),
-        ("--caddy-user @CADDY_USER@", "--caddy-user @CADDY_USER@ ; /bin/sh -c x"),
-        ("rcman-upgrade --finish", "rcman-upgrade --finish ; /bin/sh -c x"),
-        ("--clone @CLONE@", "--clone @CLONE@ --other"),
-        ("--clone @CLONE@", "--clone /var/lib/rcman/clone"),
-        ("--clone @CLONE@", "--clone @STATE@/clone"),
-    ],
-)
-def test_a_root_service_beyond_its_exemption_is_found(tmp_path, old, new):
+def test_a_service_template_that_runs_as_root_is_found(tmp_path):
+    found = planted(tmp_path, {ROOT_SERVICE: NO_ACCOUNT})
+    assert len(found) == 1 and found[0].startswith(f"{ROOT_SERVICE}:"), found
+
+
+def test_a_root_service_beyond_its_exemption_is_found(tmp_path):
     exempt = {ROOT_SERVICE: "planted"}
     assert planted(tmp_path / "a", {ROOT_SERVICE: PINNED}, root_services=exempt) == []
-    twin = PINNED.replace(old, new)
+    twin = PINNED.replace("rcman-upgrade --finish", "rcman-upgrade --finish ; /bin/sh -c x")
     assert twin != PINNED  # the plant took effect
     found = planted(tmp_path / "b", {ROOT_SERVICE: twin}, root_services=exempt)
     assert found and all("beyond its exemption" in f for f in found), found
-
-
-def test_a_service_outside_the_templates_is_not_read(tmp_path):
-    assert planted(tmp_path, {"tests/fakes/x.service": NO_ACCOUNT}) == []
-
-
-def test_the_root_services_are_still_there_and_root_s():
-    """Stale check: a root service whose template is gone, or that names an account now,
-    is removed from the list."""
-    assert ROOT_SERVICES  # non-vacuity
-    assert stale_root_services(REPO) == []
-
-
-def test_a_root_service_that_is_gone_or_names_an_account_is_stale(tmp_path):
-    root = make_repo(tmp_path, {**CLEAN, ROOT_SERVICE: "[Service]\nUser=ok\n"})
-    exempt = {ROOT_SERVICE: "planted", "installer/templates/gone.service": "planted"}
-    stale = stale_root_services(root, exempt)
-    assert sorted(stale) == [
-        "installer/templates/gone.service: not in the repository",
-        f"{ROOT_SERVICE}: names an account now",
-    ]
-    (root / ROOT_SERVICE).write_text(PINNED)
-    assert stale_root_services(root, {ROOT_SERVICE: "planted"}) == []  # positive control

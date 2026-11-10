@@ -35,13 +35,13 @@ process.stdout.write(JSON.stringify(trees));
 """
 
 
-def parse_ts(sources: dict[str, str], cwd: Path = FRONTEND) -> dict[str, dict]:
+def parse_ts(sources: dict[str, str]) -> dict[str, dict]:
     """The ESTree of each source, by name, parsed as its suffix says, TypeScript where it
     says none. Raises when any does not parse, or the parser cannot be run."""
     given = {n: [SOURCES.get(Path(n).suffix, "ts"), s] for n, s in sources.items()}
     proc = subprocess.run(
         ["node", "--input-type=module", "-e", PARSE_TS],
-        cwd=cwd, input=json.dumps(given), capture_output=True, text=True, timeout=HANG_GUARD,
+        cwd=FRONTEND, input=json.dumps(given), capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr)

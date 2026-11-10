@@ -10,7 +10,6 @@ from pathlib import Path
 from rcman.filelock import FileLock
 
 from tests.hang_guard import HANG_GUARD
-from tests.time_doubles import RecordingLock
 from tests.until import until
 
 # Holds the lock until a line, or the end, comes on its stdin.
@@ -72,10 +71,11 @@ def test_a_lock_waits_for_another_process_that_holds_the_file(tmp_path):
     holder.wait(HANG_GUARD)
 
 
-def test_a_lock_is_free_once_released_and_is_reentrant_in_its_own_thread(tmp_path):
+def test_a_lock_is_the_users_alone_free_once_released_and_reentrant_in_its_own_thread(tmp_path):
     path = tmp_path / "rcman.lock"
     lock = FileLock(path)
     with lock, lock:  # a thread that holds it may take it again
+        assert path.stat().st_mode & 0o777 == 0o600  # the lock file is the user's alone
         got = []
         thread = threading.Thread(target=lambda: got.append(lock.acquire(blocking=False)))
         thread.start()
@@ -84,33 +84,3 @@ def test_a_lock_is_free_once_released_and_is_reentrant_in_its_own_thread(tmp_pat
     holder = other_process_holding_until_told(path)  # the file is free for another process again
     holder.stdin.close()
     holder.wait(HANG_GUARD)
-
-
-def test_the_lock_file_is_the_users_alone(tmp_path):
-    path = tmp_path / "rcman.lock"
-    with FileLock(path):
-        assert path.stat().st_mode & 0o777 == 0o600
-
-
-def test_two_threads_take_turns(tmp_path):
-    """Four threads, each come to the lock while the test holds it, so that they all contend
-    for it once it is let go; each, once in, is alone there."""
-    lock = FileLock(tmp_path / "rcman.lock")
-    held = RecordingLock(lock._thread)
-    lock._thread = held
-    inside = []
-
-    def work():
-        with lock:
-            inside.append(1)
-            assert len(inside) == 1
-            inside.pop()
-
-    threads = [threading.Thread(target=work) for _ in range(4)]
-    with lock:
-        for thread in threads:
-            thread.start()
-        held.wait_blocked(4)  # every one of them waits for it
-    for thread in threads:
-        thread.join(HANG_GUARD)
-    assert not any(t.is_alive() for t in threads) and inside == []

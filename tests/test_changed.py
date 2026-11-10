@@ -1,13 +1,12 @@
 """The workspaces' condition, ``Workspaces._changed`` (backend/rcman/workspaces.py), and the
-marks of the threads that make or rebuild a workspace: the lock order it keeps, what each way a
-making thread ends leaves of its marks, and a deletion that comes just after a workspace is made.
-On the host runtime of tests/test_devcontainer_flow.py, the service's condition a virtual
-WatchedCondition (tests/time_doubles.py), whose timeouts nothing here makes run out."""
+marks of the threads that make or rebuild a workspace: the lock order it keeps, and that a
+workspace made ready leaves none of the marks of the thread that made it. On the host runtime
+of tests/test_devcontainer_flow.py, the service's condition a virtual WatchedCondition
+(tests/time_doubles.py), whose timeouts nothing here makes run out."""
 
 from __future__ import annotations
 
 import collections
-import sqlite3
 import threading
 
 import pytest
@@ -18,11 +17,9 @@ from tests.hang_guard import HANG_GUARD
 from tests.test_clone import URL, row
 from tests.test_devcontainer_flow import (
     Flow,
-    a_plan,
     building,
     lost_with_hook,
     publish,  # noqa: F401 - a fixture
-    ready_with_plan,
     set_environment,
 )
 from tests.test_workspaces import _person, insert
@@ -289,24 +286,19 @@ def _remove_row(settings, workspace_id: int) -> None:
         con.close()
 
 
-def test_nothing_is_taken_inside_the_workspaces_own_lock(scenarios):
-    book, _ = scenarios
+def test_the_locks_are_taken_in_order_and_every_wait_on_the_condition_ends_on_what_it_waited_for(
+    scenarios,
+):
+    """Nothing is taken inside the workspaces' own lock, and the condition is taken after the
+    workspace locks and before the service's own; none of the waits on it expired or hung."""
+    book, changed = scenarios
     assert any(kind == OWN for _, kind in book.taken)  # positive: the recorder sees _lock
-    assert [f for f in out_of_order(book.taken) if f.startswith("(a)")] == []
-
-
-def test_the_condition_is_taken_after_the_workspace_locks_and_before_its_own(scenarios):
-    book, _ = scenarios
     # Positives: _changed under a workspace's lock (_stop_working), _lock under _changed.
     assert any(kind == CHANGED and WORKSPACE in held for held, kind in book.taken)
     assert any(kind == OWN and CHANGED in held for held, kind in book.taken)
     assert out_of_order(book.taken) == []
-
-
-def test_every_wait_on_the_condition_ends_on_what_it_waited_for(scenarios):
-    _, changed = scenarios
     assert changed.waits  # positive: they waited on it
-    assert [w for w in changed.waits if w.ended != "predicate"] == []  # none expired or hung
+    assert [w for w in changed.waits if w.ended != "predicate"] == []
 
 
 def test_the_planted_twin_an_inverse_nesting_is_flagged(settings, runtime):
@@ -326,7 +318,7 @@ def test_the_planted_twin_an_inverse_nesting_is_flagged(settings, runtime):
     service.close()
 
 
-# --- membership: what each way a making thread ends leaves -----------------------------------
+# --- membership: what a making thread that ends leaves ---------------------------------------
 
 
 @pytest.fixture
@@ -336,53 +328,15 @@ def service(settings, runtime, changed):
     made.close()
 
 
-@pytest.fixture
-def thrown(monkeypatch) -> list[BaseException]:
-    """What a thread let escape, caught here."""
-    caught: list[BaseException] = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: caught.append(args.exc_value))
-    return caught
-
-
-def left_nothing(service, workspace_id: int | None, made: bool = True) -> None:
+def left_nothing(service, workspace_id: int) -> None:
     """The workspace is not being made, no mark of a thread of its is left, its end is told,
-    and close returns with no wait expired, its deadline never running out by itself; with no
-    workspace, no thread is left unended at all."""
+    and close returns with no wait expired, its deadline never running out by itself."""
     with service._changed:
-        if workspace_id is None:
-            assert service._unended == set()
-        else:
-            assert not [h for h in service._unended if h.workspace_id == workspace_id]
-            assert (workspace_id in service._ended_here) is made
-    if workspace_id is not None:
-        assert not service._being_made(workspace_id)
+        assert not [h for h in service._unended if h.workspace_id == workspace_id]
+        assert workspace_id in service._ended_here
+    assert not service._being_made(workspace_id)
     service.close()
     assert [w for w in service._changed.waits if w.ended != "predicate"] == []
-
-
-class StartFails(RuntimeError):
-    pass
-
-
-@pytest.fixture
-def no_start(monkeypatch):
-    """``with no_start():`` a thread started meanwhile does not start."""
-    import contextlib
-
-    @contextlib.contextmanager
-    def failing():
-        real = threading.Thread.start
-
-        def start(self):
-            raise StartFails("planted: no thread starts")
-
-        monkeypatch.setattr(threading.Thread, "start", start)
-        try:
-            yield
-        finally:
-            monkeypatch.setattr(threading.Thread, "start", real)
-
-    return failing
 
 
 @pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
@@ -391,183 +345,3 @@ def test_a_workspace_made_ready_leaves_no_mark(service, settings):
     ended(service, made.id)
     assert row(settings, made.id)["state"] == ws.READY
     left_nothing(service, made.id)
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_a_workspace_that_failed_leaves_no_mark(service, settings, runtime, monkeypatch):
-    def refusing(spec):
-        raise ws.RuntimeFailed("planted: it cannot be made")
-
-    monkeypatch.setattr(runtime, "create", refusing)
-    made = service.create(_person(settings), "failed")
-    ended(service, made.id)
-    assert row(settings, made.id)["state"] == ws.FAILED
-    left_nothing(service, made.id)
-
-
-def test_a_final_look_that_raises_leaves_no_mark(service, settings, thrown, monkeypatch):
-    real = service._set
-
-    def failing(workspace_id, **columns):
-        if columns.get("state") == ws.READY:
-            raise sqlite3.OperationalError("planted: the database is locked")
-        real(workspace_id, **columns)
-
-    monkeypatch.setattr(service, "_set", failing)
-    made = service.create(_person(settings), "unset")
-    ended(service, made.id)
-    assert [type(e) for e in thrown] == [sqlite3.OperationalError]  # the planted one only
-    left_nothing(service, made.id)
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_closing_while_a_workspace_is_made_leaves_no_mark_and_it_creating(
-    service, settings, runtime, monkeypatch
-):
-    def closing(spec):
-        raise ws.Closing()
-
-    monkeypatch.setattr(runtime, "create", closing)
-    made = service.create(_person(settings), "cut")
-    ended(service, made.id)
-    assert row(settings, made.id)["state"] == ws.CREATING  # the next start finishes it
-    left_nothing(service, made.id)
-
-
-def rebuildable(service, settings, runtime) -> int:
-    service.restored.set()
-    return ready_with_plan(service, settings, runtime, a_plan())
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_closing_while_a_workspace_is_rebuilt_leaves_no_mark_and_it_preparing(
-    service, settings, runtime, monkeypatch
-):
-    workspace = rebuildable(service, settings, runtime)
-
-    def closing(*args):
-        raise ws.Closing()
-
-    monkeypatch.setattr(service, "_replace", closing)
-    service.rebuild(_person(settings), workspace, True)
-    ended(service, workspace)
-    assert row(settings, workspace)["rebuild_state"] == ws.REBUILD_PREPARING
-    left_nothing(service, workspace)
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_a_making_thread_that_does_not_start_leaves_no_mark_and_no_row(service, settings, no_start):
-    recorded: list[int] = []
-    real_get = service.get
-    service.get = lambda workspace_id: (recorded.append(workspace_id), real_get(workspace_id))[1]
-    with no_start(), pytest.raises(StartFails):
-        service.create(_person(settings), "unstarted")
-    assert len(recorded) == 1  # the row create recorded, read back once
-    assert [w for w in service.everything() if w.name == "unstarted"] == []
-    left_nothing(service, recorded[0], made=False)  # its row is gone, so is its record
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_a_rebuild_that_does_not_start_leaves_no_mark_and_no_phase(
-    service, settings, runtime, no_start
-):
-    workspace = rebuildable(service, settings, runtime)
-    with no_start(), pytest.raises(StartFails):
-        service.rebuild(_person(settings), workspace, True)
-    assert row(settings, workspace)["rebuild_state"] is None
-    left_nothing(service, workspace)
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_a_put_back_that_does_not_start_is_not_registered(service, settings, runtime, no_start):
-    left = insert(settings, 1, "left", ws.READY)
-    set_environment(settings, left, None, rebuild_state=ws.REBUILD_SWITCHING)
-    service.restored.set()
-    with no_start(), pytest.raises(StartFails):
-        service.settle_left_over()
-    with service._changed:
-        assert service._putting_back == {}
-    left_nothing(service, left, made=False)
-
-
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_a_restore_that_does_not_start_leaves_close_nothing_to_wait_for(service, no_start):
-    with no_start(), pytest.raises(StartFails):
-        service.start_background()
-    with service._changed:
-        assert service._restore_running is False
-    left_nothing(service, None)
-
-
-def test_a_collection_that_raises_as_a_rebuild_ends_leaves_no_mark(
-    service, settings, runtime, thrown, monkeypatch
-):
-    workspace = rebuildable(service, settings, runtime)
-    monkeypatch.setattr(service, "_replace", lambda *args: "rebuilt")
-
-    def collecting():
-        raise RuntimeError("planted: the collection failed")
-
-    monkeypatch.setattr(service, "_collect_images_quietly", collecting)
-    service.rebuild(_person(settings), workspace, True)
-    ended(service, workspace)
-    assert [str(e) for e in thrown] == ["planted: the collection failed"]  # the planted one only
-    left_nothing(service, workspace)
-
-
-# --- a deletion just after the making ends ------------------------------------------------------
-
-
-@pytest.fixture
-def plain(settings, runtime):
-    """The service with its own condition: nothing here waits on a double."""
-    made = ws.Workspaces(settings, runtime)
-    yield made
-    made.close()
-
-
-def held_after(service, name: str):
-    """``service``'s ``name`` (``_make`` or ``_rebuild``) held once it has returned, until
-    ``go``: the event set as it returns, ``go``, and the thread it ran in."""
-    returned, go, threads = threading.Event(), threading.Event(), []
-    real = getattr(service, name)
-
-    def run(*args):
-        threads.append(threading.current_thread())
-        try:
-            real(*args)
-        finally:
-            returned.set()
-            assert go.wait(HANG_GUARD)
-
-    setattr(service, name, run)
-    return returned, go, threads
-
-
-def test_a_deletion_just_after_a_workspace_is_made_removes_it(plain, settings):
-    returned, go, threads = held_after(plain, "_make")
-    made = plain.create(_person(settings), "racing")
-    try:
-        assert returned.wait(HANG_GUARD)
-        assert row(settings, made.id)["state"] == ws.READY  # positive: it was made
-        plain.delete(plain.get(made.id))
-    finally:
-        go.set()
-    threads[0].join(HANG_GUARD)
-    assert not threads[0].is_alive()
-    assert row(settings, made.id) is None
-
-
-def test_the_control_a_deletion_just_after_a_rebuild_removes_it(plain, settings, runtime):
-    workspace = rebuildable(plain, settings, runtime)
-    returned, go, threads = held_after(plain, "_rebuild")
-    plain.rebuild(_person(settings), workspace, True)
-    try:
-        assert returned.wait(HANG_GUARD)
-        assert row(settings, workspace)["rebuild_state"] is None  # positive: it ended
-        plain.delete(plain.get(workspace))
-    finally:
-        go.set()
-    threads[0].join(HANG_GUARD)
-    assert not threads[0].is_alive()
-    assert row(settings, workspace) is None

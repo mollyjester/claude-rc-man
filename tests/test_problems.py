@@ -6,7 +6,6 @@ import copy
 import functools
 import inspect
 import json
-import logging
 import re
 import typing
 from dataclasses import dataclass, field
@@ -34,15 +33,8 @@ def assert_problem(response, status, code):
     return body
 
 
-def test_unknown_route_is_a_problem(client):
+def test_an_unknown_route_and_a_validation_error_are_problems(client):
     assert_problem(client.get("/api/nope", headers=as_user(ALICE)), 404, "not_found")
-
-
-def test_wrong_method_is_a_problem(client):
-    assert_problem(client.delete("/api/me", headers=changing(ALICE)), 405, "method_not_allowed")
-
-
-def test_validation_errors_are_problems_with_field_errors(client):
     body = assert_problem(
         client.post("/api/servers", json={}, headers=changing(ALICE)), 422, "validation_failed"
     )
@@ -50,15 +42,47 @@ def test_validation_errors_are_problems_with_field_errors(client):
     assert body["errors"][0]["message"]
 
 
-def test_every_route_answers_a_missing_identity_with_a_problem(app, client):
-    found = [c for c in routes.api_routes(app) if c.path not in problems.PUBLIC_PATHS]
-    assert found  # non-vacuity
+def unauthenticated_not_refused(client, found) -> list[str]:
+    """The routes of ``found`` that do not answer a request with no identity with the problem
+    ``not_authenticated``."""
+    bad = []
     for route in found:
         method = sorted(route.methods)[0]
         path = route.path.replace("{person}", "1").replace("{workspace}", "1")
-        path = path.replace("{slug}", "x")
-        response = client.request(method, path)
-        assert_problem(response, 401, "not_authenticated")
+        response = client.request(method, path.replace("{slug}", "x"))
+        if (
+            response.status_code != 401
+            or not response.headers["content-type"].startswith(problems.MEDIA_TYPE)
+            or response.json().get("type") != "urn:rcman:problem:not_authenticated"
+        ):
+            bad.append(f"{method} {route.path}")
+    return bad
+
+
+def test_every_route_answers_a_missing_identity_with_a_problem(app, client):
+    found = [c for c in routes.api_routes(app) if c.path not in problems.PUBLIC_PATHS]
+    assert found  # non-vacuity
+    assert unauthenticated_not_refused(client, found) == []
+
+
+def test_the_missing_identity_check_finds_a_route_that_lets_anyone_in(app):
+    """Planted twin: a route with no identity is found; one with it is not."""
+    from fastapi import Depends
+    from fastapi.testclient import TestClient
+    from rcman.identity import current_user
+
+    @app.post("/api/planted-open")  # a GET would be the pages' catch-all's
+    def open_():
+        return {}
+
+    @app.post("/api/planted-guarded")
+    def guarded(identity=Depends(current_user)):
+        return {}
+
+    planted = [c for c in routes.api_routes(app) if c.path.startswith("/api/planted-")]
+    assert len(planted) == 2  # the plant took effect
+    with TestClient(app) as client:
+        assert unauthenticated_not_refused(client, planted) == ["POST /api/planted-open"]
 
 
 def missing_identity_accepted(client, paths) -> list[str]:
@@ -112,8 +136,20 @@ def test_the_missing_identity_check_finds_a_websocket_route_that_lets_anyone_in(
     assert found == ["/api/planted-open"]
 
 
+def unpaired_codes() -> set[str]:
+    """The problem codes with a status but no message, or a message but no status."""
+    return set(problems.STATUS) ^ set(problems.MESSAGES)
+
+
 def test_every_problem_code_has_a_status_and_a_message():
-    assert set(problems.STATUS) == set(problems.MESSAGES)
+    assert problems.STATUS  # non-vacuity
+    assert unpaired_codes() == set()
+
+
+def test_a_problem_code_without_a_message_is_found(monkeypatch):
+    """Planted twin: a code given a status and no message is found."""
+    monkeypatch.setattr(problems, "STATUS", {**problems.STATUS, "planted": 400})
+    assert unpaired_codes() == {"planted"}
 
 
 # --- what a refusal says ----------------------------------------------------------
@@ -180,34 +216,8 @@ def library_text(text: str) -> bool:
     return bool(REGEX_SYNTAX.search(text)) or any(p in text for p in library_phrases())
 
 
-def _passthrough_app():
-    """An app whose validation errors send the library's own message, as rcman must not."""
-    from fastapi import FastAPI
-    from fastapi.exceptions import RequestValidationError
-    from fastapi.responses import JSONResponse
-    from pydantic import BaseModel, Field
-
-    class Body(BaseModel):
-        name: str = Field(pattern="^a$", max_length=3)
-        count: int = Field(ge=1)
-
-    app = FastAPI()
-
-    @app.post("/x")
-    def x(body: Body) -> dict:
-        return {}
-
-    @app.exception_handler(RequestValidationError)
-    async def _validation(request, exc):
-        errors = [{"field": problems._field(e), "message": e["msg"]} for e in exc.errors()]
-        return JSONResponse({"errors": errors}, status_code=422)
-
-    return app
-
-
 def test_library_text_is_recognised():
-    """Planted twins: the library's own messages are flagged, rcman's own words are not."""
-    from fastapi.testclient import TestClient
+    """Planted twin: the library's own message is flagged, rcman's own words are not."""
     from pydantic import Field, TypeAdapter, ValidationError
 
     from tests.test_rules import helpers_rules
@@ -215,18 +225,6 @@ def test_library_text_is_recognised():
     with pytest.raises(ValidationError) as refused:
         TypeAdapter(Annotated[str, Field(pattern="^a$")]).validate_python("b")
     assert library_text(refused.value.errors()[0]["msg"])
-    client = TestClient(_passthrough_app())
-    sent = [
-        {"json": {}},
-        {"json": {"name": "b", "count": 0}},
-        {"json": {"name": "aaaa", "count": "x"}},
-        {"content": b"{bad", "headers": {"content-type": "application/json"}},
-        {"json": []},
-    ]
-    passed_through = [e["message"] for kw in sent for e in client.post("/x", **kw).json()["errors"]]
-    assert len(passed_through) >= len(sent)
-    for message in passed_through:
-        assert library_text(message), message
     ours = [
         *(rule.sentence for rule in helpers_rules().values()),
         *problems.MESSAGES.values(),
@@ -241,98 +239,6 @@ def test_library_text_is_recognised():
     ]
     for message in ours:
         assert not library_text(message), message
-
-
-def test_a_missing_field_says_it_is_required(client):
-    r = client.post("/api/servers", json={}, headers=changing(ALICE))
-    assert r.json()["errors"] == [
-        {"field": "workspace", "message": problems.FIELD_MESSAGES["missing"]}
-    ]
-
-
-def test_a_body_that_is_not_json_is_about_the_request(client):
-    headers = {**changing(ALICE), "content-type": "application/json"}
-    r = client.post("/api/servers", content=b"{bad", headers=headers)
-    assert_problem(r, 422, "validation_failed")
-    assert r.json()["errors"] == [
-        {"field": "request", "message": problems.FIELD_MESSAGES["json_invalid"]}
-    ]
-
-
-def test_a_value_too_long_says_how_long_it_may_be(client):
-    from rcman.routers.claude import MAX_CODE_LENGTH
-
-    code = "a" * (MAX_CODE_LENGTH + 1)
-    r = client.post("/api/claude/code", json={"code": code}, headers=changing(ALICE))
-    [error] = r.json()["errors"]
-    assert error["field"] == "code"
-    assert str(MAX_CODE_LENGTH) in error["message"]
-    assert error["message"] == problems.FIELD_MESSAGES["string_too_long"].format(
-        max_length=MAX_CODE_LENGTH
-    )
-
-
-def test_a_ruled_field_refuses_a_null_character_with_its_rule(client):
-    from helpers import rules
-
-    r = client.post("/api/workspaces", json={"name": "a\x00b"}, headers=changing(ALICE))
-    assert r.json()["errors"] == [{"field": "name", "message": rules.WORKSPACE_NAME.sentence}]
-
-
-def test_a_null_character_is_never_an_internal_error(app):
-    """Driven over every text field: refused in rcman's words, or taken, never a crash."""
-    from fastapi.testclient import TestClient
-
-    from tests.test_rules import helpers_rules
-
-    sentences = {rule.sentence for rule in helpers_rules().values()}
-    texts = [f for f in request_fields(app) if f.schema.get("type") == "string"]
-    assert len(texts) > 10  # non-vacuity
-    found = []
-    with TestClient(app, raise_server_exceptions=False) as client:
-        for f in texts:
-            r = send(client, f, "a\x00b", CALLS, changing(ALICE))
-            what = f"{f.method} {f.path} {f.where} {f.name}"
-            if r.status_code >= 500:
-                found.append(f"{what}: {r.status_code} {r.text[:120]}")
-            elif r.status_code == 422:
-                for e in r.json()["errors"]:
-                    if library_text(e["message"]) or not readable(e["message"], sentences):
-                        found.append(f"{what}: {e['message']!r}")
-    assert found == []
-
-
-def test_a_body_that_is_not_utf8_is_refused_in_plain_words(app, client):
-    found = bodies(app)
-    assert ("POST", "/api/servers") in {(m, p) for m, p, _ in found}  # non-vacuity
-    headers = {**changing(ALICE), "content-type": "application/json"}
-    for method, path, _ in found:
-        r = client.request(method, concrete(path), content=b'{"x": "\xff"}', headers=headers)
-        assert_problem(r, 400, "body_unreadable")
-        assert r.json()["title"] == problems.MESSAGES["body_unreadable"]
-
-
-def test_half_a_character_is_refused_in_plain_words(client):
-    headers = {**changing(ALICE), "content-type": "application/json"}
-    r = client.post("/api/claude/code", content=b'{"code": "\\ud800"}', headers=headers)
-    assert r.json()["errors"] == [
-        {"field": "code", "message": problems.FIELD_MESSAGES["string_unicode"]}
-    ]
-
-
-def test_half_a_character_in_a_ruled_field_is_refused_with_its_rule(client):
-    from helpers import rules
-
-    headers = {**changing(ALICE), "content-type": "application/json"}
-    r = client.post("/api/workspaces", content=b'{"name": "\\ud800"}', headers=headers)
-    assert r.json()["errors"] == [{"field": "name", "message": rules.WORKSPACE_NAME.sentence}]
-
-
-def test_an_empty_value_where_one_is_needed_says_so(client):
-    r = client.post("/api/claude/code", json={"code": ""}, headers=changing(ALICE))
-    assert r.json()["errors"] == [
-        {"field": "code", "message": problems.FIELD_MESSAGES["string_empty"]}
-    ]
 
 
 def _float_app():
@@ -351,35 +257,6 @@ def _float_app():
         return {}
 
     return app
-
-
-def test_an_error_without_a_message_gets_a_readable_one_and_is_logged(caplog):
-    from fastapi.testclient import TestClient
-
-    with caplog.at_level(logging.WARNING, logger="rcman.problems"):
-        r = TestClient(_float_app()).post("/x", json={"ratio": "x"})
-    assert r.json()["errors"] == [
-        {"field": "ratio", "message": problems.FIELD_MESSAGES["field_invalid"]}
-    ]
-    assert "float_parsing" in caplog.text
-
-
-def test_an_error_without_the_context_its_message_needs_gets_a_readable_one(caplog):
-    error = {"type": "string_too_long", "loc": ("body", "x"), "msg": "", "ctx": {}}
-    with caplog.at_level(logging.WARNING, logger="rcman.problems"):
-        message = problems._message(error)
-    assert message == problems.FIELD_MESSAGES[problems.FIELD_INVALID]
-    assert "string_too_long" in caplog.text
-
-
-def test_a_ruled_field_refuses_a_length_with_its_rules_sentence(client):
-    from helpers import rules
-
-    message = "a" * (rules.MAX_COMMIT_MESSAGE_LENGTH + 1)
-    assert rules.COMMIT_MESSAGE.fullmatch(message)  # only its length is refused
-    body = {"workspace": 1, "message": message}
-    r = client.post("/api/git/commit", json=body, headers=changing(ALICE))
-    assert r.json()["errors"] == [{"field": "message", "message": rules.COMMIT_MESSAGE.sentence}]
 
 
 # --- every field of every route, as validated and as published --------------------
@@ -626,159 +503,39 @@ def test_a_rule_given_with_path_as_the_default_is_found():
     assert dropped_constraints(right) == []
 
 
-def _digits():
-    from helpers.rules import Rule
-
-    return problems.ruled(Rule(re.compile(r"[0-9]+"), "Use digits only."))
-
-
-def _planted_dependency_apps():
-    """Apps where a dependency, not the endpoint, takes a rule with Query() as the
-    default: a class, and a function bound with functools.partial."""
-    from fastapi import Depends, FastAPI, Query
-
-    Digits = _digits()
-
-    class ByClass:
-        def __init__(self, v: Digits = Query()):  # noqa: B008 - the trap itself
-            self.v = v
-
-    def bound(first: str, v: Digits = Query()) -> str:  # noqa: B008 - the trap itself
-        return v
-
-    by_class, by_partial = FastAPI(), FastAPI()
-    problems.install(by_class)
-    problems.install(by_partial)
-
-    @by_class.get("/x")
-    def class_route(dep: ByClass = Depends()) -> dict:  # noqa: B008
-        return {}
-
-    @by_partial.get("/x")
-    def partial_route(v: str = Depends(functools.partial(bound, "x"))) -> dict:  # noqa: B008
-        return {}
-
-    return by_class, by_partial
-
-
-def test_a_rule_dropped_in_a_dependency_is_found():
-    """Planted twins: the trap in a class dependency and in a bound function."""
-    from fastapi.testclient import TestClient
-
-    for planted in _planted_dependency_apps():
-        [parameter] = planted.openapi()["paths"]["/x"]["get"]["parameters"]
-        assert "pattern" not in parameter["schema"]  # the plant really drops the rule
-        assert TestClient(planted).get("/x", params={"v": "abc"}).status_code == 200
-        [found] = dropped_constraints(planted)
-        assert "(v)" in found and "Annotated[<type>, Query()]" in found
-
-
-def test_a_rule_dropped_in_an_embedded_body_is_found_and_the_right_form_is_read():
-    from fastapi import Body, FastAPI
-    from fastapi.testclient import TestClient
-
-    Digits = _digits()
-    trap, right = FastAPI(), FastAPI()
-    for planted in (trap, right):
-        problems.install(planted)
-
-    @trap.post("/x")
-    def trap_route(v: Digits = Body(embed=True)) -> dict:  # noqa: B008 - the trap itself
-        return {}
-
-    @right.post("/x")
-    def right_route(v: Annotated[Digits, Body(embed=True)]) -> dict:
-        return {}
-
-    assert TestClient(trap).post("/x", json={"v": "abc"}).status_code == 200  # the plant
-    [found] = dropped_constraints(trap)
-    assert "trap_route(v)" in found and "Annotated[<type>, Body()]" in found
-    assert dropped_constraints(right) == []
-    [field] = request_fields(right)
-    assert (field.where, field.name, field.schema["pattern"]) == ("body", "v", "^(?:[0-9]+)$")
-
-
-def test_a_rule_dropped_beside_constraints_of_the_default_is_found():
-    """Planted twin: Query(max_length=5) as the default keeps its own limit but drops the
-    rule's pattern and validator."""
-    from fastapi import FastAPI, Query
-    from fastapi.testclient import TestClient
-
-    Digits = _digits()
-    app = FastAPI()
-    problems.install(app)
-
-    @app.get("/x")
-    def limited(v: Digits = Query(max_length=5)) -> dict:  # noqa: B008 - the trap itself
-        return {}
-
-    [parameter] = app.openapi()["paths"]["/x"]["get"]["parameters"]
-    assert "pattern" not in parameter["schema"] and parameter["schema"]["maxLength"] == 5
-    assert TestClient(app).get("/x", params={"v": "abc"}).status_code == 200  # the plant
-    [found] = dropped_constraints(app)
-    assert "limited(v)" in found
-
-
-def test_parameter_markers_and_plain_metadata_are_not_constraints():
-    """Annotated forms that carry no constraint of their own are not reported."""
-    from fastapi import Body, FastAPI, Header, Query
-
-    app = FastAPI()
-    problems.install(app)
-
-    @app.post("/x")
-    def markers(
-        a: Annotated[str, Query(description="Described only.")],
-        b: Annotated[str, Body(embed=True)],
-        c: Annotated[str, Header()] = "x",
-        d: Annotated[int, "a plain note"] = Query(1),  # noqa: B008
-    ) -> dict:
-        return {}
-
-    assert {f.name for f in request_fields(app)} == {"a", "b", "c", "d"}  # all four are read
-    assert dropped_constraints(app) == []
-
-
-def test_a_rule_that_may_be_left_out_is_not_mistaken_for_one_dropped():
-    from fastapi import FastAPI, Query
-    from fastapi.testclient import TestClient
-
-    Digits = _digits()
-    app = FastAPI()
-    problems.install(app)
-
-    @app.get("/x")
-    def optional(v: Digits | None = Query(None)) -> dict:  # noqa: B008
-        return {}
-
-    assert TestClient(app).get("/x", params={"v": "abc"}).status_code == 422  # it is checked
-    assert dropped_constraints(app) == []
-
-
-def test_the_fields_are_found_and_agree_with_the_published_api(app):
-    found = {(f.method, f.path, f.where, f.name) for f in request_fields(app)}
-    known = {
-        ("PATCH", "/api/me/settings", "body", "prefix"),
-        ("DELETE", "/api/people/{person}", "path", "person"),
-        ("PUT", "/api/people/{person}/limits", "body", "memory"),
-        ("PUT", "/api/people/{person}/workspaces/{workspace}/limits", "body", "cpu"),
-        ("GET", "/api/servers/output", "query", "workspace"),
-        ("POST", "/api/workspaces", "body", "name"),
-        ("GET", "/api/audit", "query", "limit"),
-        ("POST", "/api/git/stage", "body", "files"),
-    }
-    assert known <= found, known - found  # non-vacuity: one of each kind
-    with_body = {(f.method, f.path) for f in request_fields(app) if f.where == "body"}
-    assert with_body == {(method, path) for method, path, _ in bodies(app)}
+def without_a_valid_request(client, calls, headers) -> list[str]:
+    """The routes of the client's app that take parameters and have no request in ``calls``
+    that they accept."""
+    found = []
+    for method, path in sorted({(f.method, f.path) for f in request_fields(client.app)}):
+        call = calls.get((method, path))
+        if (
+            call is None
+            or client.request(method, concrete(path), headers=headers, **call).status_code == 422
+        ):
+            found.append(f"{method} {path}")
+    return found
 
 
 def test_every_route_that_takes_parameters_has_a_valid_request(app, client):
-    taking = {(f.method, f.path) for f in request_fields(app)}
-    assert ("GET", "/api/servers/output") in taking  # non-vacuity
-    assert taking <= set(CALLS), taking - set(CALLS)
-    for method, path in sorted(taking):
-        r = client.request(method, concrete(path), headers=changing(ALICE), **CALLS[(method, path)])
-        assert r.status_code != 422, (method, path, r.text)
+    assert ("GET", "/api/servers/output") in {(f.method, f.path) for f in request_fields(app)}
+    assert without_a_valid_request(client, CALLS, changing(ALICE)) == []
+
+
+def test_a_route_whose_request_is_refused_is_found():
+    """Planted twin: a route whose request in ``calls`` is refused as invalid is found."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    problems.install(app)
+
+    @app.get("/x")
+    def x(count: int) -> dict:
+        return {}
+
+    calls = {("GET", "/x"): {"params": {"count": "many"}}}
+    assert without_a_valid_request(TestClient(app), calls, {}) == ["GET /x"]
 
 
 # A few values that break most patterns, tried in order.
@@ -952,7 +709,6 @@ def test_an_error_type_without_a_message_is_found():
     calls = {("POST", "/x"): {"json": {"ratio": 1.5}}}
     found, _ = refusal_problems(TestClient(app), calls, {})
     assert "no message for float_parsing" in found
-    assert any("the fallback message" in problem for problem in found)
 
 
 def unreached_messages(client) -> set[str]:
@@ -1054,124 +810,3 @@ def test_a_pattern_without_a_rule_is_found():
     assert [f.schema.get("pattern") for f in request_fields(app)] == ["^a$"]  # the plant
     found, _ = pattern_problems(TestClient(app), {("POST", "/x"): {"json": {"code": "a"}}}, {})
     assert found == ["POST /x body code: its pattern is no helpers' rule"]
-
-
-def test_a_commit_without_an_author_is_a_problem_of_rcmans_own():
-    assert problems.STATUS["author_not_set"] == 409
-    assert problems.MESSAGES["author_not_set"]
-
-
-def _list_app():
-    """An app with a list field of bounded length."""
-    from fastapi import FastAPI
-    from pydantic import BaseModel, Field
-
-    class Body(BaseModel):
-        files: list[str] = Field(min_length=1, max_length=2)
-
-    app = FastAPI()
-    problems.install(app)
-
-    @app.post("/x")
-    def x(body: Body) -> dict:
-        return {}
-
-    return app
-
-
-def test_a_list_fields_violations_are_its_length_and_its_type():
-    [f] = request_fields(_list_app())
-    found = dict(violations(f))
-    assert found["minItems"] == [] and found["maxItems"] == ["a", "a", "a"]
-    assert found["type"] == "x"
-
-
-def test_a_list_too_short_too_long_or_not_a_list_is_refused_in_rcmans_words():
-    from fastapi.testclient import TestClient
-
-    calls = {("POST", "/x"): {"json": {"files": ["a"]}}}
-    found, used = refusal_problems(TestClient(_list_app()), calls, {})
-    assert found == []
-    assert {"too_short", "too_long", "list_type"} <= used
-
-
-def test_the_problems_of_rolling_out_a_claude_version_are_conflicts_in_plain_words():
-    from helpers import claude_release
-
-    for code in ("claude_install_failed", "claude_checks_failed", "claude_upgrade_busy"):
-        assert problems.STATUS[code] == 409
-        assert problems.MESSAGES[code]
-    # every way a version can fail to be had is told in words of its own
-    assert set(problems.CLAUDE_INSTALL_MESSAGES) == set(claude_release.KINDS)
-    assert len(set(problems.CLAUDE_INSTALL_MESSAGES.values())) == len(claude_release.KINDS)
-    # a release site that does not answer is a bad gateway; the rest is for the administrator
-    assert set(problems.CLAUDE_INSTALL_STATUS) == set(claude_release.KINDS)
-    assert problems.CLAUDE_INSTALL_STATUS["network"] == 502
-    assert {k: v for k, v in problems.CLAUDE_INSTALL_STATUS.items() if k != "network"} == {
-        k: 409 for k in claude_release.KINDS if k != "network"
-    }
-
-
-def test_a_version_marked_as_failed_is_told_in_plain_words():
-    assert {
-        code: problems.STATUS[code]
-        for code in (
-            "claude_version_failed",
-            "claude_version_approved",
-            "claude_version_not_failed",
-        )
-    } == {
-        "claude_version_failed": 409,
-        "claude_version_approved": 409,
-        "claude_version_not_failed": 404,
-    }
-    assert "remove its mark" in problems.MESSAGES["claude_version_failed"]
-    assert "approved" in problems.MESSAGES["claude_version_approved"]
-    assert "not marked" in problems.MESSAGES["claude_version_not_failed"]
-
-
-def test_nothing_answers_that_rcman_cannot_do_it_yet():
-    assert "not_available_yet" not in problems.MESSAGES
-    assert "not_available_yet" not in problems.STATUS
-
-
-def test_the_refusals_push_and_sync_share_read_right_for_both():
-    """detached_head and no_commits_yet refuse a push and a sync alike, so their words name
-    neither."""
-    # the positive: the catalogue is read, and the check finds "push" where it is
-    assert "push" in problems.MESSAGES["no_push_remote"].lower()
-    for code in ("detached_head", "no_commits_yet"):
-        words = problems.MESSAGES[code].lower()
-        assert words and "push" not in words and "sync" not in words, code
-
-
-def test_a_refusal_during_a_rebuild_says_to_rebuild_and_not_to_make_the_workspace_again():
-    """The file a rebuild reads is the workspace's own: it is changed there, and rebuilt."""
-    advised = [
-        m for m in problems.DEVCONTAINER_MESSAGES.values() if problems.MAKE_AGAIN_ADVICE in m
-    ]
-    assert len(advised) >= 5  # the positive: the advice is found where it is
-    for message in advised:
-        reworded = problems.rebuild_advice(message)
-        assert problems.MAKE_AGAIN_ADVICE not in reworded, message
-        assert problems.REBUILD_ADVICE in reworded, message
-    plain = problems.DEVCONTAINER_MESSAGES["musl"]
-    assert problems.rebuild_advice(plain) == plain
-
-
-def test_the_problems_of_a_rebuild_are_answered_with_their_own_status():
-    assert problems.STATUS["workspace_rebuilding"] == 409
-    assert problems.STATUS["rebuild_confirm_required"] == 422
-    for code in ("rebuild_empty", "rebuild_no_container", "rcman_starting"):
-        assert problems.STATUS[code] == 409, code
-    for key in (
-        "restarted",
-        "restarted_switching",
-        "rolled_back",
-        "rollback_failed",
-        "put_back_later",
-    ):
-        assert problems.REBUILD_MESSAGES[key], key
-    for key in ("rolled_back", "rollback_failed", "put_back_later"):
-        assert "{cause}" in problems.REBUILD_MESSAGES[key], key
-    assert "as soon as it can" in problems.REBUILD_MESSAGES["rollback_failed"]

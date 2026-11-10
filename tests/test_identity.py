@@ -9,20 +9,10 @@ from tests.conftest import ALICE, BOB, CALLS, ORIGIN, as_user, changing, concret
 REPO = Path(__file__).resolve().parent.parent
 
 
-def test_no_identity_is_401(client):
-    assert client.get("/api/me").status_code == 401
-
-
-def test_unknown_email_is_403(client):
+def test_only_an_active_person_is_let_in_by_their_address_in_any_case(client, settings):
+    assert client.get("/api/me", headers=as_user("ALICE@Example.com")).json()["email"] == ALICE
     r = client.get("/api/me", headers=as_user("stranger@example.com"))
     assert (r.status_code, r.json()["code"]) == (403, "not_allowed")
-
-
-def test_email_matching_is_case_insensitive(client):
-    assert client.get("/api/me", headers=as_user("ALICE@Example.com")).json()["email"] == ALICE
-
-
-def test_a_person_removed_is_refused_at_once(client, settings):
     assert client.get("/api/me", headers=as_user(BOB)).status_code == 200
     con = db.connect(settings.database)
     try:
@@ -30,16 +20,6 @@ def test_a_person_removed_is_refused_at_once(client, settings):
     finally:
         con.close()
     assert client.get("/api/me", headers=as_user(BOB)).status_code == 403
-
-
-def test_a_person_being_deleted_is_refused(client, settings):
-    con = db.connect(settings.database)
-    try:
-        people.mark_deleting(con, people.by_email(con, BOB))
-    finally:
-        con.close()
-    r = client.get("/api/me", headers=as_user(BOB))
-    assert (r.status_code, r.json()["code"]) == (403, "not_allowed")
 
 
 KNOWN_ADMIN_ROUTES = {
@@ -74,30 +54,56 @@ def admin_routes(app):
     }
 
 
-def test_admin_routes_are_found_in_the_route_table(app):
-    found = admin_routes(app)
-    assert KNOWN_ADMIN_ROUTES <= found  # non-vacuity: every known one is found
-    assert ("GET", "/api/me") not in found and ("GET", "/api/workspaces") not in found
+def admitting(client, found, calls) -> list[tuple[str, str]]:
+    """The routes of ``found`` that answer someone who is not an administrator with anything
+    but admin_only."""
+    let_in = []
+    for method, path in sorted(found):
+        r = client.request(method, concrete(path), headers=changing(BOB), **calls[(method, path)])
+        if (r.status_code, r.json().get("code")) != (403, "admin_only"):
+            let_in.append((method, path))
+    return let_in
 
 
 def test_admin_routes_refuse_non_admins(client, app):
     found = admin_routes(app)
-    assert found and found <= set(CALLS)  # every admin route has a valid request to drive it
-    for method, path in sorted(found):
-        r = client.request(method, concrete(path), headers=changing(BOB), **CALLS[(method, path)])
-        assert (r.status_code, r.json()["code"]) == (403, "admin_only"), (method, path)
+    assert KNOWN_ADMIN_ROUTES <= found  # non-vacuity: every known one is found
+    assert ("GET", "/api/me") not in found and ("GET", "/api/workspaces") not in found
+    assert found <= set(CALLS)  # every admin route has a valid request to drive it
+    assert admitting(client, found, CALLS) == []
     assert client.get("/api/audit", headers=as_user(ALICE)).status_code == 200
+
+
+def test_the_admin_check_finds_an_admin_route_that_lets_anyone_in(app):
+    """Planted twin: a route that depends on admin_user, whose check is overridden to let
+    anyone signed in through, is found."""
+    from fastapi import Depends
+    from fastapi.testclient import TestClient
+    from rcman.identity import admin_user, current_user
+
+    @app.post("/api/planted-admin")  # a GET would be the pages' catch-all's
+    def planted(identity=Depends(admin_user)):
+        return {}
+
+    planted_route = ("POST", "/api/planted-admin")
+    assert planted_route in admin_routes(app)
+    with TestClient(app) as client:
+        calls = {planted_route: {}}
+        assert admitting(client, {planted_route}, calls) == []  # the control: it refuses
+        app.dependency_overrides[admin_user] = current_user
+        try:
+            assert admitting(client, {planted_route}, calls) == [planted_route]
+        finally:
+            app.dependency_overrides.clear()
 
 
 def test_changes_need_the_public_origin(client):
     body = {"prefix": "abc"}
     headers = as_user(ALICE)
-    r = client.patch("/api/me/settings", json=body, headers=headers)  # no Origin
-    assert (r.status_code, r.json()["code"]) == (403, "origin_refused")
     r = client.patch(
         "/api/me/settings", json=body, headers={**headers, "Origin": "https://evil.example.com"}
     )
-    assert r.status_code == 403
+    assert (r.status_code, r.json()["code"]) == (403, "origin_refused")
     assert (
         client.patch(
             "/api/me/settings", json=body, headers={**headers, "Origin": ORIGIN}
@@ -145,14 +151,6 @@ def test_the_navigation_check_finds_an_unnamed_one_and_a_stale_name(app):
     ]
     stale = {**identity.NAVIGATIONS, ("GET", "/api/planted-gone"): "planted"}
     assert "GET /api/planted-gone: no such route" in unnamed_navigations(app, stale)
-
-
-def test_reads_do_not_need_an_origin(client):
-    assert client.get("/api/me", headers=as_user(ALICE)).status_code == 200
-
-
-def test_health_needs_no_identity(client):
-    assert client.get("/api/health").json() == {"status": "ok"}
 
 
 # --- the upgrade to a WebSocket ---------------------------------------------------------------

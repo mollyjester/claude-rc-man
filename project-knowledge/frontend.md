@@ -431,40 +431,46 @@ redirect of a page asked for without a sign-in comes back with less of the query
 
 ## Tests
 
-- **Component tests** (Vitest, Testing Library, jsdom): `src/*.test.ts(x)`.
+- **Component tests** (Vitest, Testing Library, jsdom): `src/**/*.test.ts(x)`.
   Those that render anything render the whole app at a route, or, for a part
   that is on no page, that part on its own (`renderAlone` in
-  `src/test/render.tsx`, with a page at each other path a test names to
-  follow a link to, or to leave it for), against
-  `src/test/fakeApi.ts`, which
-  answers from a table of routes in the backend's problem-details shape and
-  records every call; a route answering `UNREACHABLE_REPLY` makes `fetch`
-  reject, as a browser's does, and one answering `SIGNED_OUT_REPLY` answers an
-  opaque redirect, as Caddy's redirect to the sign-in is seen. `renderApp` and `renderAlone` also return the
-  router's current location and a `navigate`, whose `navigate(-1)` is the
-  browser's back button, and takes `pollMs`, 0 unless a test gives one, and
-  `strict`, to render in React's strict mode, as `src/main.tsx` does.
-  `src/test/setup.ts` runs the role queries once
-  before each file's first test, so that the suite passes on a loaded machine,
-  and sets how long a `findBy*` or `waitFor` waits to the component tests' step
-  (see [Limits and time in the tests](#limits-and-time-in-the-tests)). After
-  each test it empties the queue of reports (`forgetReports`) and forgets the
-  sender (`forgetSending`), so that neither sends during the next test. It puts
-  `src/test/fakeXterm.ts` in the place of `src/xtermView.ts` for every test,
-  and installs before each `src/test/fakeSocket.ts`, a WebSocket that records
-  each socket opened and what the page sent on it, closes as a browser's does,
-  its close event a moment after `close()`, and through which a test plays
-  rcman's end, and `src/test/fakeLayout.ts`'s ResizeObserver and `matchMedia`,
-  which jsdom lacks, and whose layout change and colour scheme a test brings
-  about. jsdom has the `<dialog>` element but not its behaviour, so
-  `src/test/fakeDialog.ts` stands in for `showModal()`, `close()` and Escape,
-  as the page relies on the browser's own dialog to behave:
-  focus moves into it, Escape cancels it and closes it, and focus returns; it
-  cannot keep the page behind out of reach. No test holds it, or
-  `src/test/fakeLayout.ts`, to a real browser ([tests.md](tests.md#what-the-tests-no-longer-check)). The tests that hold a guide in `docs/` to the page read its tables with
-  `guideTable` in `src/test/guideTable.ts`, and the tests that read
-  `src/styles.css` take its comments out with `uncommented` in
-  `src/test/css.ts`.
+  `src/test/render.tsx`, with a page at each other path a test names to follow a
+  link to), against `src/test/fakeApi.ts`, which answers from a table of routes
+  in the backend's problem-details shape and records every call; a route
+  answering `UNREACHABLE_REPLY` makes `fetch` reject, as a browser's does, and
+  one answering `SIGNED_OUT_REPLY` answers an opaque redirect, as Caddy's
+  redirect to the sign-in is seen. `renderApp` and `renderAlone` also return the
+  router's current location, and `renderApp` takes `pollMs`, 0 unless a test
+  gives one. `src/test/setup.ts` runs the role queries once before each file's
+  first test, so that the suite passes on a loaded machine, and sets how long a
+  `findBy*` or `waitFor` waits to the component tests' step (see [Limits and
+  time in the tests](#limits-and-time-in-the-tests)). After each test it empties
+  the queue of reports (`forgetReports`) and forgets the sender
+  (`forgetSending`), so that neither sends during the next test. It puts
+  `src/test/fakeXterm.ts` in the place of `src/xtermView.ts` for every test, and
+  installs before each `src/test/fakeSocket.ts`, a WebSocket that records each
+  socket opened and what the page sent on it, closes as a browser's does, its
+  close event a moment after `close()`, and through which a test plays rcman's
+  end, and `src/test/fakeLayout.ts`'s ResizeObserver, which is never told of a
+  change, and `matchMedia`, which says the light scheme and counts who listens
+  for its change; jsdom has neither. jsdom has the `<dialog>` element but not
+  its behaviour, so `src/test/fakeDialog.ts` stands in for `showModal()`,
+  `close()` and Escape, as the page relies on the browser's own dialog to
+  behave: focus moves into it, Escape cancels it and closes it, and focus
+  returns; it cannot keep the page behind out of reach. No test holds it, or
+  `src/test/fakeLayout.ts`, to a real browser
+  ([tests.md](tests.md#what-the-tests-no-longer-check)). The tests that hold a
+  guide in `docs/` to the page read its tables with `guideTable` in
+  `src/test/guideTable.ts`, and the tests that read `src/styles.css` take its
+  comments out with `uncommented` in `src/test/css.ts`.
+- **One test for each thing a person relies on.** Each page and part has one
+  test for each thing a person or an administrator relies on it for, on the path
+  where it works, and the guards above, each scanning check with one planted twin;
+  a failure is tested where showing it is the behaviour. `src/test/hangGuard.test.ts`
+  is the frontend's side of the hang guard: it holds that a test, a `findBy*`, a
+  `waitFor` and `waitForIt` run under the tier's bounds, and that a `findBy*` and
+  `userEvent` finish under fake timers. What that gives up is in
+  [tests.md](tests.md#what-the-tests-no-longer-check).
 - **No browser tests.** No test drives the page in a real browser; what that leaves
   unchecked is in [tests.md](tests.md#what-the-tests-no-longer-check).
 

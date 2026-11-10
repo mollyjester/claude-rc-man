@@ -356,7 +356,7 @@ engine has no user manager of rcman's, so this is checked here.
    single slice: the cost of a usage round is that one call. Save the answer as
    `tests/fakes/podman-monitor/systemctl-show.txt`, with the slices named as rcman names them,
    and add a test in `tests/test_monitor.py` that reads it with `monitor.read_units`: until
-   then the parser is held to the format only through the stand-in of the stack
+   then the parser is held to the format only through the stand-in `systemctl`
    (`tests/container/stand_ins.py`) and the cases written in `tests/test_monitor.py`.
 2. **The page.** Open **Monitor**: after a usage interval, each person and workspace with a
    running server shows CPU, memory and processes, the host its figures, and a workspace's

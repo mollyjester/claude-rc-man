@@ -112,7 +112,7 @@ the product's values by default; so do the other sizes, `Workspaces(builder_slot
 gives as one below the service's builder slot, and the plan's `size`, which `Workspaces` takes
 from the runtime's `id_range` and `devcontainer.resolve_user` holds a user's ids to. The tests'
 engine gives them its own (see
-[tests.md](tests.md#the-tests-own-engine)), and `tests/test_main.py` holds the service and `rcman-admin` to
+[tests.md](tests.md#the-container-suites)), and `tests/test_main.py` holds the service to
 the defaults and every product source to giving none of them. The sign-in container takes the
 network too; the account containers, the folders' preparation and the canary have none.
 
@@ -142,8 +142,7 @@ and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is s
   lists of options are those Podman's help shows for those subcommands, with `--net`, an alias
   the help hides, and the wrapper's `VALUED` for the global ones. The helps are recorded from the
   default image's Podman in `tests/fakes/podman-help/`: `tests/test_podman_wrapper.py` holds the
-  lists to the recording, and `tests/container/test_nest_in_podman.py` the recording to the
-  image's own help.
+  lists to the recording.
 
 - **The configuration.** A nested container has pid, UTS and IPC namespaces of its own and
   shares the workspace's network, user and cgroup namespaces; cgroups are disabled (the
@@ -298,7 +297,8 @@ in Podman's shape from its planted images, which hold nothing here, and its work
 `inspect_report` (otherwise made from its workspaces), its own folder as the storage, and the store it was given
 (`claude_store`) as the Claude Code store.
 The recordings the tests read are in `tests/fakes/podman-monitor/`, recorded from Podman on the
-tests' engine; `tests/container/test_runtime_in_podman.py` holds them to that Podman.
+tests' engine: copies of one point in time, recorded again when the product starts failing
+against real Podman.
 
 ### A person's Claude sign-in
 
@@ -327,8 +327,8 @@ shared file at the same moment; Claude writes it in place, truncating first, and
 be read empty, or be left with the tail of a longer text. rcman does not serialise refreshes.
 It notices instead: `credentials_state` reads the file as `signed_in`, `empty` or
 `unreadable`, and `Accounts` reports `signed_out_unexpectedly` when SQLite has the account
-connected, no sign-out waits, and the file is not a sign-in. The container suites measure
-concurrent refreshes and hold turn-taking ones to whole files.
+connected, no sign-out waits, and the file is not a sign-in. No test refreshes the shared file
+from two workspaces at once.
 
 `start_sign_in` starts the person's sign-in container, `sign_in_name`:
 `podman run --rm --detach`, in the person's range, its process the mounted
@@ -386,7 +386,8 @@ says is for colleagues in
 
 The bind of a single file at a path the image lacks, readable with swapped ids, over an
 image's own folder, and taking a rename-over at the next start, and the probe's reading of
-links, are held by `tests/container/test_runtime_in_podman.py`; the text that reaches a real
+links, are held by no test against real Podman
+([tests.md](tests.md#the-container-suites)); the text that reaches a real
 session is a check of [the real-Claude list](real-claude-checklist.md).
 
 ### The git folder
@@ -472,10 +473,10 @@ only `end_sign_in` removes — for the tests and `make screenshot`. Its stop end
 container's stop ends of rcman's own: the tmux server, and the shell of every channel
 made to the workspace (`HostRuntime._end_channels`), once its runtime folder is removed,
 so a request in flight, or one that opened its channel again meanwhile, fails as broken
-rather than waiting on files the stop removed; `tests/runtime_contract.py`
-holds both runtimes to the same cases, on the host in `tests/test_runtime.py`
-and against real Podman on the tests' engine in
-`tests/container/test_runtime_in_podman.py`, apart from its canary cases (see [The canary](#the-canary)). A `Layout` says where a runtime's
+rather than waiting on files the stop removed; `tests/runtime_contract.py` holds the
+cases a runtime keeps: its `CASES` and `CANARY_CASES` run on the host in
+`tests/test_runtime.py`, and the basic ones among them (`BASIC`) against real Podman on the
+tests' engine in `tests/container/test_runtime_in_podman.py`. A `Layout` says where a runtime's
 things are, as the programs in a workspace see them: the tools as argv
 prefixes (busybox's applets in a container), the tmux socket and
 configuration, Claude, the shell, terminal descriptions, the runtime folder that holds the
@@ -524,8 +525,8 @@ is replaced and as the service stops, is counted, so one made while such a close
 and not put in, and its request is refused as sent nowhere; the idle closer's closes are not
 counted. `LATENCY_P95_SECONDS` in
 `channel.py` is what a request may cost, which the benchmark measures and reports
-([tests.md](tests.md#the-benchmark)), and the container suites hold the
-podman client of a channel to a memory bound of its own.
+([tests.md](tests.md#the-benchmark)); no test holds the memory the podman client of a
+channel takes.
 
 ## A workspace's server
 
@@ -697,8 +698,7 @@ this is the transport, and what cleans up after it.
   back whole, or once the app has closed its side - which the forwarding server keeps: it closes
   a relay's input only after the answer it passed back is whole (`_release`), once the app has
   closed, or, for a WebSocket whose browser has gone, after `SPLICE_DRAIN_SECONDS` in which the
-  app may close first; a browser's own half-close stops at Caddy and the server, and
-  `tests/test_forward.py` holds a request whose client half-closes to getting its whole answer.
+  app may close first; a browser's own half-close stops at Caddy and the server.
   It also starts no relay until the restore at rcman's start is done (`Workspaces.restored`),
   because the restore sweeps every running workspace and would end a relay started meanwhile,
   and starts each relay as a child that leads no process group (an asyncio subprocess with no
@@ -1188,8 +1188,7 @@ then `_lock`. Nothing is waited for while `_lock` is held, beyond a channel's ow
 without blocking (`close_idle`); a body under `_changed` reads or changes
 the state above, may take `_lock`, and reads no row, reports nothing and takes no other lock.
 No thread waits on `_changed` while it holds a lock. `tests/test_changed.py` holds the order,
-what each way a making thread ends leaves of its marks, and the deletion just after a workspace
-is made.
+and that a workspace made ready leaves no mark.
 
 **`close`**, rcman's shutdown, sets `_closing` and waits on `_changed`, `CLOSE_WITHIN_SECONDS` in
 all, for the restore and its tasks, the making and rebuilding threads, the put-backs, the
@@ -1303,9 +1302,9 @@ the prefix it was started with.
   container made from it (`Containers`), and an image anything listed is built on is never tried,
   which keeps everything a kept image is built on: it goes at a later collection, once nothing is
   built on it. Podman's refusal is not counted on, since removing an image that has a child
-  succeeds there (it removes the image's record, and the child is a root after it), as
-  `tests/container/test_runtime_in_podman.py` holds. An image that is not known by its turn was
-  removed by something else meanwhile, counts as gone, and is not logged as staying. In practice
+  succeeds there (it removes the image's record, and the child is a root after it). An image
+  that is not known by its turn was removed by something else meanwhile, counts as gone, and is
+  not logged as staying. In practice
   `-a` changes little: the step images under kept images stay, and removing them would free no
   space, since the kept images use their layers; and removing a leaf takes its nameless parents
   that nothing else is built on with it. What frees an old default image is that a workspace's

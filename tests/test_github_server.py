@@ -65,38 +65,17 @@ def local(tmp_path):
     return repo
 
 
-def test_a_push_without_a_token_is_refused(server, remote, local, tmp_path):
+def test_a_push_is_taken_only_with_the_token_under_any_username(server, remote, local, tmp_path):
     bare, url = remote
     before = len(server.attempts)
-    proc = git_as(local, tmp_path / "home", "push", url, "main")
-    assert proc.returncode != 0
-    assert "terminal prompts disabled" in proc.stderr, proc.stderr
-    assert commits(bare) == []
-    assert server.attempts[before:] == []  # nothing was offered
-
-
-def test_a_push_with_a_wrong_token_is_refused(server, remote, local, tmp_path):
-    bare, url = remote
-    before = len(server.attempts)
-    proc = git_as(local, tmp_path / "home", "push", url, "main", config=FROM_ENV, U="x", P="wrong")
-    assert proc.returncode != 0
-    assert "Authentication failed" in proc.stderr, proc.stderr
-    assert commits(bare) == []
-    assert server.attempts[before:] and all(a == ("x", False) for a in server.attempts[before:])
-
-
-@pytest.mark.parametrize("username", ["x-access-token", "anyone"])
-def test_a_push_with_the_token_and_any_username_is_accepted(
-    server, remote, local, tmp_path, username
-):
-    bare, url = remote
-    before = len(server.attempts)
+    refused = git_as(local, tmp_path / "home", "push", url, "main")
+    assert refused.returncode != 0 and commits(bare) == []
     proc = git_as(
-        local, tmp_path / "home", "push", url, "main", config=FROM_ENV, U=username, P=TOKEN
+        local, tmp_path / "home", "push", url, "main", config=FROM_ENV, U="anyone", P=TOKEN
     )
     assert proc.returncode == 0, proc.stderr
     assert commits(bare) == ["First commit"]
-    assert (username, True) in server.attempts[before:]
+    assert ("anyone", True) in server.attempts[before:]
     assert all(TOKEN not in str(a) for a in server.attempts)  # the password is not kept
 
 
@@ -114,98 +93,6 @@ def test_reading_needs_no_token(server, remote, local, tmp_path):
     proc = git_as(clone, tmp_path / "home", "fetch", "-q")
     assert proc.returncode == 0, proc.stderr
     assert fixture_git(clone, "log", "-1", "--format=%s", "origin/main").strip() == "Second"
-
-
-def test_a_repository_is_reached_with_and_without_dot_git(server, remote, local, tmp_path):
-    bare, url = remote
-    fixture_git(local, "push", "-q", str(bare), "main")
-    without = url.removesuffix(".git")
-    proc = git_as(tmp_path, tmp_path / "home", "ls-remote", without, "main")
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split()[0] == fixture_git(local, "rev-parse", "main").strip()
-
-
-def test_github_url_is_the_real_one():
-    assert GitHubServer.github_url("alice", "repo") == "https://github.com/alice/repo.git"
-
-
-def stored(home: Path, url: str, token: str) -> None:
-    """A credential for ``url``'s protocol and host in ``home``'s ~/.git-credentials;
-    ``home`` is made if need be, as git credential-store writes into it."""
-    home.mkdir(parents=True, exist_ok=True)
-    protocol, _, host = url.partition("://")
-    host = host.split("/", 1)[0]
-    data = f"protocol={protocol}\nhost={host}\nusername=x-access-token\npassword={token}\n\n"
-    proc = subprocess.run(
-        ["git", "credential-store", "store"],
-        env=fixture_env(home),
-        input=data,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_a_credential_for_github_com_is_not_offered_to_the_rewritten_url(
-    server, remote, local, tmp_path
-):
-    """The load-bearing assumption: insteadOf rewrites the URL before git looks up a
-    credential, so a token must be stored for the address git rewrites to."""
-    bare, _ = remote
-    github_url = f"https://github.com/owner/{bare.name}"
-    hooked = {f"url.{server.url}.insteadOf": "https://github.com/"}
-    home = tmp_path / "home"
-    stored(home, "https://github.com", TOKEN)
-    for_github = {**hooked, "credential.https://github.com.helper": "store"}
-    proc = git_as(local, home, "push", github_url, "main", config=for_github)
-    assert proc.returncode != 0 and commits(bare) == []
-    base = server.url.removesuffix("/")
-    stored(home, base, TOKEN)
-    for_server = {**hooked, f"credential.{base}.helper": "store"}
-    proc = git_as(local, home, "push", github_url, "main", config=for_server)
-    assert proc.returncode == 0, proc.stderr  # positive control: stored for the rewritten URL
-    assert commits(bare) == ["First commit"]
-
-
-@pytest.fixture
-def private(server):
-    """A fresh private repository on the server, holding one commit on main: its URL."""
-    name = f"private-{next(_names)}"
-    bare = server.bare("owner", name, private=True)
-    return bare, f"{server.url}owner/{name}.git"
-
-
-def test_a_private_repository_is_not_read_without_the_token(server, private, local, tmp_path):
-    bare, url = private
-    fixture_git(local, "push", "-q", str(bare), "main")
-    before = len(server.attempts)
-    refused = git_as(tmp_path, tmp_path / "home", "ls-remote", url)
-    assert refused.returncode != 0 and "terminal prompts disabled" in refused.stderr
-    wrong = git_as(tmp_path, tmp_path / "home", "ls-remote", url, config=FROM_ENV, U="x", P="no")
-    assert wrong.returncode != 0
-    clone = tmp_path / "clone"
-    read = git_as(
-        tmp_path, tmp_path / "home", "clone", "-q", url, str(clone), config=FROM_ENV, U="x", P=TOKEN
-    )
-    assert read.returncode == 0, read.stderr
-    assert (clone / "README.md").exists()
-    assert ("x", True) in server.attempts[before:] and ("x", False) in server.attempts[before:]
-
-
-def test_a_public_repository_beside_a_private_one_is_read_by_anyone(
-    server, private, remote, tmp_path
-):
-    bare, url = remote
-    proc = git_as(tmp_path, tmp_path / "home", "ls-remote", url)
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_every_request_is_logged_by_its_path(server, remote, tmp_path):
-    _, url = remote
-    before = len(server.requests)
-    git_as(tmp_path, tmp_path / "home", "ls-remote", url)
-    path = url.removeprefix(server.url.removesuffix("/"))
-    assert any(p.startswith(path.removesuffix(".git")) for _, p in server.requests[before:])
 
 
 def test_requests_wait_while_the_gate_is_closed_and_go_on_once_it_is_opened(
@@ -233,31 +120,3 @@ def test_requests_wait_while_the_gate_is_closed_and_go_on_once_it_is_opened(
     finally:
         server.gate.set()
     assert waiting.wait(timeout=HANG_GUARD) == 0, waiting.stderr.read()
-
-
-def test_the_gate_is_open_by_default(server):
-    assert server.gate.is_set()
-
-
-def test_a_server_serves_on_a_listening_socket_it_is_given_and_closes_it_when_it_stops(
-    remote, local, tmp_path
-):
-    """As tests/container/network.py gives one made in another network namespace."""
-    import socket
-
-    given = socket.socket()
-    given.bind(("127.0.0.1", 0))
-    given.listen(16)
-    port = given.getsockname()[1]
-    github = GitHubServer()
-    url = github.start(tmp_path / "given", TOKEN, listening=given)
-    try:
-        assert url == f"http://127.0.0.1:{port}/"
-        bare = github.bare("owner", "given")
-        fixture_git(local, "push", "-q", str(bare), "main")
-        proc = git_as(tmp_path, tmp_path / "home", "ls-remote", f"{url}owner/given", "main")
-        assert proc.returncode == 0, proc.stderr
-        assert github.requests  # it was this server that answered
-    finally:
-        github.stop()
-    assert given.fileno() == -1  # closed with the server

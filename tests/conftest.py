@@ -199,8 +199,7 @@ TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
 def podman_service():
     """The tests' container engine (tests/podman_service.py): the user's rootless Podman on a
     socket and a storage of its own, for the session. Where it cannot run the test skips, unless
-    RCMAN_REQUIRE_CONTAINER=1, as make test-container and make benchmark set, in which case it
-    fails."""
+    RCMAN_REQUIRE_CONTAINER=1, as make test-container sets, in which case it fails."""
     from tests import podman_service as engine
 
     # A session's fixture is in no test: it names its tier's guard, the container tests'.
@@ -258,21 +257,6 @@ def system_image(podman_service) -> str:
     from tests.container import system
 
     return engine.hold(podman_service, system.build(podman_service))
-
-
-# The token the tests' GitHub takes for a push.
-GITHUB_TOKEN = "github-token-for-the-tests"
-
-
-@pytest.fixture(scope="session")
-def github(tmp_path_factory):
-    """The tests' GitHub (tests/github_server.py), which takes GITHUB_TOKEN for a push."""
-    from tests.github_server import GitHubServer
-
-    server = GitHubServer()
-    server.start(tmp_path_factory.mktemp("github"), GITHUB_TOKEN)
-    yield server
-    server.stop()
 
 
 @pytest.fixture(autouse=True)
@@ -407,60 +391,13 @@ def changed(monkeypatch):
 def periodic(monkeypatch):
     """The event the service's periodic checks wait on between rounds (``Workspaces._closing``)
     a ControlledEvent (tests/time_doubles.py), in the first service made
-    (``into_the_first_service``): the test ends a wait itself (``periodic_round``), and close
-    sets it as ever."""
+    (``into_the_first_service``): the test ends a wait itself (``expire``), and close sets it
+    as ever."""
     from tests.time_doubles import ControlledEvent
 
     made = ControlledEvent()
     into_the_first_service(monkeypatch, "_closing", made)
     return made
-
-
-@pytest.fixture
-def periodic_round(client, periodic):
-    """One round of the service's periodic checks, done once they wait again: their wait of
-    IDLE_CHECK_SECONDS is ended as if it had passed, and a new one is waited for."""
-    from rcman import workspaces
-
-    periodic.wait_parked(1, match=workspaces.IDLE_CHECK_SECONDS)
-
-    def round_() -> None:
-        periodic.expire(workspaces.IDLE_CHECK_SECONDS)
-        periodic.wait_parked(1, match=workspaces.IDLE_CHECK_SECONDS)
-
-    return round_
-
-
-@pytest.fixture
-def person_locks(monkeypatch):
-    """Every person's lock (``Workspaces.person_lock``) as a RecordingLock, one for each lock,
-    put in before ``client`` starts the service, so that a test sees a take of it blocked rather
-    than waiting for one (``recorded_person_lock``)."""
-    import threading
-
-    from rcman import workspaces as ws
-
-    from tests.time_doubles import RecordingLock
-
-    real, made, guard = ws.Workspaces.person_lock, {}, threading.Lock()
-
-    def person_lock(self, person_id):
-        lock = real(self, person_id)
-        with guard:
-            if id(lock) not in made:
-                made[id(lock)] = (lock, RecordingLock(lock))  # the lock kept: its id stays its
-            return made[id(lock)][1]
-
-    monkeypatch.setattr(ws.Workspaces, "person_lock", person_lock)
-
-
-def recorded_person_lock(app, person_id: int):
-    """The person's lock as ``person_locks`` put it in, which the test lists before ``client``."""
-    from tests.time_doubles import RecordingLock
-
-    lock = app.state.workspaces.person_lock(person_id)
-    assert isinstance(lock, RecordingLock), "the test lists person_locks before client"
-    return lock
 
 
 # What a test puts into the app's parts, each before ``app`` makes them, where the test asks.
@@ -510,15 +447,14 @@ def quick_watch(monkeypatch):
     hang_guard.pace(monkeypatch, workspaces, "WORKING_POLL_SECONDS", 0.02)
 
 
-def ended(service, workspace_id: int, within: float | None = None) -> None:
+def ended(service, workspace_id: int) -> None:
     """Until no thread of ``service``'s that makes or rebuilds the workspace is left: told by
-    the service's condition, within ``within`` seconds, HANG_GUARD unless given (a container
-    test gives CONTAINER_HANG_GUARD), the tier's unless given."""
-    within = hang_guard.tier_guard() if within is None else within
+    the service's condition, within the tier's guard."""
     with service._changed:
         assert service._changed.wait_for(
-            lambda: not any(h.workspace_id == workspace_id for h in service._unended), within
-        ), f"a thread making workspace {workspace_id} did not end within {within}s"
+            lambda: not any(h.workspace_id == workspace_id for h in service._unended),
+            hang_guard.tier_guard(),
+        ), f"a thread making workspace {workspace_id} did not end within the tier's guard"
 
 
 def signed_in(app, workspace: dict, trusted: bool = False) -> None:

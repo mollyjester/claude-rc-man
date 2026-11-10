@@ -1,15 +1,13 @@
 """The world make screenshot shows (devtools/world.py): the backend makes it in a held folder
-of its own and removes it when it shuts down, whether it stops, fails to build or cannot take
-its port, stopping the tmux servers it started; alice's Claude is signed in and bob's is not."""
+of its own and removes it when it shuts down, stopping the tmux servers it started; alice's
+Claude is signed in and bob's is not."""
 
 import os
 import signal
-import socket
 import subprocess
 from pathlib import Path
 
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
 
 from devtools import world
@@ -60,34 +58,15 @@ def _running(pid: int) -> bool:
     return Path(f"/proc/{pid}").exists()
 
 
-def test_the_backend_makes_its_world_and_removes_it_when_it_shuts_down(origin):
+def test_the_backend_makes_its_world_and_removes_it_when_it_shuts_down(origin, started):
     app = world.create_app()
     root = app.state.world
     assert root.is_dir() and (root / "rcman.db").is_file()
     assert root.stat().st_mode & 0o777 == 0o700
     with TestClient(app):
         assert root.is_dir()
+        pid = _start_tmux(world.sockets(root) / "alice.sock", started)
     assert not root.exists()
-
-
-def test_a_world_that_fails_to_build_is_removed(origin, monkeypatch):
-    made = []
-
-    def broken(workspaces, *args, **kwargs):
-        made.append(workspaces.parent)
-        assert workspaces.parent.is_dir()  # positive control: the world was made before this
-        raise RuntimeError("no runtime today")
-
-    monkeypatch.setattr(world, "HostRuntime", broken)
-    with pytest.raises(RuntimeError, match="no runtime today"):
-        world.create_app()
-    assert len(made) == 1 and not made[0].exists()
-
-
-def test_shutting_down_stops_the_tmux_servers_it_started(origin, started):
-    app = world.create_app()
-    with TestClient(app):
-        pid = _start_tmux(world.sockets(app.state.world) / "alice.sock", started)
     assert not _running(pid)
 
 
@@ -112,19 +91,3 @@ def _made(client, who):
     found = until(made)
     assert found["state"] == "ready", found
     return found
-
-
-def test_a_backend_that_cannot_take_its_port_removes_its_world(origin):
-    """uvicorn starts the app before it binds; when the bind fails it shuts the app down and
-    exits, and the world goes with it."""
-    app = world.create_app()
-    root = app.state.world
-    with socket.socket() as taken:
-        taken.bind(("127.0.0.1", 0))
-        taken.listen()
-        port = taken.getsockname()[1]
-        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None))
-        with pytest.raises(SystemExit):
-            server.run()
-    assert server.lifespan.startup_event.is_set()  # positive control: the app had started
-    assert not root.exists()

@@ -96,9 +96,9 @@ else; this file is the full list. Rules are referred to by their bold name.
 - **The on-demand run happens once, at the end, when required.** `make check`
   holds no container test. The container tests (`make test-container`) are the
   on-demand run. It is required when the
-  change touches the runtime, the uid mapping, the installer, the restore
-  after a restart or reboot, or the container-based stack, and before the live
-  reinstall; otherwise it is not run. It runs once, at the end of the
+  change touches the runtime, the uid mapping, the installer, or the restore
+  after a restart or reboot, and before the live reinstall; otherwise it is
+  not run. It runs once, at the end of the
   implementation, after the gating check is green. It has no baseline: a
   red on-demand test is triaged by running that test on `main`. When the
   on-demand run is red, everything red is fixed together, and the run is

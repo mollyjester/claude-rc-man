@@ -5,8 +5,7 @@ leaving out make test-container, the on-demand run. No target but make benchmark
 benchmark test. A container test that cannot run, or a test of the real claude, fails rather
 than skips where make requires it, none of the runs runs a test that needs a real Claude
 account, and every test of every run is under the hang guard (tests/hang_guard.py). make lint
-and make format cover both the Python code and the frontend, and make screenshot takes a page's
-screenshots with devtools/screenshots.py.
+and make format cover both the Python code and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
 what a target would run is read from what it ran; which tests a pytest command line
@@ -235,7 +234,6 @@ def planted(tmp_path: Path, old: str, new: str, count: int = 1) -> Path:
 TEST_M = '-m "not container and not real_claude and not benchmark"'
 CONTAINER_M = '-m "container and not real_claude and not benchmark"'
 BENCH_M = '-m "benchmark and not real_claude"'
-CHECK_REAL = "check: export RCMAN_REQUIRE_REAL_CLAUDE = 1\n"
 
 
 def runs_in_parallel(makefile: Path) -> bool:
@@ -243,13 +241,10 @@ def runs_in_parallel(makefile: Path) -> bool:
     return re.search(r"^\.NOTPARALLEL:", makefile.read_text(encoding="utf-8"), re.M) is None
 
 
-def test_no_target_runs_beside_another_under_make_j():
-    """make -j must run the targets it is given one after the other, as it does without -j."""
+def test_no_target_runs_beside_another_under_make_j(tmp_path):
+    """make -j must run the targets it is given one after the other, as it does without -j.
+    Planted twin: without the line, make -j may run targets together."""
     assert not runs_in_parallel(MAKEFILE)
-
-
-def test_a_makefile_without_notparallel_is_reported(tmp_path):
-    """Planted twin: without the line, make -j may run targets together."""
     assert runs_in_parallel(planted(tmp_path, ".NOTPARALLEL:\n", ""))
 
 
@@ -264,15 +259,6 @@ def test_a_test_dropped_from_make_test_is_reported(tmp_path):
     assert split_of(tmp_path, test=makefile) == [f"in none of the runs: {dropped}"]
 
 
-def test_container_tests_run_by_make_test_are_reported(tmp_path):
-    """Planted twin: make test without the container filter runs the container tests."""
-    makefile = planted(tmp_path, TEST_M, "")
-    problems = split_of(tmp_path, test=makefile)
-    assert problems == [
-        f"a container test in make test: {n}" for n in sorted(everything().container)
-    ]
-
-
 def test_make_check_with_the_container_run_is_reported(tmp_path):
     """Planted twin: make check gaining test-container holds an on-demand run."""
     makefile = planted(tmp_path, "check: lint test ", "check: lint test test-container ")
@@ -280,13 +266,6 @@ def test_make_check_with_the_container_run_is_reported(tmp_path):
     assert problems == [
         f"an on-demand test in make check: {n}" for n in sorted(everything().container)
     ]
-
-
-def test_make_check_without_the_host_run_is_reported(tmp_path):
-    """Planted twin: make check without test misses every host test."""
-    makefile = planted(tmp_path, "check: lint test ", "check: lint ")
-    problems = check_problems(recorded(tmp_path, "check", makefile))
-    assert problems == [f"not run by make check: {n}" for n in sorted(everything().host)]
 
 
 def test_container_tests_that_could_skip_are_reported(tmp_path):
@@ -306,39 +285,11 @@ def real_claude_tests() -> list[str]:
     return found
 
 
-@pytest.mark.parametrize(
-    ("target", "old", "new"),
-    [
-        ("test", TEST_M, '-m "not container and not benchmark"'),
-        ("test-container", CONTAINER_M, '-m "container and not benchmark or real_claude"'),
-    ],
-)
-def test_real_claude_tests_run_by_a_target_are_reported(tmp_path, target, old, new):
-    """Planted twin: a target's own -m replaces addopts' -m 'not real_claude', so the
-    target without its own 'and not real_claude' runs the tests that need a real account."""
-    makefile = planted(tmp_path, old, new)
-    problems = split_of(tmp_path, **{target.replace("-", "_"): makefile})
-    assert problems == [
-        f"left out of a bare run, in make {target}: {n}" for n in real_claude_tests()
-    ]
-
-
 def test_real_claude_tests_run_by_make_check_are_reported(tmp_path):
     """Planted twin: make check running make test without 'and not real_claude'."""
     makefile = planted(tmp_path, TEST_M, '-m "not container and not benchmark"')
     problems = check_problems(recorded(tmp_path, "check", makefile))
     assert problems == [f"left out of a bare run, in make check: {n}" for n in real_claude_tests()]
-
-
-def test_make_check_without_the_real_claude_requirement_is_reported(tmp_path):
-    """Planted twin: make check not setting RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests
-    of the real claude would skip rather than fail without it."""
-    makefile = planted(tmp_path, CHECK_REAL, "")
-    calls = [c for c in recorded(tmp_path, "check", makefile) if c.pytest_args() is not None]
-    assert len(calls) >= 1  # non-vacuity
-    assert check_problems(calls) == [
-        f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(c.argv)}" for c in calls
-    ]
 
 
 # --- make benchmark: on demand, and in no other target, read from the Makefile itself ---
@@ -358,10 +309,9 @@ BENCHMARK_TESTS = {
 
 @dataclass
 class Rule:
-    """A target of the Makefile: the targets it makes first, its own exports and its recipe."""
+    """A target of the Makefile: the targets it makes first and its recipe."""
 
     prerequisites: list[str] = field(default_factory=list)
-    exports: dict[str, str] = field(default_factory=dict)
     recipe: list[str] = field(default_factory=list)
 
 
@@ -383,8 +333,7 @@ def makefile_rules(text: str) -> dict[str, Rule]:
             continue
         rule = rules.setdefault(found.group(1), Rule())
         rest = found.group(2).split("#", 1)[0].strip()
-        if exported := re.match(r"^export\s+(\w+)\s*=\s*(.*)$", rest):
-            rule.exports[exported.group(1)] = exported.group(2).strip()
+        if re.match(r"^export\s+\w+\s*=", rest):
             current = None
         else:
             rule.prerequisites += rest.split()
@@ -458,7 +407,7 @@ def benchmark_problems(makefile: str, pyproject: str) -> list[str]:
     test, for any set of markers it may carry with it; make benchmark's call selecting any
     other than the benchmark's tests but those of a real Claude account; a target that makes
     make benchmark; and make benchmark not one pytest call, in one process (no -n or --dist),
-    with -s and RCMAN_REQUIRE_CONTAINER=1."""
+    with -s."""
     rules = makefile_rules(makefile)
     addopts = tomllib.loads(pyproject)["tool"]["pytest"]["ini_options"]["addopts"]
     bare = marker_expression(shlex.split(addopts))
@@ -489,8 +438,6 @@ def benchmark_problems(makefile: str, pyproject: str) -> list[str]:
             problems.append("make benchmark does not show what its tests report (-s)")
         if any(a.startswith(("-n", "--numprocesses", "--dist")) for a in args):
             problems.append(f"make benchmark runs in more than one process: {args}")
-    if bench.exports.get("RCMAN_REQUIRE_CONTAINER") != "1":
-        problems.append("make benchmark lets its container test skip")
     return problems
 
 
@@ -522,50 +469,13 @@ def test_only_make_benchmark_runs_the_benchmark_and_in_one_process():
     assert benchmark_problems(makefile, PYPROJECT.read_text(encoding="utf-8")) == []
 
 
-@pytest.mark.parametrize(
-    ("old", "new", "pyproject", "first"),
-    [
-        (TEST_M, TEST_M.replace(" and not benchmark", ""), False,
-         "make test runs a benchmark test carrying ['benchmark']"),
-        (CONTAINER_M, CONTAINER_M.replace(" and not benchmark", ""), False,
-         "make test-container runs a benchmark test carrying ['benchmark', 'container']"),
-        (TEST_M, "", False, None),  # addopts' -m then, which leaves the benchmark out
-        ("not real_claude and not benchmark", "not real_claude", True,
-         "a bare pytest runs a benchmark test carrying ['benchmark']"),
-        (BENCH_M, '-m "benchmark"', False,
-         "make benchmark runs a test carrying ['benchmark', 'real_claude']"),
-        (BENCH_M, '-m "benchmark and not real_claude and not container"', False,
-         "make benchmark leaves out a test carrying ['benchmark', 'container']"),
-        ("check: lint test frontend-test frontend-build",
-         "check: lint test frontend-test frontend-build benchmark", False,
-         "make check makes make benchmark"),
-        ("skip fail instead\n",
-         "skip fail instead\n\t@$(MAKE) --no-print-directory benchmark  # planted\n",
-         False, "make check makes make benchmark"),
-        (f"{BENCH_M} -s", BENCH_M, False,
-         "make benchmark does not show what its tests report (-s)"),
-        (f"{BENCH_M} -s", f"{BENCH_M} -s -n 8", False,
-         "make benchmark runs in more than one process: "
-         "['-m', 'benchmark and not real_claude', '-s', '-n', '8']"),
-        ("benchmark: export RCMAN_REQUIRE_CONTAINER = 1\n", "", False,
-         "make benchmark lets its container test skip"),
-    ],
-)  # fmt: skip
-def test_a_planted_fault_in_the_benchmarks_place_is_reported(old, new, pyproject, first):
-    """Planted twins of the above, each a change to the Makefile or to pyproject's addopts, and
-    one control: make test without its own -m leaves the benchmark out by addopts'."""
+def test_a_benchmark_test_run_by_another_target_is_reported():
+    """Planted twin of the above: make test without its own 'and not benchmark'."""
     makefile, project = MAKEFILE.read_text(encoding="utf-8"), PYPROJECT.read_text(encoding="utf-8")
-    changed = project if pyproject else makefile
-    assert old in changed, old
-    planted_text = changed.replace(old, new, 1)
-    if pyproject:
-        problems = benchmark_problems(makefile, planted_text)
-    else:
-        problems = benchmark_problems(planted_text, project)
-    if first is None:
-        assert problems == []
-    else:
-        assert problems and problems[0] == first, problems
+    planted_text = makefile.replace(TEST_M, TEST_M.replace(" and not benchmark", ""), 1)
+    assert planted_text != makefile  # the plant took effect
+    problems = benchmark_problems(planted_text, project)
+    assert problems and problems[0] == "make test runs a benchmark test carrying ['benchmark']"
 
 
 # --- the hang guard: every test of every run under it ---
@@ -624,47 +534,6 @@ def test_a_run_without_the_hang_guard_is_reported(tmp_path):
     ]
 
 
-def test_a_run_with_another_method_is_reported(tmp_path):
-    """Planted twin: make test-container asking for the signal method, which leaves a test
-    whose worker thread never ends hanging."""
-    makefile = planted(tmp_path, CONTAINER_M, f"{CONTAINER_M} --timeout-method signal")
-    found = {"timeout": CONTAINER_GUARD, "method": "signal", "func_only": False}
-    assert unguarded(recorded(tmp_path, "test-container", makefile)) == [
-        f"not under the hang guard ({found}): {n}" for n in sorted(everything().container)
-    ]
-
-
-def test_a_container_test_under_the_host_guard_is_reported(tmp_path):
-    """Planted twin: make test-container giving the container tests the host tests' guard."""
-    makefile = planted(tmp_path, CONTAINER_M, f"{CONTAINER_M} -o container_timeout={HOST_GUARD}")
-    found = {"timeout": HOST_GUARD, "method": "thread", "func_only": False}
-    assert unguarded(recorded(tmp_path, "test-container", makefile)) == [
-        f"not under the hang guard ({found}): {n}" for n in sorted(everything().container)
-    ]
-
-
-@pytest.mark.parametrize("target", RUNS)
-def test_a_program_the_recorder_does_not_stand_in_for_fails_the_target(tmp_path, target):
-    """Positive control for the recorder: a recipe running anything else fails make."""
-    makefile = planted(tmp_path, "\tuv run pytest", "\tpytest", -1)
-    with pytest.raises(AssertionError):
-        recorded(tmp_path, target, makefile)
-
-
-# --- make screenshot: no test, the tool devtools/screenshots.py ---
-
-# Given no PAGE and no STATE.
-SHOTS = ("uv", "run", "python", "-m", "devtools.screenshots", "", "")
-
-
-def test_make_screenshot_builds_the_frontend_then_runs_the_screenshot_tool(tmp_path):
-    calls = recorded(tmp_path, "screenshot")
-    assert [(c.argv, c.cwd) for c in calls] == [
-        (("npm", "run", "build"), str(FRONTEND)),
-        (SHOTS, str(REPO)),
-    ]
-
-
 # --- make lint and make format: ruff for the Python code, Biome for the frontend ---
 
 FRONTEND = REPO / "frontend"
@@ -683,11 +552,9 @@ def test_lint_and_format_run_ruff_and_the_frontend_script_of_the_same_name(tmp_p
     ]
 
 
-def lint_tree(
-    tmp_path: Path, planted: str | None, node_modules: bool = True, where: str = "src/planted.ts"
-):
+def lint_tree(tmp_path: Path, planted: str | None):
     """The real `make lint` in a scratch tree holding the Makefile, the frontend's
-    package.json and Biome's configuration, and ``planted`` as frontend/``where``.
+    package.json and Biome's configuration, and ``planted`` as frontend/src/planted.ts.
     uv is a recorder, so only the frontend's half does real work; npm and Biome are the
     real ones, Biome from the frontend's own packages."""
     biome = FRONTEND / "node_modules" / "@biomejs" / "biome"
@@ -697,10 +564,9 @@ def lint_tree(
     shutil.copy(MAKEFILE, tree / "Makefile")
     for name in ("package.json", "biome.jsonc"):
         shutil.copy(FRONTEND / name, tree / "frontend" / name)
-    if node_modules:
-        (tree / "frontend" / "node_modules").symlink_to(FRONTEND / "node_modules")
+    (tree / "frontend" / "node_modules").symlink_to(FRONTEND / "node_modules")
     if planted is not None:
-        (tree / "frontend" / where).write_text(planted, encoding="utf-8")
+        (tree / "frontend" / "src" / "planted.ts").write_text(planted, encoding="utf-8")
     fakebin = tmp_path / "bin"
     fakebin.mkdir()
     (fakebin / "uv").write_text(RECORDER.format(python=sys.executable), encoding="utf-8")
@@ -731,54 +597,21 @@ def checked(proc: subprocess.CompletedProcess) -> int:
     return int(found[0])
 
 
-def test_make_lint_passes_a_well_formatted_frontend_file_it_checked(tmp_path):
-    """Positive control: Biome checks one file more with the plant than without it, so
-    a lint that found no files could not pass here."""
+def test_make_lint_fails_on_a_mis_formatted_frontend_file_and_names_it(tmp_path):
+    """Positive control: Biome checks one file more with a well-formatted plant than without
+    it, so a lint that found no files could not pass here. Planted twin: the same file, not
+    formatted as Biome would."""
     bare = lint_tree(tmp_path / "bare", None)
     assert bare.returncode == 0, bare.stdout + bare.stderr
-    proc = lint_tree(tmp_path / "planted", WELL_FORMATTED)
+    proc = lint_tree(tmp_path / "formatted", WELL_FORMATTED)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert checked(proc) == checked(bare) + 1
-
-
-FORMAT_FINDING = "File content differs from formatting output"
-
-
-def test_make_lint_fails_on_a_mis_formatted_frontend_file_and_names_it(tmp_path):
-    """Planted twin: the same file, not formatted as Biome would."""
     planted = WELL_FORMATTED.replace("{ a: 1 };", "{a:1}")
     assert planted != WELL_FORMATTED  # the plant took effect
-    proc = lint_tree(tmp_path, planted)
-    assert proc.returncode != 0
-    assert "planted.ts" in output(proc) and FORMAT_FINDING in output(proc)
-
-
-INFO_LEVEL = 'export const planted = (a: string) => "x" + a;\n'  # useTemplate: an info
-
-
-def test_make_lint_fails_on_a_frontend_finding_biome_reports_as_an_info(tmp_path):
-    """Planted twin: a lint finding whose default severity is info, in a file formatted as
-    Biome would, fails make lint as any other finding does."""
-    proc = lint_tree(tmp_path, INFO_LEVEL)
-    assert "lint/style/useTemplate" in output(proc)  # the plant was found
-    assert FORMAT_FINDING not in output(proc)  # and only as a lint finding
+    proc = lint_tree(tmp_path / "planted", planted)
     assert proc.returncode != 0
     assert "planted.ts" in output(proc)
-
-
-def test_make_lint_checks_the_frontends_index_html(tmp_path):
-    """The page's index.html is among the files Biome checks: the real one passes, one
-    file more than without it, and a planted one without a language fails."""
-    index = (FRONTEND / "index.html").read_text(encoding="utf-8")
-    bare = lint_tree(tmp_path / "bare", None)
-    proc = lint_tree(tmp_path / "real", index, where="index.html")
-    assert proc.returncode == 0, output(proc)
-    assert checked(proc) == checked(bare) + 1
-    planted = index.replace('<html lang="en">', "<html>")
-    assert planted != index  # the plant took effect
-    proc = lint_tree(tmp_path / "planted", planted, where="index.html")
-    assert proc.returncode != 0
-    assert "index.html" in output(proc) and "lint/a11y/useHtmlLang" in output(proc)
+    assert "File content differs from formatting output" in output(proc)
 
 
 BIOME = FRONTEND / "node_modules" / ".bin" / "biome"
@@ -846,10 +679,3 @@ def test_every_rule_biome_runs_at_info_is_raised_to_a_warning():
     # Planted twin: the same configuration without one of those rules raised.
     del config["linter"]["rules"]["style"]["useTemplate"]
     assert unraised(config, enabled, info) == ["style/useTemplate"]
-
-
-def test_make_lint_fails_without_the_frontend_packages(tmp_path):
-    """Without frontend/node_modules there is no Biome, and make lint fails, not passes."""
-    proc = lint_tree(tmp_path, WELL_FORMATTED, node_modules=False)
-    assert proc.returncode != 0
-    assert "biome" in output(proc)

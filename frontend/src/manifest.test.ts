@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 // What the build copies from public/ as it is: the installed app's manifest and its icons.
@@ -19,7 +19,7 @@ const inPublic = (href: string) => resolve(PUBLIC, `.${href}`);
 
 type Icon = { src: string; sizes: string; type: string; purpose?: string };
 
-test("every icon the manifest names is a PNG of the size it states, one of them maskable", () => {
+test("every icon the manifest names is a PNG of the size it states, and index.html links the manifest and an apple-touch-icon", () => {
   const manifest = JSON.parse(readFileSync(resolve(PUBLIC, "manifest.webmanifest"), "utf-8"));
   const icons: Icon[] = manifest.icons;
   expect(icons.length).toBeGreaterThan(0);
@@ -29,12 +29,10 @@ test("every icon the manifest names is a PNG of the size it states, one of them 
     expect(pngSize(inPublic(icon.src)), icon.src).toEqual([width, height]);
   }
   expect(icons.some((icon) => icon.purpose === "maskable" && icon.sizes === "512x512")).toBe(true);
-});
-
-test("index.html links the manifest and an apple-touch-icon of 180 pixels", () => {
-  const manifest = INDEX.match(/<link rel="manifest"[^>]*>/)?.[0];
-  expect(manifest).toBe('<link rel="manifest" href="/manifest.webmanifest" />');
-  expect(existsSync(inPublic("/manifest.webmanifest"))).toBe(true);
+  // the size check's twin: the favicon, which is no PNG, has no size it could match
+  expect(pngSize(inPublic("/favicon.svg"))).toBeNull();
+  const link = INDEX.match(/<link rel="manifest"[^>]*>/)?.[0];
+  expect(link).toBe('<link rel="manifest" href="/manifest.webmanifest" />');
   const touch = INDEX.match(/<link rel="apple-touch-icon"[^>]*href="([^"]+)"/)?.[1];
   expect(touch).toBeDefined();
   expect(pngSize(inPublic(touch as string))).toEqual([180, 180]);

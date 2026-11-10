@@ -82,7 +82,8 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 - **Administrators.** Routes for administrators depend on `admin_user`.
   `routes.admin_only` finds them in the route table, and
   `tests/test_identity.py` drives each one as someone who is not an
-  administrator, with a valid request from `CALLS` in `tests/conftest.py`.
+  administrator, with a valid request from `CALLS` in `tests/conftest.py`; a planted route
+  whose `admin_user` lets anyone in is its twin.
 - **Validation** happens here, in Pydantic models and query parameters; the
   frontend shows what comes back. Every rule a value is refused by is a
   `Rule` in `helpers/rules.py`, which the installer reads too, never restated,
@@ -108,21 +109,21 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   own constraint. A body that is not JSON is about the field `request`; one
   that is not UTF-8 text at all is the problem `body_unreadable`. An error
   type with no message gets `field_invalid`'s, and a warning is logged on
-  `rcman.problems`. `tests/test_problems.py` finds every field of every
-  route in the route table, paired with the schema the API publishes, and
-  holds them to this: every published pattern is a rule refused with its
-  sentence — of any rule with that pattern, where two share one, as the
-  prefix and a workspace's name do; every violation each field's schema implies, and every body
-  that is not a JSON object, is refused at its field in a rule's sentence or
-  `FIELD_MESSAGES`' text and never in the library's words; and every
+  `rcman.problems`. `tests/test_problems.py` finds every field of every route
+  in the route table, paired with the schema the API publishes, and holds them
+  to this: every published pattern is a rule refused with its sentence — of
+  any rule with that pattern, where two share one, as the prefix and a
+  workspace's name do; every violation each field's schema implies, and every
+  body that is not a JSON object, is refused at its field in a rule's sentence
+  or `FIELD_MESSAGES`' text and never in the library's words; and every
   `FIELD_MESSAGES` entry is used. Every code rcman answers with is in
   `MESSAGES` and `STATUS` in `problems.py`, a workspace's and its server's
-  among them, and a test keeps the two tables to each other. A failure of the
-  runtime or a channel is `runtime_unavailable`, `workspace_failed` or
-  `timeout` (`workspaces.answered`). An upgrade to a WebSocket refused before it is accepted -
-  for its identity, its origin or its query - is answered over HTTP with the problem, as a
-  request is; a WebSocket accepted is refused with a frame of its own (see
-  [The terminal](#the-terminal)).
+  among them. A failure of the runtime or a channel is `runtime_unavailable`,
+  `workspace_failed` or `timeout` (`workspaces.answered`). An upgrade to a
+  WebSocket refused before it is accepted - for its identity, its origin or
+  its query - is answered over HTTP with the problem, as a request is; a
+  WebSocket accepted is refused with a frame of its own (see [The
+  terminal](#the-terminal)).
 
 ## Workspaces and servers
 
@@ -236,8 +237,10 @@ The problem codes are in `problems.py`: `memory_invalid`, `cpu_invalid` and `pid
 use cannot be told, and `limits_not_applied` when the runtime could not set them; with `person_not_found`,
 `workspace_not_found` and `runtime_unavailable`. A limit that could not be applied is not
 recorded. Both `PUT`s are audited as `person.limits` and `workspace.limits`, the target holding the
-values set (see [the audit guide](../docs/audit.md)). `tests/test_limits.py`,
-`tests/test_workspace_limits.py` and `tests/test_people.py` hold them.
+values set (see [the audit guide](../docs/audit.md)). `tests/test_limits.py` holds how the
+values are read and shown, `tests/test_workspace_limits.py` the limits set and stored,
+`limit_below_use` and `limits_not_applied`, and `tests/test_people.py` the routes' limits set,
+stored and reported; no test holds the other codes.
 
 ## Claude accounts
 
@@ -663,11 +666,11 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   its checks to its record, a creation, a rebuild, a Stop, a Start or a roll-out is either seen by
   its checks or refused. `GET /api/workspaces` and the versions
   report carry it as `rcman_upgrading`, for the pages to say why they offer none of them.
-- **Tests.** `tests/test_rcman_upgrade.py` holds the report's shape and every reason, the states
-  from recorded `systemctl show` output (`shown()`, which the real-machine checklist compares
-  with the real thing), malformed `systemctl show` output, the release read once, the
-  admission's race and locks, `rcman_upgrading` from a creation, a clone and a roll-out, and an
-  upgrade and a rebuild each refusing the other.
+- **Tests.** `tests/test_rcman_upgrade.py` holds the report with the option off and from a
+  finished run's status, a run's state from recorded `systemctl show` output (`shown()`, which
+  the real-machine checklist compares with the real thing), `systemctl show` run with its
+  fixed argv and environment, the release read once, a request admitted and followed to its
+  run's end, and `rcman_upgrading` from a creation, a clone and a roll-out.
 
 ## Monitor
 
@@ -745,14 +748,13 @@ are the monotonic clock, the wait between rounds and the wall time a round is st
   202 `{"refreshing": true}`, audited as `monitor.refresh`; what the rounds read, or why they
   failed, comes with the snapshot.
 
-`tests/test_monitor.py` holds the readers to the recordings, the rounds on the host runtime,
-the loops on a clock and a wait of its own, and what a round costs: with `subprocess` stubbed
-on a `PodmanRuntime`, a usage round runs `systemctl` once and Podman never, a disk round one
-`system df --verbose`, one `container inspect` and, with `storage` on, one `system df --format
-json` (one more of each on its retry) and no `systemctl`, and nothing runs with every scope off; a planted runtime that asks `systemctl` once per slice fails
-it. `tests/test_monitor_routes.py` holds the routes, Refresh among them: two presses while a
-disk round runs start one, a failed round shows its error, and a press with the disk round's
-scopes off runs no disk round. The page that changes the settings is
+`tests/test_monitor.py` holds the readers to the recordings, the rounds on the host runtime, the
+loops on a clock and a wait of its own, and what a round costs: with `subprocess` stubbed on a
+`PodmanRuntime`, a usage round runs `systemctl` once and Podman never, a disk round one `system
+df --verbose`, one `container inspect` and, with `storage` on, one `system df --format json` and
+no `systemctl`; a planted runtime that asks `systemctl` once per slice fails it.
+`tests/test_monitor_routes.py` holds the routes: a save of the settings, the snapshot's shape,
+and a press of Refresh that runs the rounds at once. The page that changes the settings is
 **Service settings** ([the guide](../docs/service-settings.md#monitoring)).
 
 ## Port forwarding's settings
@@ -783,7 +785,8 @@ off.
   whole set (`Store.save`) and answers the same, audited as `forwarding.settings` with the settings
   as JSON. A value outside its bounds, or of the wrong type, is refused at its field.
 
-`tests/test_forwarding_settings.py` holds them.
+`tests/test_forwarding_settings.py` holds a save and its audit; `tests/test_forward.py` what a
+save that leaves forwarding off ends.
 
 ## Port forwarding
 
@@ -818,7 +821,7 @@ owner's browser at `https://<port>-<workspace id>.ws.<DOMAIN>/`, DOMAIN the host
   marked as wanted, its owner being shown its address, but while a rebuild replaces the
   container, when it cannot be reached. Nothing that lists another person's workspaces, as
   `everyone.py` does for administrators, gives or marks their ports. `tests/test_forward.py`
-  holds it, an administrator's views beside their owner's listing.
+  holds the owner's listing.
 - **The hand-off.** A navigation (`GET` or `HEAD`) with no session is answered 303 to
   `HAND_OFF_PATH` on rcman's origin, its path and query kept in `RETURN_COOKIE`. The hand-off
   (`routers/forward.py`), through oauth2-proxy, is refused unless `Sec-Fetch-Dest: document`,
@@ -880,7 +883,10 @@ owner's browser at `https://<port>-<workspace id>.ws.<DOMAIN>/`, DOMAIN the host
   app switches once the session has ended is closed unswitched and unrecorded. Everything is in
   memory and lost when rcman restarts.
 
-`tests/test_forward.py` holds it, on the host runtime.
+`tests/test_forward.py` holds the ask, the hand-off, the check of a request from another port's
+host, what passes to the app and back, a WebSocket spliced through, a session ended when idle
+and at its lifetime, the end of every way in when forwarding is turned off and no way in in any
+address, log or audit row, on the host runtime.
 
 ## Attention
 

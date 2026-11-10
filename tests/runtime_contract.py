@@ -1,15 +1,12 @@
 """The cases every runtime (backend/rcman/runtime.py) must pass, whatever it is.
 
 Not a test module. tests/test_runtime.py runs them against the host runtime, and
-tests/container/test_runtime_in_podman.py against Podman on the tests' engine, so
-that the host runtime the other tests use behaves as Podman does where it matters.
+tests/container/test_runtime_in_podman.py the basic ones against Podman on the tests' engine,
+so that the host runtime the other tests use behaves as Podman does where it matters.
 ``port_argv_carries_bytes_both_ways`` needs python3 in the runtime's image, as the default
 workspace image and the host have it, for the listener it reaches. The ``CANARY_CASES`` need
-python3 in the runtime's image too: tests/test_runtime.py runs them too;
-they take the slot the canary runs in as ``slot``, the product's builder slot unless a runtime
-with ranges of another size is given another (tests/container/sizes.py). The
-``PODMAN_CASES`` are the Podman runtime's alone: tests/container/test_runtime_in_podman.py runs
-them, and tests/test_runtime.py does not.
+python3 in the runtime's image too: tests/test_runtime.py runs them too, the canary in the
+product's builder slot.
 Each case takes a runtime and a ``spec(n)``, the n-th workspace a case may make,
 and removes what it made. Python standard library and the backend only.
 """
@@ -35,7 +32,6 @@ from rcman import runtime as rt
 from rcman.channel import ChannelBroken
 from rcman.runtime import TIMED_OUT
 
-from helpers import instructions
 from tests.hang_guard import RUNS_OUT, tier_guard
 from tests.until import until
 
@@ -619,7 +615,7 @@ def a_builder_and_an_image_are_removed_in_one_call_when_asked(runtime, spec):
         runtime.remove_build(workspace, image=True)
 
 
-def a_good_candidate_passes_the_canary(runtime, spec, slot=None):
+def a_good_candidate_passes_the_canary(runtime, spec):
     """The candidate is a folder with the one file, which anyone may read and run; a good one
     fails no check. The canary container is no workspace, and nothing of it is left."""
     from helpers import claude_checks
@@ -628,23 +624,23 @@ def a_good_candidate_passes_the_canary(runtime, spec, slot=None):
     folder = Path(tempfile.mkdtemp(prefix="canary-candidate-"))
     try:
         claude_download.candidate(folder, "7.6.5")
-        assert runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5", slot=slot) == {}
+        assert runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5") == {}
         # positive control: the same call names the checks a candidate fails
         claude_download.candidate(folder, "7.6.5", kind="broken")
-        failed = runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5", slot=slot)
+        failed = runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5")
         assert set(failed) == {name for name, _ in claude_checks.CHECKS}
         assert rt.CANARY_NAME not in runtime.labelled()
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def a_broken_candidate_names_the_checks_it_fails_with_their_reports(runtime, spec, slot=None):
+def a_broken_candidate_names_the_checks_it_fails_with_their_reports(runtime, spec):
     from tests import claude_download
 
     folder = Path(tempfile.mkdtemp(prefix="canary-candidate-"))
     try:
         claude_download.candidate(folder, "7.6.5", kind="broken")
-        failed = runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5", slot=slot)
+        failed = runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5")
         assert failed and all(set(entry) == {"lines", "more"} for entry in failed.values())
         assert all(entry["lines"] for entry in failed.values())
     finally:
@@ -825,19 +821,6 @@ def port_argv_carries_bytes_both_ways(runtime, spec):
             runtime.exec(name, [*layout.tool("kill"), "-KILL", str(listener)])
 
 
-def the_instructions_for_claude_are_bound_read_only_at_the_managed_path(runtime, spec):
-    """The file of the tools the default image calls for (helpers/instructions.py), which only
-    the Podman runtime binds: the host runtime's workspaces run on the host."""
-    told = runtime.config.tools_dir / instructions.FOLDER / instructions.DEFAULT_TOOLS
-    with made(runtime, spec(18)) as name:
-        layout = runtime.layout(name)
-        read = [*layout.tool("cat"), instructions.MANAGED]
-        assert runtime.exec(name, read) == rt.Result(0, told.read_bytes(), b"")
-        written = runtime.exec(name, _sh(layout, f"echo more >> {instructions.MANAGED}"))
-        assert written.code != 0, written
-        assert runtime.exec(name, read).out == told.read_bytes()
-
-
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -876,4 +859,3 @@ CANARY_CASES = [
     a_good_candidate_passes_the_canary,
     a_broken_candidate_names_the_checks_it_fails_with_their_reports,
 ]
-PODMAN_CASES = [the_instructions_for_claude_are_bound_read_only_at_the_managed_path]
