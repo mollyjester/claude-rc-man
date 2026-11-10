@@ -119,21 +119,6 @@ export const m = {
   // workspaces, and starting it again.
   stopWorkspace: "Stop workspace",
   stopWorkspaceBusy: "Stopping…",
-  stopWorkspaceTitle: (name: string) => `Stop ${name}?`,
-  stopWorkspaceIntro:
-    "The workspace's container stops, which frees the memory, CPU and processes it uses. It stays stopped, through restarts of rcman and of the machine, until it is started again.",
-  stopWorkspaceEnds: [
-    "Every process running in the workspace, those started with nohup or setsid too.",
-    "The terminal's shell.",
-    "The containers running inside the workspace.",
-    "Its forwarded ports, until it is started again.",
-  ],
-  stopWorkspaceKeeps: [
-    "The files in the workspace: the work folder, your home, Claude's settings, the storage of Podman inside it, and what is in /tmp.",
-    "The image the workspace is made from.",
-    "The server's Claude sessions. A server that was running starts again with the workspace and picks them up.",
-  ],
-  stopWorkspaceConfirm: "Stop workspace",
   startWorkspace: "Start workspace",
   startWorkspaceBusy: "Starting…",
   workspaceHalted: "This workspace is stopped, and its files are kept. Start it to use it again.",

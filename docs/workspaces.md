@@ -254,8 +254,8 @@ since there is no earlier state to return to, and can be rebuilt again.
 ### Stopping and starting a workspace
 
 **Stop workspace**, in the **Container** card of a ready workspace, stops the workspace's
-container, which frees the memory, CPU and processes it uses while you do not need it. It asks
-first, and says what is lost and what is kept:
+container, which frees the memory, CPU and processes it uses while you do not need it. It
+stops it at once, without asking. What is lost and what is kept:
 
 - It ends every process in the workspace, those started with `nohup` or `setsid` too, the
   terminal's shell and the containers running inside the workspace, and closes its forwarded
@@ -265,8 +265,8 @@ first, and says what is lost and what is kept:
   Podman stored inside it and what is in `/tmp` — the image the workspace is made from, and the
   server's Claude sessions.
 
-While it stops, the button says **Stopping…** and waits; **Cancel** changes nothing. If the
-container does not stop, the workspace keeps running and the question says so; its server may
+While it stops, the button says **Stopping…** and waits. If the
+container does not stop, the workspace keeps running and the page says so; its server may
 have been stopped, and is started again from its **Claude server** card. A stopped
 workspace says **Stopped** beside its name, and stays stopped, through restarts and upgrades of
 rcman and restarts of the machine, until it is started. Its **Claude server** and **Ports**
@@ -536,7 +536,7 @@ their workspaces: the name, the device name, the state — the workspace's while
 it is not ready, and otherwise its server's, or that it has none — the
 session's name, as each person's own Workspaces page shows them, and the Claude
 Code version a running server runs. Its one button is **Stop workspace**, on a workspace that
-may be stopped now: it asks first, as the person's own does, and says **Stopping…** while it
+may be stopped now: it stops it at once, as the person's own does, and says **Stopping…** while it
 runs (see [Stopping and starting a workspace](#stopping-and-starting-a-workspace)). Only the
 person a workspace belongs to can start it again or act on it otherwise. A workspace whose
 server rcman could not read is shown with the reason, and everything else is listed as usual.

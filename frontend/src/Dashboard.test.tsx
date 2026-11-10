@@ -2410,32 +2410,14 @@ test("Stop asks first and is sent once; the stopped workspace says so where it i
   renderApp("/?workspace=1");
   const card = await containerCard();
 
-  // It asks first, saying what is lost and what is kept, and Cancel sends nothing.
+  // Pressed, it stops at once, says it is stopping, and a second press sends nothing more.
   await userEvent.click(await card.findByRole("button", { name: m.stopWorkspace }));
-  let dialog = within(await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") }));
-  for (const line of [...m.stopWorkspaceEnds, ...m.stopWorkspaceKeeps])
-    expect(dialog.getByText(line)).toBeInTheDocument();
-  const ends = m.stopWorkspaceEnds.join(" ");
-  for (const word of ["process", "terminal", "containers"]) expect(ends).toContain(word);
-  const keeps = m.stopWorkspaceKeeps.join(" ");
-  for (const word of ["files", "image", "sessions"]) expect(keeps).toContain(word);
-  await userEvent.click(dialog.getByRole("button", { name: m.cancel }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(fake.made("POST", "/api/workspaces/1/stop")).toEqual([]);
-
-  // Confirmed, it says it is stopping, and a second press sends nothing more.
-  await userEvent.click(card.getByRole("button", { name: m.stopWorkspace }));
-  dialog = within(await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") }));
-  const confirm = dialog.getByRole("button", { name: m.stopWorkspaceConfirm });
-  expect(confirm).toHaveClass("primary");
-  await userEvent.click(confirm);
-  const stopping = await dialog.findByRole("button", { name: m.stopWorkspaceBusy });
+  const stopping = await card.findByRole("button", { name: m.stopWorkspaceBusy });
   expect(stopping).toBeDisabled();
   await userEvent.click(stopping);
   expect(fake.made("POST", "/api/workspaces/1/stop")).toHaveLength(1);
   current = halted();
   stopped({ workspace: current });
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
   // Stopped: its server, ports and terminal say so, and Start leads, the panel's one primary.
   const opened = within(await panel("alpha"));
