@@ -234,6 +234,7 @@ def test_library_text_is_recognised():
         *problems.CLAUDE_INSTALL_MESSAGES.values(),
         *problems.DEVCONTAINER_MESSAGES.values(),
         *problems.REBUILD_MESSAGES.values(),
+        *problems.POWER_MESSAGES.values(),
         *problems.UPGRADE_REFUSED_MESSAGES.values(),
         problems.PERSON_DELETION_LEFT,
         *problems.FIELD_MESSAGES.values(),

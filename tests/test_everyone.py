@@ -52,7 +52,7 @@ def test_each_workspace_shows_the_device_name_claude_shows_for_its_server(app, c
     assert a["device"] != b["device"]
 
 
-def test_a_workspace_shows_only_its_id_name_device_state_server_and_version(app, client):
+def test_a_workspace_shows_only_its_id_name_device_state_server_version_and_stop(app, client):
     url = "https://github.com/octo/widget"
     r = client.post("/api/git/clone", json={"url": f"{url}.git"}, headers=changing(ALICE))
     assert r.status_code == 202, r.text
@@ -75,6 +75,8 @@ def test_a_workspace_shows_only_its_id_name_device_state_server_and_version(app,
         "server",
         "server_error",
         "claude_version",
+        "stoppable",
+        "stopping",
     }
     assert url not in str(shown) and own["log"] not in str(shown)
 

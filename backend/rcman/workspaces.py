@@ -46,6 +46,7 @@ from rcman.problems import (
     DEVCONTAINER_MESSAGES,
     MESSAGES,
     PERSON_DELETION_LEFT,
+    POWER_MESSAGES,
     REBUILD_MESSAGES,
     Problem,
     rebuild_advice,
@@ -80,6 +81,12 @@ log = logging.getLogger("rcman.workspaces")
 log.setLevel(logging.INFO)
 
 CREATING, READY, FAILED, DELETING = "creating", "ready", "failed", "deleting"
+# A workspace its person stopped (``Workspaces.stop``): its container is stopped on purpose and
+# stays so, whatever starts rcman again, until its person starts it (``Workspaces.start``); its
+# volume, its image and its row are kept. The page calls it Stopped.
+HALTED = "halted"
+# The verbs of ``Workspaces._power_refusal``.
+STOP, START = "stop", "start"
 # The phases of a rebuild (``Workspaces.rebuild``), kept in the row so that a restart of rcman
 # knows what it cut short: the new image is being made ready while the old container runs; the
 # old container is being replaced by the new one; the new plan is stored and the built image's
@@ -106,7 +113,7 @@ LOCK_FILE = "rcman.lock"
 # rcman does.
 RUNTIME_WAIT_SECONDS = 5.0
 # How long rcman's shutdown (``close``) waits, in all, for restore, its workspaces' tasks, the
-# threads that make or rebuild a workspace and the put-backs to end.
+# threads that make, rebuild or start a workspace and the put-backs to end.
 CLOSE_WITHIN_SECONDS = 30.0
 # How many workspaces' servers are read at once for a listing.
 LISTING_WORKERS = 8
@@ -437,6 +444,11 @@ class Workspaces:
         self._putting_back: dict[int, threading.Thread] = {}
         # The workspaces whose put-back failed and was said so, until it is done; under _lock.
         self._put_back_failing: set[int] = set()
+        # The workspaces being stopped (``stop``), from its admission until it is done; under
+        # _lock. Nothing new enters them meanwhile: no server, terminal, forward or git work.
+        self._stopping: set[int] = set()
+        # The thread starting each workspace (``start``), until it is done; under _changed.
+        self._bringing_up: dict[int, threading.Thread] = {}
         # The places for builds free, of MAX_BUILDS: a build holds one from the moment it starts
         # until it is done; under _changed.
         self._build_bound = MAX_BUILDS
@@ -463,6 +475,9 @@ class Workspaces:
         # Called with a workspace whose container a rebuild is about to replace: terminals.py
         # ends its terminal, through its channel, while the old container is still there.
         self.on_rebuilding: Callable[[Workspace], None] = lambda workspace: None
+        # Called with a workspace whose container a Stop is about to stop: terminals.py ends its
+        # terminal, and forward.py its forwarded ports, while the container still runs.
+        self.on_stopping: Callable[[Workspace], None] = lambda workspace: None
         # Called with a workspace whose container kept running while rcman was not: terminals.py
         # ends what the terminals of an earlier rcman left in it.
         self.on_kept_running: Callable[[Workspace], None] = lambda workspace: None
@@ -559,10 +574,43 @@ class Workspaces:
             raise Problem("workspace_not_found")
         return found
 
+    def any_powering(self) -> bool:
+        """Whether a workspace is being stopped or started, which an upgrade of rcman would cut
+        short: asked of this process, the only one that stops or starts one."""
+        with self._lock:
+            stopping = bool(self._stopping)
+        with self._changed:
+            return stopping or bool(self._bringing_up)
+
+    def stopping(self, workspace_id: int) -> bool:
+        """Whether a Stop of the workspace is under way."""
+        with self._lock:
+            return workspace_id in self._stopping
+
+    def starting(self, workspace_id: int) -> bool:
+        """Whether a Start of the workspace is under way."""
+        with self._changed:
+            return workspace_id in self._bringing_up
+
+    def halted_or_halting(self, workspace_id: int) -> bool:
+        """Whether the workspace is stopped, or being stopped: what a terminal or a forwarded
+        port closed for it says (``workspace_stopped``)."""
+        if self.stopping(workspace_id):
+            return True
+        found = self.get(workspace_id)
+        return found is not None and found.state == HALTED
+
     def ready(self, person: int, workspace_id: int) -> Workspace:
-        """The person's workspace, which must be ready, and not have its container replaced
-        by a rebuild just now (``workspace_rebuilding``)."""
+        """The person's workspace, which must be ready: not being stopped or started
+        (``workspace_stopping``, ``workspace_starting``), not stopped (``workspace_stopped``),
+        and not have its container replaced by a rebuild just now (``workspace_rebuilding``)."""
         found = self.owned(person, workspace_id)
+        if self.stopping(found.id):
+            raise Problem("workspace_stopping")
+        if self.starting(found.id):
+            raise Problem("workspace_starting")
+        if found.state == HALTED:
+            raise Problem("workspace_stopped")
         if found.state != READY:
             raise Problem("workspace_not_ready")
         if found.rebuild_state == REBUILD_SWITCHING:
@@ -1375,21 +1423,27 @@ class Workspaces:
     # --- rebuilding a workspace on its volume ------------------------------------------
 
     def rebuild_refusal(
-        self, workspace: Workspace, containers: set[str] | None = None, asked: bool = False
+        self,
+        workspace: Workspace,
+        containers: set[str] | None = None,
+        asked: bool = False,
+        upgrading: bool | None = None,
     ) -> str | None:
         """Why the workspace may not be rebuilt now, as the code of the problem a request for it
         is answered with, or None where it may: the one test the route and the listing's
         ``rebuildable`` share. A ready workspace cloned from a repository, with its container,
-        may be; so may a failed one whose failure is RECOVERABLE and whose volume is there. None
+        may be; so may a failed one whose failure is RECOVERABLE and whose volume is there, and a
+        stopped one cloned from a repository whose volume is there, which is started first. None
         may while rcman is upgraded, before its restore is done, or while anything else works
-        on the workspace. What the row says is looked at first, and the runtime is asked only
-        about a workspace that passes it: ``containers`` are the names of the containers there
-        are, where the caller asked the runtime for them all at once; ``asked`` says that the
-        runtime's part was found good already, and is not asked again."""
-        why = self._rebuild_refusal_by_row(workspace)
+        on the workspace, a Stop or a Start among it. What the row says is looked at first, and
+        the runtime is asked only about a workspace that passes it: ``containers`` are the names
+        of the containers there are, where the caller asked the runtime for them all at once;
+        ``asked`` says that the runtime's part was found good already, and is not asked again;
+        ``upgrading``, whether an upgrade is under way, where the caller asked it already."""
+        why = self._rebuild_refusal_by_row(workspace, upgrading)
         if why is not None or asked:
             return why
-        if workspace.state == FAILED:
+        if workspace.state in (FAILED, HALTED):
             there = self._there(self.runtime.has_volume, workspace.id)
             return None if there else "workspace_not_ready"
         if containers is not None:
@@ -1398,19 +1452,27 @@ class Workspaces:
             there = self._there(self.runtime.exists, workspace.container)
         return None if there else "rebuild_no_container"
 
-    def _rebuild_refusal_by_row(self, workspace: Workspace) -> str | None:
+    def _rebuild_refusal_by_row(
+        self, workspace: Workspace, upgrading: bool | None = None
+    ) -> str | None:
         """``rebuild_refusal`` as far as the workspace's row and this process tell it, asking
         the runtime nothing."""
-        if self.upgrading():
+        if self.upgrading() if upgrading is None else upgrading:
             return "rcman_upgrading"
         if not self.restored.is_set():
             return "rcman_starting"
         if workspace.state in (CREATING, DELETING):
             return "workspace_not_ready"
+        if self.stopping(workspace.id):
+            return "workspace_stopping"
+        if self.starting(workspace.id):
+            return "workspace_starting"
         with self._lock:
             working = workspace.id in self._working
         if workspace.rebuild_state is not None or working or self._being_made(workspace.id):
             return "workspace_rebuilding"
+        if workspace.state == HALTED:  # started first, then rebuilt (``_rebuild_halted``)
+            return None if workspace.source else "rebuild_empty"
         if workspace.state == FAILED:
             if workspace.failure not in RECOVERABLE or not workspace.source:
                 return "workspace_not_ready"
@@ -1479,6 +1541,8 @@ class Workspaces:
             try:
                 if workspace.state == FAILED:
                     outcome = self._recover(workspace, slot)
+                elif workspace.state == HALTED:
+                    outcome = self._rebuild_halted(workspace, slot)
                 else:
                     outcome = self._replace(workspace, slot)
             except Closing:
@@ -1490,6 +1554,49 @@ class Workspaces:
             log.info("workspace %s: %s", workspace.id, outcome)
         finally:
             self._rebuild_ended(workspace, closing)
+
+    def _rebuild_halted(self, workspace: Workspace, slot: int) -> str:
+        """Rebuild a stopped workspace: start its container first, as a Start does, but not its
+        server (``_container_back``), then rebuild it as a ready one (``_replace``), and, whatever
+        came of that but a cancel (rebuilt, put back as it was, or refused), start its server, on
+        the approved Claude Code version, if it should run, as a Start does, where the row is
+        ready, its rebuild ended or left only to move the built image's name (promoting, as
+        ``_replace`` does for a ready one), and its container runs. Closing raises past this. A
+        container that does not come up fails the rebuild, and the workspace is stopped again
+        with why (``_still_down``)."""
+        with self.lock(workspace.id):
+            now = self.get(workspace.id)
+            if now is None or now.state != HALTED:
+                return "cancelled"
+            self._set(now.id, state=READY, error=None)
+        self._log(workspace.id, "Starting the workspace", "rebuild_log")
+        failed, causes = None, []
+        try:
+            self._container_back(workspace.id, causes.append)
+        except Exception as error:  # noqa: BLE001 - whatever it is, it is said and it stops
+            log.warning("workspace %s did not start for its rebuild: %s", workspace.id, error)
+            failed = error
+        error = self._still_down(workspace.id, failed, causes, rebuilding=True)
+        if error is not None:
+            self._set(workspace.id, rebuild_error=error)
+            self._log(workspace.id, error, "rebuild_log")
+            return f"not started: {error.splitlines()[-1]}"
+        now = self.get(workspace.id)
+        if now is None or now.state != READY:
+            return "cancelled"
+        outcome = self._replace(now, slot)
+        if outcome != "cancelled":
+            now = self.get(workspace.id)
+            if (
+                now is not None
+                and now.state == READY
+                and now.wanted
+                and now.rebuild_state in (None, REBUILD_PROMOTING)
+                and not self._closing.is_set()
+                and not self._known_down(now.container)
+            ):
+                self._start_again(now.id, now.prefix or now.name)
+        return outcome
 
     def _rebuild_failed(self, workspace: Workspace) -> None:
         """Say where the person sees it that the rebuild did not finish, for a reason nothing
@@ -2103,7 +2210,7 @@ class Workspaces:
             and w.id not in mine
             and w.id not in ended
         }
-        self._wait_while_made(own, external)
+        self._wait_while_made(own, external, {w.id for w in theirs})
         if self.of_person(person.id):  # left: the work ends, or rcman's next start, finishes it
             raise Problem("workspace_failed", title=PERSON_DELETION_LEFT)
         with self.person_lock(person.id):  # not while a sign-in or a start of theirs is under way
@@ -2118,11 +2225,15 @@ class Workspaces:
                 con.close()
         self._collect_images_quietly()  # what only their workspaces referred to
 
-    def _wait_while_made(self, own: list[_Made], external: set[int]) -> None:
+    def _wait_while_made(
+        self, own: list[_Made], external: set[int], powered: set[int] = frozenset()
+    ) -> None:
         """Wait, for up to MADE_WITHIN_SECONDS in all, while the workspaces of a person being
-        deleted are still being made: their deletion is finished by what makes them, once the
-        step it is on ends. ``own``, this process's threads, are waited for on ``_changed`` until
-        each has ended, whatever its row says: one whose removal failed is not waited for again,
+        deleted are still being made, or stopped or started (``powered``, their ids): their
+        deletion is finished by what makes them, once the step it is on ends, and a Stop or a
+        Start of one deleted meanwhile ends having found it gone. ``own``, this process's
+        threads, and the Stops and Starts are waited for on ``_changed`` until each has ended,
+        whatever its row says: one whose removal failed is not waited for again,
         and rcman's next start finishes it. ``external``, rows no thread of this process makes -
         the service's threads when this is rcman-admin, or a restore not done yet - are looked at
         every WORKING_POLL_SECONDS until they are gone, or a thread of this process ended for
@@ -2131,7 +2242,10 @@ class Workspaces:
         handles = set(own)
         with self._changed:
             self._changed.wait_for(
-                lambda: self._closing.is_set() or not (handles & self._unended),
+                lambda: (
+                    self._closing.is_set()
+                    or not (handles & self._unended or self._powering_any(powered))
+                ),
                 deadline - time.monotonic(),
             )
         waiting = set(external)
@@ -2144,6 +2258,13 @@ class Workspaces:
                 return
             if self._closing.wait(WORKING_POLL_SECONDS):
                 return
+
+    def _powering_any(self, ids: set[int]) -> bool:
+        """Whether a Stop or a Start of any of the workspaces ``ids`` is under way; asked under
+        ``_changed``."""
+        with self._lock:
+            stopping = bool(ids & self._stopping)
+        return stopping or bool(ids & set(self._bringing_up))
 
     def _person_deleting(self, person_id: int) -> None:
         """``on_person_deleting``, which never makes the deletion fail."""
@@ -2162,6 +2283,226 @@ class Workspaces:
         except Problem:
             log.warning("the sign-in of person %s could not be removed", person_id)
             raise
+
+    # --- stopping and starting a workspace ---------------------------------------------
+
+    def _power_refusal(
+        self, workspace: Workspace, verb: str, upgrading: bool | None = None
+    ) -> str | None:
+        """Why the workspace may not be stopped (STOP) or started (START) now, as the code of the
+        problem a request for it is answered with, or None where it may: the one test the routes
+        and the listing's ``stoppable`` and ``startable`` share, from the row and this process
+        alone. For a Start, ``workspace_failed`` stands for the instructions for Claude missing
+        from the tools, which ``start`` gives as its title. ``upgrading``, whether an upgrade is
+        under way, where the caller asked it already."""
+        if self.upgrading() if upgrading is None else upgrading:
+            return "rcman_upgrading"
+        if not self.restored.is_set():
+            return "rcman_starting"
+        if verb == START and self.runtime.instructions_ready() is not None:
+            return "workspace_failed"
+        if workspace.state not in (READY, HALTED):
+            return "workspace_not_ready"
+        # Before the work below: a Start's own thread makes a lost container again under
+        # ``_working_on``.
+        if self.stopping(workspace.id):
+            return "workspace_stopping"
+        if self.starting(workspace.id):
+            return "workspace_starting"
+        if workspace.rebuild_state is not None or self._busy(workspace.id):
+            return "workspace_rebuilding"
+        if verb == STOP and workspace.state == HALTED:
+            return "workspace_stopped"
+        if verb == START and workspace.state == READY:
+            return "workspace_not_stopped"
+        return None
+
+    def _refuse_power(self, workspace: Workspace, verb: str) -> None:
+        why = self._power_refusal(workspace, verb)
+        if why == "workspace_failed":
+            raise Problem(why, title=self.runtime.instructions_ready() or MESSAGES[why])
+        if why is not None:
+            raise Problem(why)
+
+    def stop(self, workspace: Workspace) -> Workspace:
+        """Stop the workspace's container, keeping its volume, its image and its row, and its
+        server's sessions, which its Start resumes. Refused as ``_power_refusal`` says, looked at
+        again under the images' lock, which the admission of an upgrade holds, and then the
+        workspace's; from then until it is done the workspace is being stopped (``_stopping``),
+        which refuses what would enter it. Then: its server, if it runs, is stopped as the
+        server's own Stop does, and killed if it will not, with whether it should run left as it
+        was; its terminal and forwarded ports are ended and its channel closed
+        (``on_stopping``, ``sweep_forwards``); and its container is stopped. Each of these that
+        fails is logged, and the rest go on. The row is written stopped, its server's version no
+        longer recorded, only once its container is known not to run; a container that still
+        runs, or whose state cannot be told, leaves it ready, with its version, and is
+        ``workspace_stop_failed``; one deleted meanwhile is ``workspace_not_found``. The
+        workspace as it is then."""
+        self._refuse_power(workspace, STOP)
+        with self._images_lock, self.lock(workspace.id):
+            now = self.get(workspace.id)
+            if now is None:
+                raise Problem("workspace_not_found")
+            self._refuse_power(now, STOP)
+            with self._lock:
+                self._stopping.add(now.id)
+        failed = gone = False
+        try:
+            with self.lock(now.id):
+                self._stop_server_of(now)
+            for step in (self.on_stopping, self.sweep_forwards):
+                try:
+                    step(now)
+                except Exception:  # noqa: BLE001 - stopping the container ends what is left
+                    log.exception("workspace %s: a step of its stop failed", now.id)
+            self.close_channel(now.container)
+            try:
+                name = now.container
+                if self.runtime.exists(name) and self.runtime.running(name):
+                    self.runtime.stop(name)
+            except (RuntimeFailed, RuntimeUnavailable) as error:
+                log.warning("the container of workspace %s did not stop: %s", now.id, error)
+            with self.lock(now.id):
+                found = self.get(now.id)
+                if found is None or found.state == DELETING:
+                    gone = True
+                elif self._known_down(found.container):
+                    self._set(found.id, state=HALTED, claude_version=None, error=None)
+                else:
+                    failed = True
+        finally:
+            with self._lock:
+                self._stopping.discard(now.id)
+            with self._changed:
+                self._changed.notify_all()  # a person's deletion, and close, may wait for it
+            self._stopped(now.person)  # every lock let go, whatever ended the Stop
+        if failed:
+            raise Problem("workspace_stop_failed")
+        stopped = self.get(now.id)
+        if gone or stopped is None:
+            raise Problem("workspace_not_found")  # deleted meanwhile
+        return stopped
+
+    def _stop_server_of(self, workspace: Workspace) -> None:
+        """Under the workspace's lock: stop its server if it runs, as the server's own Stop does
+        (Ctrl+C, then STOP_TIMEOUT), and kill it if it still runs then; whether it should run
+        is left as it is. A failure is logged: stopping the container ends the server."""
+        try:
+            server = self.server(workspace)
+            if not server.tmux.exists() or server.tmux.exit_status() is not None:
+                return
+            try:
+                server.stop()
+            except Exception as error:  # noqa: BLE001 - it is killed below
+                log.warning("the server of workspace %s did not stop: %s", workspace.id, error)
+            if server.tmux.exists() and server.tmux.exit_status() is None:
+                server.tmux.kill()
+        except Exception as error:  # noqa: BLE001 - see above
+            log.warning("the server of workspace %s was not stopped: %s", workspace.id, error)
+
+    def _known_down(self, name: str) -> bool:
+        """Whether the runtime says the container is not there or does not run; one whose state
+        cannot be told is not known to be down."""
+        try:
+            return not self.runtime.exists(name) or not self.runtime.running(name)
+        except (RuntimeFailed, RuntimeUnavailable) as error:
+            log.warning("whether %s runs could not be told: %s", name, error)
+            return False
+
+    def start(self, workspace: Workspace) -> Workspace:
+        """Start the stopped workspace, in the background, as a restore brings back a workspace
+        whose container stopped: refused as ``_power_refusal`` says, and while rcman closes,
+        looked at again under the images' lock and the workspace's. The row is written ready
+        and a thread brings it up (``_bring_up``), which ``close`` waits for, and from then until
+        it is done the workspace is being started (``_bringing_up``)."""
+        self._refuse_power(workspace, START)
+        with self._images_lock, self.lock(workspace.id):
+            now = self.get(workspace.id)
+            if now is None:
+                raise Problem("workspace_not_found")
+            self._refuse_power(now, START)
+            thread = threading.Thread(target=self._bring_up, args=(now.id,), daemon=True)
+            with self._changed:
+                if self._closing.is_set():
+                    raise Problem("runtime_unavailable")
+                self._bringing_up[now.id] = thread
+            try:
+                self._set(now.id, state=READY, error=None)
+                thread.start()
+            except BaseException:
+                self._set(now.id, state=HALTED, error=now.error)
+                with self._changed:
+                    self._bringing_up.pop(now.id, None)
+                    self._changed.notify_all()
+                raise
+        return self.get(now.id) or now
+
+    def _bring_up(self, workspace_id: int) -> None:
+        """A Start's thread: what a restore does for a workspace whose container stopped
+        (``_restore_workspace``) - its container started, or made again from the image it was
+        made from on its volume where it is lost, its start commands run - and its server
+        started, with the approved Claude Code version, if it should run. A container that did
+        not come up leaves the workspace stopped, with why (``_still_down``)."""
+        try:
+            failed, causes = None, []
+            now = self.get(workspace_id)
+            try:
+                if now is not None and now.state == READY:
+                    self._restore_workspace(now, report=causes.append)
+            except Exception as error:  # noqa: BLE001 - whatever it is, it is said
+                log.warning("workspace %s did not start: %s", workspace_id, error)
+                failed = error
+            if self._still_down(workspace_id, failed, causes) is not None:
+                return
+            now = self.get(workspace_id)
+            if (
+                now is not None
+                and now.state == READY
+                and now.wanted
+                and not now.rebuild_state
+                and not self._closing.is_set()
+                and not self._known_down(now.container)
+            ):
+                self._step(self._restore_server, now)
+        finally:
+            with self._changed:
+                if self._bringing_up.get(workspace_id) is threading.current_thread():
+                    del self._bringing_up[workspace_id]
+                self._changed.notify_all()
+
+    def _still_down(
+        self,
+        workspace_id: int,
+        failed: Exception | None,
+        causes: list[str],
+        rebuilding: bool = False,
+    ) -> str | None:
+        """After a Start, or a Rebuild's start of a stopped workspace, tried to bring its
+        container up: a ready row, with no rebuild but the one ``rebuilding`` names, whose
+        container is not there or does not run, is stopped again, with POWER_MESSAGES' words and
+        the cause, ``failed``'s or the last of ``causes``: the error written, or None. A row
+        gone, being deleted or failed meanwhile (``_image_gone``) is left as it is, and so is one
+        whose container's state cannot be told."""
+        with self.lock(workspace_id):
+            now = self.get(workspace_id)
+            if now is None or now.state != READY:
+                return None
+            if now.rebuild_state is not None and not rebuilding:
+                return None
+            try:
+                if self.runtime.exists(now.container) and self.runtime.running(now.container):
+                    return None
+            except (RuntimeFailed, RuntimeUnavailable) as error:
+                # Not known to be down: it is left ready, never shown stopped while it may run.
+                log.warning("whether workspace %s runs could not be told: %s", now.id, error)
+                return None
+            if failed is not None:
+                cause = self._cause_of(now, failed, lambda words: words)
+            else:
+                cause = self._redacted(now.person, causes[-1]) if causes else ""
+            error = self._with_tail(POWER_MESSAGES["not_started"], cause)
+            self._set(now.id, state=HALTED, error=error.strip())
+            return error.strip()
 
     # --- limits ------------------------------------------------------------------------
 
@@ -2582,8 +2923,10 @@ class Workspaces:
 
     def listing(self, workspaces: list[Workspace]) -> list[dict]:
         """Each workspace as the API shows it, its server read side by side with the others',
-        but for one whose container a rebuild replaces just now, which is not reached; with its
-        rebuild, and whether one may be asked for now (``rebuild_refusal``, as the route asks)."""
+        but for one whose container a rebuild replaces just now, one stopped and one being
+        stopped or started, none of which is reached; with its rebuild, whether one may be asked
+        for now (``rebuild_refusal``, as the route asks), whether it may be stopped or started
+        now (``_power_refusal``), and whether a Stop or a Start of it is under way."""
 
         def shown(workspace: Workspace) -> dict:
             entry = {
@@ -2605,10 +2948,23 @@ class Workspaces:
                     "log": workspace.rebuild_log,
                     "error": workspace.rebuild_error,
                 },
-                "rebuildable": self.rebuild_refusal(workspace, containers) is None,
+                "rebuildable": self.rebuild_refusal(workspace, containers, upgrading=upgrading)
+                is None,
+                "stoppable": self._power_refusal(workspace, STOP, upgrading) is None,
+                "startable": self._power_refusal(workspace, START, upgrading) is None,
+                "stopping": self.stopping(workspace.id),
+                "starting": self.starting(workspace.id),
             }
-            if workspace.state == READY and workspace.rebuild_state == REBUILD_SWITCHING:
+            code = None
+            if entry["stopping"]:
+                code = "workspace_stopping"
+            elif entry["starting"]:
+                code = "workspace_starting"
+            elif workspace.state == HALTED:
+                code = "workspace_stopped"
+            elif workspace.state == READY and workspace.rebuild_state == REBUILD_SWITCHING:
                 code = "workspace_rebuilding"
+            if code is not None:
                 entry["server_error"] = {"code": code, "title": MESSAGES[code]}
             elif workspace.state == READY:
                 try:
@@ -2623,8 +2979,10 @@ class Workspaces:
             return []
         # The runtime is asked once for every container, and only where a ready workspace may be
         # rebuilt as far as its row says.
+        upgrading = self.upgrading()  # once for the listing
         asking = any(
-            w.state == READY and self._rebuild_refusal_by_row(w) is None for w in workspaces
+            w.state == READY and self._rebuild_refusal_by_row(w, upgrading) is None
+            for w in workspaces
         )
         containers = self._containers() if asking else set()
         with ThreadPoolExecutor(max_workers=min(len(workspaces), LISTING_WORKERS)) as pool:
@@ -2635,14 +2993,11 @@ class Workspaces:
         version, which is recorded on the workspace's row before it runs, and stays recorded
         until the server is stopped or forgotten (or the start leaves it not running); a
         server that runs already is refused and its record is left as it is. A workspace that is
-        no longer ready by the time the lock is had, one deleted meanwhile among them, is refused
-        (``workspace_not_ready``), and so is one whose container a rebuild has begun to replace
-        (``_not_switching``): nothing is started in it."""
+        no longer ready by the time the lock is had, one deleted, stopped or being stopped
+        meanwhile among them, is refused (``_still_ready``), and so is one whose container a
+        rebuild has begun to replace (``_not_switching``): nothing is started in it."""
         with self.person_lock(workspace.person), self.lock(workspace.id), answered():
-            now = self.get(workspace.id)
-            if now is None or now.state != READY:
-                raise Problem("workspace_not_ready")
-            self._not_switching(now.id)
+            self._still_ready(workspace.id)
             con = self._con()
             try:
                 account, signing_out = people.claude_account(con, workspace.person)
@@ -2726,6 +3081,21 @@ class Workspaces:
         if written.code != 0:
             raise RuntimeFailed(written.err.decode("utf-8", "replace").strip())
 
+    def _still_ready(self, workspace_id: int) -> None:
+        """Refuse what reaches the workspace's server once it is no longer ready: called under
+        the workspace's lock, which a Stop holds while it stops the server and writes the row
+        stopped, and a rebuild while it writes the switch, by a request that found it ready
+        before. One being stopped is ``workspace_stopping``, one stopped ``workspace_stopped``,
+        one gone or in any other state ``workspace_not_ready``; then ``_not_switching``."""
+        if self.stopping(workspace_id):
+            raise Problem("workspace_stopping")
+        now = self.get(workspace_id)
+        if now is not None and now.state == HALTED:
+            raise Problem("workspace_stopped")
+        if now is None or now.state != READY:
+            raise Problem("workspace_not_ready")
+        self._not_switching(workspace_id)
+
     def _not_switching(self, workspace_id: int) -> None:
         """Refuse what reaches the workspace's server once a rebuild has begun to replace its
         container (``workspace_rebuilding``): called under the workspace's lock, which the
@@ -2736,7 +3106,7 @@ class Workspaces:
 
     def stop_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
-            self._not_switching(workspace.id)
+            self._still_ready(workspace.id)
             self._set(workspace.id, wanted=0)
             answer = self.server(workspace).stop()
             self._set(workspace.id, claude_version=None)
@@ -2745,7 +3115,7 @@ class Workspaces:
 
     def forget_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
-            self._not_switching(workspace.id)
+            self._still_ready(workspace.id)
             answer = self.server(workspace).forget()
             self._set(workspace.id, server=0, wanted=0, claude_version=None)
         self._stopped(workspace.person)
@@ -2832,7 +3202,7 @@ class Workspaces:
 
     def confirm(self, workspace: Workspace, answer: str) -> dict:
         with self.lock(workspace.id), answered():
-            self._not_switching(workspace.id)
+            self._still_ready(workspace.id)
             return self.server(workspace).confirm(answer)
 
     def output(self, workspace: Workspace) -> dict:
@@ -3075,14 +3445,21 @@ class Workspaces:
             if not self._being_made(workspace_id):
                 self._step(self._discard_next, workspace_id)
 
-    def _restore_workspace(self, workspace: Workspace, only_switching: bool = False) -> None:
+    def _restore_workspace(
+        self,
+        workspace: Workspace,
+        only_switching: bool = False,
+        report: Callable[[str], None] | None = None,
+    ) -> None:
         """Bring one workspace back as its row is now; one a request is making meanwhile is that
         request's. What is quick - the row's state, finishing a deletion, starting a container
         that stopped - is done under the workspace's lock. What can be slow - pulling the image
         and making the container again, the start command - is done without it, so that
         nothing waits for it; a deletion meanwhile sets the event that stops it
         (``_working_on``). With ``only_switching``, only a ready workspace in the switch that no
-        thread works on is looked at (``_left_in_switch``)."""
+        thread works on is looked at (``_left_in_switch``). A stopped workspace follows its
+        container (``_restore_halted``). Why a lost container could not be made again, where
+        nothing is raised, is said to ``report`` (a Start's)."""
         if self._being_made(workspace.id):
             return
         with self.lock(workspace.id):
@@ -3094,7 +3471,11 @@ class Workspaces:
             if now.state == FAILED and now.rebuild_state is not None:
                 self._restore_failed_rebuild(now)
                 return
-            if now.state != READY:
+            if now.state == HALTED:
+                if not self._restore_halted(now):
+                    return
+                now = self.get(now.id)
+            elif now.state != READY:
                 self._restore_one(now)
                 return
             again = self._restore_rebuild(now)  # a rebuild a restart cut short
@@ -3103,6 +3484,50 @@ class Workspaces:
             kept = not lost and self.runtime.running(now.container)
             if not lost and not kept:
                 self.runtime.start(now.container)
+        self._bring_back(now, lost, kept, again, report)
+
+    def _restore_halted(self, workspace: Workspace) -> bool:
+        """Under the workspace's lock, a stopped workspace as a restore finds it: one whose
+        container runs - started outside rcman, or come up after its Start was told it had not -
+        is ready again, and nothing is stopped, since that would end what runs in it; one
+        whose container is stopped or lost stays stopped, and a rebuild a restart cut short
+        before it started the container is settled. Whether it is ready now, to be brought back
+        as a ready one is."""
+        name = workspace.container
+        if self.runtime.exists(name) and self.runtime.running(name):
+            self._set(workspace.id, state=READY, error=None)
+            log.info("workspace %s runs, so it is ready again", workspace.id)
+            return True
+        if workspace.rebuild_state is not None:
+            self._discard_next(workspace.id)
+            self._set(workspace.id, rebuild_state=None, rebuild_error=REBUILD_MESSAGES["restarted"])
+        return False
+
+    def _container_back(self, workspace_id: int, report: Callable[[str], None]) -> None:
+        """A ready workspace's container brought back as a restore does it, its server not
+        started: started where it stopped, made again on its volume where it is lost, its start
+        commands run. What a Rebuild of a stopped workspace does first, from its own thread."""
+        with self.lock(workspace_id):
+            now = self.get(workspace_id)
+            if now is None or now.state != READY:
+                return
+            lost = not self.runtime.exists(now.container)
+            kept = not lost and self.runtime.running(now.container)
+            if not lost and not kept:
+                self.runtime.start(now.container)
+        self._bring_back(now, lost, kept, False, report)
+
+    def _bring_back(
+        self,
+        now: Workspace,
+        lost: bool,
+        kept: bool,
+        again: bool,
+        report: Callable[[str], None] | None,
+    ) -> None:
+        """The slow part of bringing a workspace back, without its lock: its relays swept, and
+        then what a container kept running needs, or the container made again where it was
+        lost and the commands it needs run. ``again``: a switch cut short is put back."""
         if not lost:
             self.sweep_forwards(now)  # outside the lock: it runs through the channel
         if kept:
@@ -3111,7 +3536,7 @@ class Workspaces:
         with self._working_on(now.id) as cancel:
             if lost and self._closing.is_set():
                 return  # rcman is closing: its next start makes it again
-            if lost and not self._remake(now, cancel):
+            if lost and not self._remake(now, cancel, report):
                 if again:
                     self._not_put_back(now.id)
                 return
@@ -3217,7 +3642,12 @@ class Workspaces:
         except Exception as failed:  # noqa: BLE001 - a command never stops a restore
             log.warning("workspace %s: its create commands failed: %s", workspace.id, failed)
 
-    def _remake(self, workspace: Workspace, cancel: threading.Event) -> bool:
+    def _remake(
+        self,
+        workspace: Workspace,
+        cancel: threading.Event,
+        report: Callable[[str], None] | None = None,
+    ) -> bool:
         """Make a ready workspace's lost container again from the image it was made from: the
         plan's by its id, else (a plan with none) its name pulled again, else the default image
         the workspace was made from. An image the runtime's storage lacks is pulled by its
@@ -3226,12 +3656,13 @@ class Workspaces:
         to rebuild it, which makes it from what its file asks for now on the same volume, or to
         delete it and make it again; if the pull fails otherwise - the network, a timeout, a
         registry that is down - nothing is decided: it stays ready, without its container, and
-        is made again the next time rcman starts: only a restore makes a lost container again,
-        and it runs once, as rcman starts. The same holds for limits that cannot be applied
-        before it is made. Only postStartCommand is run in it afterwards, but after a rebuild a
-        restart cut short while the container was replaced (``_restore_rebuild``), when every
-        create command is. False when there is no container to go on with, because of either or
-        a deletion meanwhile."""
+        is made again the next time rcman starts, as only a restore, a Start or a Rebuild of a
+        stopped workspace makes a lost container again; a Start, or such a Rebuild, is told why
+        through ``report`` and leaves the workspace stopped. The same holds for limits that
+        cannot be applied before it is made. Only postStartCommand is run in it afterwards, but
+        after a rebuild a restart cut short while the container was replaced
+        (``_restore_rebuild``), when every create command is. False when there is no container
+        to go on with, because of either or a deletion meanwhile."""
         con = self._con()
         try:
             slot = people.by_id(con, workspace.person).slot
@@ -3245,14 +3676,14 @@ class Workspaces:
                 self._image_gone(workspace, "default_image_gone")
                 return False
         elif plan.image_id:
-            if not self._pinned_image_is_there(workspace, plan, cancel):
+            if not self._pinned_image_is_there(workspace, plan, cancel, report):
                 return False
         elif workspace_of_built_name(plan.image) is not None:
             # An image rcman built is in its storage or nowhere: there is no registry to ask.
             if plan.image not in self.runtime.built_images().values():
                 self._image_gone(workspace, "built_image_gone")
                 return False
-        elif not self._pulled_again(workspace, plan, plan.image, cancel):
+        elif not self._pulled_again(workspace, plan, plan.image, cancel, report):
             return False
         if self._cancelled(workspace.id, cancel):
             return False
@@ -3266,14 +3697,19 @@ class Workspaces:
         return True
 
     def _pulled_again(
-        self, workspace: Workspace, plan: devcontainer.Plan, name: str, cancel: threading.Event
+        self,
+        workspace: Workspace,
+        plan: devcontainer.Plan,
+        name: str,
+        cancel: threading.Event,
+        report: Callable[[str], None] | None = None,
     ) -> bool:
         """Pull ``name``, the plan's image or the same image by its digest, because the runtime's
         storage may no longer have it. If the registry says it is not there, or may not be had,
         the workspace is failed (``image_gone``), in words that say to rebuild it or delete it;
         if the pull fails otherwise - the network, a timeout, a registry that is down - nothing is
         decided: False, and it stays ready without its container, made again the next time rcman
-        starts."""
+        starts; what the pull said goes to ``report``."""
         try:
             self.runtime.pull(name, None, cancel)
         except RuntimeFailed as failed:
@@ -3281,6 +3717,8 @@ class Workspaces:
                 return False
             log.warning("the image of workspace %s could not be had: %s", workspace.id, failed)
             if not image_is_gone(str(failed)):
+                if report is not None:
+                    report(str(failed).strip()[-MAX_SAID_CHARS:])
                 return False  # it may pass: the next restore tries again
             self._image_gone(
                 workspace,
@@ -3291,7 +3729,11 @@ class Workspaces:
         return True
 
     def _pinned_image_is_there(
-        self, workspace: Workspace, plan: devcontainer.Plan, cancel: threading.Event
+        self,
+        workspace: Workspace,
+        plan: devcontainer.Plan,
+        cancel: threading.Event,
+        report: Callable[[str], None] | None = None,
     ) -> bool:
         """Whether the image a plan was made from, by its id, is in the runtime's storage, so
         that the container is made again from it whatever its tag names now. One that is not is
@@ -3315,7 +3757,7 @@ class Workspaces:
             )
             return False
         by_digest = f"{repository_of(plan.image)}@{plan.image_digest}"
-        if not self._pulled_again(workspace, plan, by_digest, cancel):
+        if not self._pulled_again(workspace, plan, by_digest, cancel, report):
             return False
         if not self.runtime.has_image(plan.image_id):  # the digest names another image than this
             self._image_gone(
@@ -3501,7 +3943,22 @@ class Workspaces:
                     del self._putting_back[workspace.id]
                 self._changed.notify_all()
 
+    def _stopping_any(self) -> bool:
+        with self._lock:
+            return bool(self._stopping)
+
+    def _stopping_ids(self) -> list[int]:
+        with self._lock:
+            return sorted(self._stopping)
+
     def _worked_on(self, workspace_id: int) -> bool:
+        """Whether a thread of this process makes, rebuilds or restores the workspace, or puts
+        it back (``settle_left_over``) - another than the one asking -, or stops or starts it."""
+        if self._busy(workspace_id):
+            return True
+        return self.stopping(workspace_id) or self.starting(workspace_id)
+
+    def _busy(self, workspace_id: int) -> bool:
         """Whether a thread of this process makes, rebuilds or restores the workspace, or puts
         it back (``settle_left_over``) - another than the one asking."""
         with self._changed:
@@ -3515,9 +3972,9 @@ class Workspaces:
 
     def close(self) -> None:
         """Stop: let restore finish the step it is on, and wait, CLOSE_WITHIN_SECONDS in all, for
-        it, its workspaces' tasks, the threads making or rebuilding a workspace and the put-backs
-        to end, told by ``_changed``; then close every channel. What has not ended by then is
-        said in the journal, and left to the next start."""
+        it, its workspaces' tasks, the threads making, rebuilding or starting a workspace, the
+        Stops under way and the put-backs to end, told by ``_changed``; then close every channel.
+        What has not ended by then is said in the journal, and left to the next start."""
         with self._changed:
             self._closing.set()
             self._changed.notify_all()
@@ -3527,6 +3984,8 @@ class Workspaces:
                     and self._restores_running == 0
                     and not self._unended
                     and not self._putting_back
+                    and not self._bringing_up
+                    and not self._stopping_any()
                 ),
                 CLOSE_WITHIN_SECONDS,
             )
@@ -3535,11 +3994,13 @@ class Workspaces:
                 self._restores_running,
                 sorted(made.workspace_id for made in self._unended),
                 sorted(self._putting_back),
+                sorted(self._bringing_up),
+                self._stopping_ids(),
             )
         if not done:
             log.warning(
                 "rcman closes with work that did not end: restore running %s, %s restore tasks, "
-                "workspaces being made %s, being put back %s",
+                "workspaces being made %s, being put back %s, being started %s, being stopped %s",
                 *left,
             )
         self.close_channels()

@@ -20,6 +20,7 @@ export const PROTOCOL = {
     "terminal_replaced",
     "workspace_gone",
     "workspace_rebuilding",
+    "workspace_stopped",
     "signed_out",
     "not_allowed",
     "service_closing",

@@ -1,4 +1,5 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { m } from "./messages";
 import { KIND } from "./Servers";
 import { ADMIN_USER, fakeApi, NOTHING_TO_ATTEND } from "./test/fakeApi";
@@ -29,6 +30,7 @@ const PEOPLE = {
         workspace(1, "alpha", {
           server: server("ready", "alpha-quiet-otter"),
           claude_version: "2.1.0",
+          stoppable: true,
         }),
         workspace(2, "beta", { server: server("stopped") }),
         workspace(3, "gamma", { device: "planted-device-g" }),
@@ -140,12 +142,32 @@ test("a workspace whose server could not be read shows the server's reason", asy
   expect(within(alice).getAllByRole("alert")).toHaveLength(1);
 });
 
-test("nothing on the page acts on anyone's workspaces", async () => {
-  api();
+test("an administrator's one action is Stop, on a workspace that may be stopped, which asks first and sends the stop", async () => {
+  const fake = api();
+  const stopped = { ...PEOPLE.people[0].workspaces[0], state: "halted", stoppable: false };
+  fake.routes["POST /api/workspaces/1/stop"] = () => {
+    const [alice, ...others] = PEOPLE.people;
+    const theirs = [stopped, ...alice.workspaces.slice(1)];
+    fake.routes["GET /api/servers/everyone"] = {
+      people: [{ ...alice, workspaces: theirs }, ...others],
+    };
+    return { workspace: stopped };
+  };
   renderApp("/admin/workspaces");
   const main = (await screen.findByRole("heading", { name: m.everyoneTitle })).closest("main")!;
-  await person("alice@example.com");
+  const alice = await person("alice@example.com");
   expect(within(main).getAllByRole("listitem").length).toBeGreaterThan(1); // positive control
-  expect(within(main).queryAllByRole("button")).toEqual([]);
   expect(within(main).queryAllByRole("link")).toEqual([]);
+  // alpha alone may be stopped, and nothing else is offered
+  const stop = within(row(alice, "alpha")).getByRole("button", { name: m.stopWorkspace });
+  expect(within(main).getAllByRole("button")).toEqual([stop]);
+  await userEvent.click(stop);
+  const dialog = within(await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") }));
+  expect(fake.made("POST", "/api/workspaces/1/stop")).toEqual([]); // it asked first
+  await userEvent.click(dialog.getByRole("button", { name: m.stopWorkspaceConfirm }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(fake.made("POST", "/api/workspaces/1/stop")).toHaveLength(1);
+  expect(await within(row(alice, "alpha")).findByText(m.workspaceStates.halted)).toHaveClass(
+    "badge",
+  );
 });

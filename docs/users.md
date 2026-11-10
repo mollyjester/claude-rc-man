@@ -46,7 +46,8 @@ started, and the removal waits for it to go, for a while at most (`MADE_WITHIN_S
 `backend/rcman/workspaces.py`). If it has not gone by then, as when rcman is not running, or
 rcman stops meanwhile, the removal says so: they stay unable to sign in,
 and rcman finishes removing them once the workspace is gone, at the latest when
-it next starts. Anyone may be removed — yourself and the last administrator too: root can
+it next starts. Removed on the **People** page, a workspace of theirs that is being stopped or
+started is deleted once that is done, within the same while. Anyone may be removed — yourself and the last administrator too: root can
 always add an administrator again with `rcman-admin`.
 
 ## Seeing who is there
@@ -63,6 +64,14 @@ On a phone each person is a row of a list: their address, and under it their
 role, how many workspaces they have and the limits that are set; their
 **Limits** and **Remove** are in the menu of the **More actions** button at the
 row's right.
+
+## Stopping someone's workspace
+
+An administrator can stop anyone's workspace, to free what it uses, from **Everyone's
+workspaces** (see [Workspaces](workspaces.md#for-administrators)). It is stopped as its owner's
+**Stop workspace** stops it, and recorded in the audit trail as the administrator's. Only its owner can
+start it again, or act on its server; besides stopping it, an administrator can only set its
+[limits](#limits).
 
 ## Limits
 

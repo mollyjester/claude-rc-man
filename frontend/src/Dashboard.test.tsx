@@ -24,6 +24,10 @@ type Workspace = {
   rebuild: { state: string | null; log: string | null; error: string | null };
   rebuildable: boolean;
   ports: { port: number; label: string | null; url: string }[];
+  stoppable: boolean;
+  startable: boolean;
+  stopping: boolean;
+  starting: boolean;
 };
 
 // No rebuild under way, and none asked for before.
@@ -45,6 +49,10 @@ function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Wo
     rebuild: NO_REBUILD,
     rebuildable: false,
     ports: [],
+    stoppable: false,
+    startable: false,
+    stopping: false,
+    starting: false,
     ...extra,
   };
 }
@@ -2374,4 +2382,94 @@ test("while its container is stopped for a rebuild, the card says when its ports
   expect(card.getByText(m.portsStopped)).toHaveClass("muted");
   expect(card.queryByRole("link")).toBeNull();
   expect(card.queryByText(m.portsNone)).not.toBeInTheDocument();
+});
+
+// --- stopping and starting a workspace -------------------------------------------------
+
+test("Stop asks first and is sent once; the stopped workspace says so where it is read, and Start leads, sent once", async () => {
+  const halted = (extra: Partial<Workspace> = {}) =>
+    workspace(1, "alpha", {
+      state: "halted",
+      startable: true,
+      server_error: { code: "workspace_stopped", title: "Planted: stopped." },
+      ...extra,
+    });
+  let current = workspace(1, "alpha", {
+    stoppable: true,
+    ports: PORTS,
+    server: server(1, "connected"),
+  });
+  let stopped: (answer: unknown) => void = () => {};
+  let started: (answer: unknown) => void = () => {};
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => ({ ...listing([current]), forwarding: true }),
+    ...changedSays(null),
+    "POST /api/workspaces/1/stop": () => new Promise((resolve) => (stopped = resolve)),
+    "POST /api/workspaces/1/start": () => new Promise((resolve) => (started = resolve)),
+  });
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+
+  // It asks first, saying what is lost and what is kept, and Cancel sends nothing.
+  await userEvent.click(await card.findByRole("button", { name: m.stopWorkspace }));
+  let dialog = within(await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") }));
+  for (const line of [...m.stopWorkspaceEnds, ...m.stopWorkspaceKeeps])
+    expect(dialog.getByText(line)).toBeInTheDocument();
+  const ends = m.stopWorkspaceEnds.join(" ");
+  for (const word of ["process", "terminal", "containers"]) expect(ends).toContain(word);
+  const keeps = m.stopWorkspaceKeeps.join(" ");
+  for (const word of ["files", "image", "sessions"]) expect(keeps).toContain(word);
+  await userEvent.click(dialog.getByRole("button", { name: m.cancel }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(fake.made("POST", "/api/workspaces/1/stop")).toEqual([]);
+
+  // Confirmed, it says it is stopping, and a second press sends nothing more.
+  await userEvent.click(card.getByRole("button", { name: m.stopWorkspace }));
+  dialog = within(await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") }));
+  const confirm = dialog.getByRole("button", { name: m.stopWorkspaceConfirm });
+  expect(confirm).toHaveClass("primary");
+  await userEvent.click(confirm);
+  const stopping = await dialog.findByRole("button", { name: m.stopWorkspaceBusy });
+  expect(stopping).toBeDisabled();
+  await userEvent.click(stopping);
+  expect(fake.made("POST", "/api/workspaces/1/stop")).toHaveLength(1);
+  current = halted();
+  stopped({ workspace: current });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+  // Stopped: its server, ports and terminal say so, and Start leads, the panel's one primary.
+  const opened = within(await panel("alpha"));
+  const start = await opened.findByRole("button", { name: m.startWorkspace });
+  expect(start).toHaveClass("primary");
+  const overview = opened.getByRole("tabpanel", { name: m.tabOverview });
+  expect(overview.querySelectorAll(".primary")).toHaveLength(0);
+  const serverCard = within(opened.getByRole("region", { name: m.serverTitle }));
+  expect(serverCard.getByText(m.serverPower.workspace_stopped)).toBeInTheDocument();
+  expect(serverCard.queryByRole("alert")).toBeNull();
+  expect((await portsCard()).getByText(m.portsPower.workspace_stopped)).toHaveClass("muted");
+  expect(opened.queryByRole("button", { name: m.stopWorkspace })).toBeNull();
+  await userEvent.click(await tab(m.tabTerminal));
+  expect(opened.getByText(m.terminalPower.workspace_stopped)).toBeInTheDocument();
+  expect(sockets()).toEqual([]); // no terminal is asked of a stopped workspace
+
+  // Start says it is starting while its request runs, and while the workspace is starting.
+  await userEvent.click(start);
+  const starting = await opened.findByRole("button", { name: m.startWorkspaceBusy });
+  expect(starting).toHaveAttribute("aria-disabled", "true");
+  await userEvent.click(starting);
+  expect(fake.made("POST", "/api/workspaces/1/start")).toHaveLength(1);
+  current = workspace(1, "alpha", {
+    starting: true,
+    server_error: { code: "workspace_starting", title: "Planted: starting." },
+  });
+  started({ workspace: current });
+  await waitFor(() =>
+    expect(opened.getByText(m.terminalPower.workspace_starting)).toBeInTheDocument(),
+  );
+  expect(opened.getByText(m.workspacePower.starting)).toHaveClass("badge", "badge-waiting");
+  expect(opened.getByRole("button", { name: m.startWorkspaceBusy })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  expect(fake.made("POST", "/api/workspaces/1/start")).toHaveLength(1);
 });

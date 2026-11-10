@@ -567,6 +567,10 @@ button[aria-disabled="true"] {
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+/* A row whose every button is withheld takes no room. */
+.actions:empty {
+  display: none;
+}
 
 /* Fields: one look for every one, the border showing where focus is. Their text is 16px at
    least, below which a phone zooms in on the field it is typed in. */
@@ -2283,6 +2287,13 @@ form.limits + form.limits {
 .ws-version {
   margin-left: auto;
 }
+/* An administrator's Stop workspace, at the row's end, after the version where there is one. */
+.person-workspaces > .list-row > button {
+  margin-left: auto;
+}
+.person-workspaces > .list-row > .ws-version + button {
+  margin-left: 0;
+}
 .ws-problem {
   flex: 1 1 100%;
 }
@@ -2463,7 +2474,7 @@ td.result-failed {
   :where(button:not(:disabled):not([aria-disabled="true"]), a.button):hover {
     background: var(--surface-hover);
   }
-  button.primary:not(:disabled):hover,
+  button.primary:not(:disabled):not([aria-disabled="true"]):hover,
   a.button.primary:hover {
     background: var(--accent-hover);
     border-color: var(--accent-hover);

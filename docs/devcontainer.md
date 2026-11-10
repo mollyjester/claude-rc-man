@@ -389,8 +389,9 @@ again on each [Rebuild](#rebuilding-a-workspace), on the work folder they ran on
 should therefore be safe to run again (idempotent): a command that clones a second repository
 or appends to a file should check first. `postStartCommand` runs after them, and again every
 time the workspace's container is started: when a person's machine restarts and rcman brings
-the workspace back, and when it is made again after a loss. A container that kept running
-while rcman restarted is not started, so `postStartCommand` does not run for it.
+the workspace back, when the person starts a stopped workspace (**Start**), and when it is made
+again after a loss. A container that kept running while rcman restarted is not started, so
+`postStartCommand` does not run for it.
 
 - A command is run as the container's user in the work folder, with the environment above.
   A string is run by a shell, an array as a program, and the entries of an object one after
@@ -468,6 +469,12 @@ A Rebuild takes these steps:
    the server is started again in the new container if it was running. Claude Code's sessions
    are those of the server started again; what was running in the old container, and its
    `/tmp`, are gone.
+
+A stopped workspace is started first: its container is started, or made again from the image
+it was made from where it was lost, and its `postStartCommand` runs, but its server is not
+started; then it is rebuilt as above, and is running afterwards, its server started again on
+the approved Claude Code version if it was running when the workspace was stopped. If its
+container cannot be started, the Rebuild fails and the workspace stays stopped, saying why.
 
 If anything fails while the container is replaced - the image cannot be run, has no usable git
 or glibc, or a create command fails - the workspace is **put back**: its container is made

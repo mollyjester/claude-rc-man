@@ -40,7 +40,9 @@ rcman, it says so too, and keeps showing what it read before.
   their slice (see [Limits](users.md#limits)), which holds their workspaces and any
   build of a repository's `devcontainer.json` they asked for.
 - **Containers**: a table of each workspace, by its name, its owner and its state,
-  with what its container uses, in the same columns.
+  with what its container uses, in the same columns. A workspace its person or an
+  administrator stopped is shown as Stopped (see
+  [Stopping and starting a workspace](workspaces.md#stopping-and-starting-a-workspace)).
 
 On a phone each table is a list, a row for each person or workspace.
 

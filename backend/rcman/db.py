@@ -201,6 +201,56 @@ MIGRATIONS = [
     alter table monitor_settings add column storage integer not null default 1
         check (storage in (0, 1));
     """,
+    """
+    -- A workspace a person stopped (workspaces.py, HALTED): its container is stopped on purpose
+    -- and stays so, its volume, image and row kept, until it is started. SQLite changes a check
+    -- only by making the table again: every column and check as they were, the rows with their
+    -- ids, and the id the table gives next (sqlite_sequence), which a dropped table loses and a
+    -- deleted highest row or an empty table would otherwise lower. foreign_keys stays on
+    -- (db.connect): dropping the old table is safe only because no table references workspaces.
+    create table workspaces_new (
+        id integer primary key autoincrement,
+        person integer not null references people (id),
+        name text not null,
+        state text not null
+            check (state in ('creating', 'ready', 'failed', 'deleting', 'halted')),
+        error text,
+        server integer not null default 0 check (server in (0, 1)),
+        wanted integer not null default 0 check (wanted in (0, 1)),
+        prefix text,
+        source text,
+        log text,
+        environment text,
+        claude_version text,
+        memory_mib integer check (memory_mib > 0),
+        cpu_percent integer check (cpu_percent > 0),
+        pids integer check (pids > 0),
+        image_id text,
+        devcontainer_digest text,
+        rebuild_state text
+            check (rebuild_state in ('preparing', 'switching', 'promoting')),
+        rebuild_log text,
+        rebuild_error text,
+        failure text,
+        unique (person, name)
+    );
+    insert into workspaces_new (id, person, name, state, error, server, wanted, prefix, source,
+        log, environment, claude_version, memory_mib, cpu_percent, pids, image_id,
+        devcontainer_digest, rebuild_state, rebuild_log, rebuild_error, failure)
+    select id, person, name, state, error, server, wanted, prefix, source,
+        log, environment, claude_version, memory_mib, cpu_percent, pids, image_id,
+        devcontainer_digest, rebuild_state, rebuild_log, rebuild_error, failure
+    from workspaces;
+    update sqlite_sequence
+        set seq = max(seq, coalesce((select seq from sqlite_sequence where name = 'workspaces'), 0))
+        where name = 'workspaces_new';
+    insert into sqlite_sequence (name, seq)
+        select 'workspaces_new', seq from sqlite_sequence
+        where name = 'workspaces'
+            and not exists (select 1 from sqlite_sequence where name = 'workspaces_new');
+    drop table workspaces;
+    alter table workspaces_new rename to workspaces;
+    """,
 ]
 
 

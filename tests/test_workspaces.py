@@ -274,9 +274,24 @@ def test_restore_makes_again_a_lost_workspace_and_starts_a_stopped_one(service, 
     stopped = insert(settings, 1, "stopped", "ready")
     runtime.create(spec(stopped))
     runtime.stop(rt.container_name(stopped))
+    # A stopped workspace (halted) follows its container's real state: one whose container
+    # runs, as after a restart of rcman that cut its Stop short, is ready again and keeps
+    # running; one whose container is stopped, or lost, is left as it is.
+    halted_stopped = insert(settings, 1, "halted-stopped", "halted")
+    runtime.create(spec(halted_stopped))
+    runtime.stop(rt.container_name(halted_stopped))
+    halted_running = insert(settings, 1, "halted-running", "halted")
+    runtime.create(spec(halted_running))
+    halted_lost = insert(settings, 1, "halted-lost", "halted")
     service.restore()
     assert runtime.running(rt.container_name(lost))
     assert runtime.running(rt.container_name(stopped))
+    assert row(settings, halted_stopped)["state"] == ws.HALTED
+    assert not runtime.running(rt.container_name(halted_stopped))
+    assert row(settings, halted_running)["state"] == ws.READY
+    assert runtime.running(rt.container_name(halted_running))
+    assert row(settings, halted_lost)["state"] == ws.HALTED
+    assert not runtime.exists(rt.container_name(halted_lost))
 
 
 def test_restore_removes_a_workspace_with_no_row(service, settings, runtime):
@@ -1788,3 +1803,263 @@ def test_the_periodic_checks_run_once_per_pace_and_end_at_once_with_the_service(
     waiter.thread.join(HANG_GUARD)
     assert not waiter.thread.is_alive() and len(rounds) == 2
     assert [w.ended for w in waits_of(periodic, waiter.thread)] == ["expired", "expired", "set"]
+
+
+# --- stopping and starting a workspace --------------------------------------------------------
+
+
+def power(client, made: dict, verb: str, who=ALICE):
+    """POST the workspace's ``verb``: stop, start or rebuild."""
+    body = {"json": {"confirm": True}} if verb == "rebuild" else {}
+    return client.post(f"/api/workspaces/{made['id']}/{verb}", headers=changing(who), **body)
+
+
+def entry_of(client, made: dict, who=ALICE) -> dict:
+    return next(w for w in listed(client, who) if w["id"] == made["id"])
+
+
+def audited(settings, kind: str = "workspace.") -> list[tuple]:
+    """The audit's rows of actions that begin with ``kind``, oldest first."""
+    con = db.connect(settings.database)
+    try:
+        rows = con.execute(
+            "select action, email, target, result from audit where action like ? order by id",
+            (kind + "%",),
+        ).fetchall()
+    finally:
+        con.close()
+    return [tuple(r) for r in rows]
+
+
+def test_a_workspace_stopped_and_started_keeps_its_server_and_its_sessions(
+    pinned, client, app, settings, monkeypatch
+):
+    from tests.test_terminals import Opened
+
+    service, runtime = app.state.workspaces, app.state.workspaces.runtime
+    made = made_workspace(client, ALICE, "alpha")
+    name = rt.container_name(made["id"])
+    signed_in(app, made, trusted=True)
+    assert start(client, made).status_code == 200
+
+    def named() -> dict | None:
+        found = entry_of(client, made)
+        server = found["server"]
+        ready = found["state"] == "ready" and not found["starting"]
+        return server if ready and server and server.get("session_name") else None
+
+    session = until(named)["session_name"]
+    opened = Opened(client, made["id"], 1)
+    ends: list = []
+    forward, real_end = app.state.forward, app.state.forward._end_from_thread
+
+    def end_from_thread(which, result, workspace, person=None):
+        ends.append((result, workspace))
+        return real_end(which, result, workspace, person=person)
+
+    monkeypatch.setattr(forward, "_end_from_thread", end_from_thread)
+    assert service.run_in(service.get(made["id"]))(["true"]).code == 0  # opens its channel
+    assert name in service.open_channels()
+
+    # A server's Stop let in before the workspace's Stop reaches the workspace after it.
+    entered, release = threading.Event(), threading.Event()
+    real_stop_server = service.stop_server
+
+    def held(workspace):
+        entered.set()
+        assert release.wait(HANG_GUARD)
+        return real_stop_server(workspace)
+
+    monkeypatch.setattr(service, "stop_server", held)
+    answers: list = []
+    waiting = threading.Thread(
+        target=lambda: answers.append(start(client, made, "stop")), daemon=True
+    )
+    waiting.start()
+    try:
+        assert entered.wait(HANG_GUARD)
+        r = power(client, made, "stop")
+    finally:
+        release.set()
+        waiting.join(HANG_GUARD)
+    assert not waiting.is_alive()
+    assert r.status_code == 200, r.text
+    shown = r.json()["workspace"]
+    assert (shown["state"], shown["stoppable"], shown["startable"]) == ("halted", False, True)
+    shown = entry_of(client, made)
+    assert (shown["state"], shown["startable"], shown["server"]) == ("halted", True, None)
+    assert shown["server_error"]["code"] == "workspace_stopped"
+    assert not runtime.running(name)
+    now = row(settings, made["id"])
+    assert (now["state"], now["wanted"], now["claude_version"]) == ("halted", 1, None)
+    assert (answers[0].status_code, answers[0].json()["code"]) == (409, "workspace_stopped")
+    assert row(settings, made["id"])["wanted"] == 1  # it still runs again at a Start
+    opened.ended()
+    assert opened.terminal.reason == "workspace_stopped"
+    assert ("workspace_stopped", made["id"]) in ends
+    assert name not in service.open_channels()
+    r = start(client, made)
+    assert (r.status_code, r.json()["code"]) == (409, "workspace_stopped")
+
+    approve(settings, SECOND)
+    r = power(client, made, "start")
+    assert r.status_code == 202, r.text
+    assert until(named)["session_name"] == session
+    assert record_of(settings, made) == SECOND  # the version approved now
+    assert runtime.running(name)
+    assert audited(settings)[-2:] == [
+        ("workspace.stop", ALICE, "alpha", "ok"),
+        ("workspace.start", ALICE, "alpha", "ok"),
+    ]
+
+    # An administrator stops anyone's workspace, as themselves; only its owner starts it.
+    his = made_workspace(client, BOB, "beta")
+    r = power(client, his, "stop")
+    assert r.status_code == 200, r.text
+    theirs = r.json()["workspace"]
+    assert (theirs["state"], theirs["stoppable"], theirs["stopping"]) == ("halted", False, False)
+    assert not {"log", "source", "error", "rebuild", "ports"} & set(theirs)  # the Everyone page's
+    assert not runtime.running(rt.container_name(his["id"]))
+    r = power(client, his, "start")
+    assert (r.status_code, r.json()["code"]) == (404, "workspace_not_found")
+    assert audited(settings)[-2:] == [
+        ("workspace.stop", ALICE, f"{BOB}/beta", "ok"),
+        ("workspace.start", ALICE, None, "workspace_not_found"),
+    ]
+    assert entry_of(client, his, BOB)["state"] == "halted"
+
+    # Stopped again, it is deleted as any other.
+    assert power(client, made, "stop").status_code == 200
+    assert (
+        client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE)).status_code == 200
+    )
+    assert made["id"] not in [w["id"] for w in listed(client)]
+    assert name not in runtime.labelled()
+
+
+def held_in(monkeypatch, runtime, verb: str) -> tuple[threading.Event, threading.Event]:
+    """The runtime's ``verb`` (stop or start) held until the second event this gives is set;
+    the first is set as it is entered. ``monkeypatch`` puts it back before the runtime is
+    cleared away."""
+    entered, release = threading.Event(), threading.Event()
+    real = getattr(runtime, verb)
+
+    def held(name):
+        entered.set()
+        assert release.wait(HANG_GUARD)
+        return real(name)
+
+    monkeypatch.setattr(runtime, verb, held)
+    return entered, release
+
+
+# How each case holds the workspace: its row's columns, or a state of rcman or of the workspace.
+POWER_REFUSALS = {
+    "stop, creating": ("stop", {"state": "creating"}, "workspace_not_ready"),
+    "start, creating": ("start", {"state": "creating"}, "workspace_not_ready"),
+    "stop, failed": ("stop", {"state": "failed"}, "workspace_not_ready"),
+    "start, failed": ("start", {"state": "failed"}, "workspace_not_ready"),
+    "stop, deleting": ("stop", {"state": "deleting"}, "workspace_not_ready"),
+    "start, deleting": ("start", {"state": "deleting"}, "workspace_not_ready"),
+    "stop, rebuilt": ("stop", {"rebuild_state": "preparing"}, "workspace_rebuilding"),
+    "start, rebuilt": (
+        "start",
+        {"state": "halted", "rebuild_state": "preparing"},
+        "workspace_rebuilding",
+    ),
+    "stop, stopped": ("stop", {"state": "halted"}, "workspace_stopped"),
+    "start, ready": ("start", {}, "workspace_not_stopped"),
+    "stop, upgrading": ("stop", "upgrading", "rcman_upgrading"),
+    "start, upgrading": ("start", "upgrading", "rcman_upgrading"),
+    "stop, restoring": ("stop", "restoring", "rcman_starting"),
+    "start, restoring": ("start", "restoring", "rcman_starting"),
+    "start, instructions missing": ("start", "instructions", "workspace_failed"),
+    "stop, stopping": ("stop", "stopping", "workspace_stopping"),
+    "start, stopping": ("start", "stopping", "workspace_stopping"),
+    "rebuild, stopping": ("rebuild", "stopping", "workspace_stopping"),
+    "stop, starting": ("stop", "starting", "workspace_starting"),
+    "start, starting": ("start", "starting", "workspace_starting"),
+    "rebuild, starting": ("rebuild", "starting", "workspace_starting"),
+}
+
+
+@pytest.mark.parametrize("case", list(POWER_REFUSALS))
+def test_stop_start_and_rebuild_are_refused_where_the_workspace_cannot_take_them(
+    client, app, settings, monkeypatch, case
+):
+    from tests.test_rebuild import set_row
+
+    verb, held, code = POWER_REFUSALS[case]
+    service, runtime = app.state.workspaces, app.state.workspaces.runtime
+    made = made_workspace(client, ALICE, "alpha")
+    name = rt.container_name(made["id"])
+    release, under_way = None, None
+    if isinstance(held, dict):
+        if held:
+            set_row(settings, made["id"], **held)
+    elif held == "upgrading":
+        monkeypatch.setattr(service, "upgrading", lambda: True)
+    elif held == "restoring":
+        monkeypatch.setattr(service, "restored", threading.Event())
+    elif held == "instructions":
+        monkeypatch.setattr(runtime, "instructions_ready", lambda: "planted: no instructions")
+        assert power(client, made, "stop").status_code == 200  # a Stop does not need them
+    elif held == "stopping":
+        entered, release = held_in(monkeypatch, runtime, "stop")
+        under_way = threading.Thread(target=power, args=(client, made, "stop"), daemon=True)
+        under_way.start()
+        assert entered.wait(HANG_GUARD)
+    elif held == "starting":
+        assert power(client, made, "stop").status_code == 200
+        entered, release = held_in(monkeypatch, runtime, "start")
+        assert power(client, made, "start").status_code == 202
+        assert entered.wait(HANG_GUARD)
+    running = runtime.running(name)
+    try:
+        r = power(client, made, verb)
+        assert r.json()["code"] == code, r.text
+        assert runtime.running(name) == running
+    finally:
+        if release is not None:
+            release.set()
+    if under_way is not None:
+        under_way.join(HANG_GUARD)
+        assert not under_way.is_alive()
+    if held == "instructions":
+        assert r.json()["title"] == "planted: no instructions"
+    if held == "starting":
+        assert until(lambda: not entry_of(client, made)["starting"])
+        assert runtime.running(name)
+
+
+@pytest.mark.parametrize("stops", [False, True], ids=["still-running", "stopped"])
+def test_a_stop_that_fails_part_way_is_never_shown_stopped_while_its_container_runs(
+    pinned, client, app, settings, monkeypatch, stops
+):
+    runtime = app.state.workspaces.runtime
+    made = made_workspace(client, ALICE, "alpha")
+    name = rt.container_name(made["id"])
+    signed_in(app, made)
+    assert start(client, made).status_code == 200
+    assert record_of(settings, made) == FIRST
+    real = runtime.stop
+
+    def failing(container):
+        if stops:
+            real(container)
+        raise rt.RuntimeFailed("planted: what podman said")
+
+    monkeypatch.setattr(runtime, "stop", failing)  # put back before the runtime is cleared
+    r = power(client, made, "stop")
+    now = row(settings, made["id"])
+    if stops:
+        assert r.status_code == 200, r.text
+        assert (now["state"], now["claude_version"]) == ("halted", None)
+        assert not runtime.running(name)
+        return
+    assert (r.status_code, r.json()["code"]) == (502, "workspace_stop_failed")
+    assert "planted" not in r.json()["title"]
+    assert (now["state"], now["claude_version"]) == ("ready", FIRST)
+    assert runtime.running(name)
+    assert entry_of(client, made)["state"] == "ready"
+    assert audited(settings)[-1] == ("workspace.stop", ALICE, "alpha", "workspace_stop_failed")

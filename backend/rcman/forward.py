@@ -36,8 +36,8 @@ answer leaves open are kept for the next request to the same port, each a while
 
 A session lasts while it is used: an exchange under way and an open WebSocket keep it, a
 connection Caddy keeps open with nothing on it does not. It ends after the idle timeout with
-nothing going on, at its lifetime, when forwarding is turned off, when its workspace is deleted
-or rebuilt or its person removed, and when its person makes more than they may have at once
+nothing going on, at its lifetime, when forwarding is turned off, when its workspace is deleted,
+rebuilt or stopped or its person removed, and when its person makes more than they may have at once
 (the oldest); its WebSockets are closed with it, and so are the connections of its exchanges
 under way, an answer still streaming among them. Whatever awaits anything reads the session's
 end again before it goes on, so that nothing is passed on, nor switched, once it has ended.
@@ -550,6 +550,8 @@ class Forwarding:
             lambda s: s.target.workspace == w.id, audit.WORKSPACE_GONE, w.id))  # fmt: skip
         _after(service, "on_rebuilding", lambda w: self._end_from_thread(
             lambda s: s.target.workspace == w.id, audit.WORKSPACE_REBUILDING, w.id))  # fmt: skip
+        _after(service, "on_stopping", lambda w: self._end_from_thread(
+            lambda s: s.target.workspace == w.id, audit.WORKSPACE_STOPPED, w.id))  # fmt: skip
         _after(service, "on_person_deleting", lambda p: self._end_from_thread(
             lambda s: s.identity.person == p, audit.WORKSPACE_GONE, None, person=p))  # fmt: skip
 
@@ -733,8 +735,8 @@ class Forwarding:
 
     def refusal(self, person: int, target: Target) -> str | None:
         """Why ``person`` may not reach ``target`` now, as a problem's code, or None: they must be
-        active and own its workspace, which must be ready, not in a rebuild's switch, with the
-        port in its plan. Read from the database."""
+        active and own its workspace, which must be ready, not being stopped nor in a rebuild's
+        switch, with the port in its plan. Read from the database."""
         con = db.connect(self.settings.database)
         try:
             found = people.by_id(con, person)
@@ -751,6 +753,8 @@ class Forwarding:
         if workspace is None or (person is not None and workspace.person != person):
             return False
         if workspace.state != READY or workspace.rebuild_state == REBUILD_SWITCHING:
+            return False
+        if self.service.stopping(workspace.id):
             return False
         return target.port in self.service.ports_of(workspace)
 
@@ -1064,7 +1068,10 @@ class Forwarding:
         try:
             code = await asyncio.to_thread(self.refusal, session.identity.person, target)
             if code is not None:
-                self._end_session(session, audit.WORKSPACE_GONE)
+                stopped = await asyncio.to_thread(self.service.halted_or_halting, target.workspace)
+                self._end_session(
+                    session, audit.WORKSPACE_STOPPED if stopped else audit.WORKSPACE_GONE
+                )
                 await x.problem(code)
                 return False
             if self._gone(session):

@@ -23,7 +23,8 @@ left. A workspace whose server is running, waiting for your answer, has a
 problem or is not running carries a dot before its name, whose shape and colour
 say which, and pointing at a dot names it. A workspace with no server carries
 none, except that one that failed to be made, or whose server rcman could not
-read, carries the problem dot; one whose container a rebuild is making again carries none:
+read, carries the problem dot, and a stopped one the not-running dot; one whose container a
+rebuild is making again, or that is being stopped or started, carries none:
 
 | Dot | Shape |
 |---|---|
@@ -33,7 +34,8 @@ read, carries the problem dot; one whose container a rebuild is making again car
 | Not running | hollow square |
 
 A workspace that is not ready says so beside its name: **Being made**,
-**Failed** or **Being deleted**.
+**Failed**, **Being deleted** or **Stopped**, and one being stopped or started says
+**Stopping** or **Starting**.
 
 Under each workspace's name, in small grey letters, is its device name, such as
 `rcman-ws-12`: the name claude.ai/code and the Claude app give its server, in
@@ -91,14 +93,15 @@ selected before.
 The panel's head shows the workspace's name and its state, and, for a workspace
 cloned from GitHub, the repository, owner first, as a link that opens its page
 on GitHub in a new tab, whatever state the workspace is in. The panel of a
-workspace that is ready has two tabs, **Overview**, shown first, and
+workspace that is ready or stopped has two tabs, **Overview**, shown first, and
 **Terminal** (see [The terminal](#the-terminal)); the arrow keys move between
 them. The tab you chose is part of the page's address, as the workspace is.
 **Overview** has these cards: **Claude server**, which shows the workspace's
 server, or **Start** when it has none, and says why instead if rcman could not
 read the server, or that its container is being made again during a rebuild;
 below it **Container**, which says what the workspace's container is made from and
-offers **Rebuild** (see [The Container card and rebuilding](#the-container-card-and-rebuilding));
+offers **Rebuild** (see [The Container card and rebuilding](#the-container-card-and-rebuilding))
+and **Stop workspace** (see [Stopping and starting a workspace](#stopping-and-starting-a-workspace));
 then, while an administrator has turned port forwarding on, **Ports**, the ports you
 can open in your browser (see [Ports](#ports)); and last **Changes**, for the git
 repository in the workspace (see [Git](git.md)). A workspace that failed to be made says what went
@@ -187,7 +190,7 @@ of the shapes above.
   it.
 - It ends when you close or reload the page, select another workspace or go to
   another page; when the shell exits, as `exit` does, and the tab says with what
-  exit code; when the workspace is deleted; when a rebuild makes its container
+  exit code; when the workspace is deleted or stopped; when a rebuild makes its container
   again, after which **Reconnect** opens a shell in the new one once the rebuild is
   done; when you sign out of rcman, which
   ends your terminals in every browser; when an administrator removes you from
@@ -248,6 +251,40 @@ could not be had, offers **Rebuild** beside the reason. The repository's command
 the existing files; if the rebuild fails again, the workspace stays failed with the new reason,
 since there is no earlier state to return to, and can be rebuilt again.
 
+### Stopping and starting a workspace
+
+**Stop workspace**, in the **Container** card of a ready workspace, stops the workspace's
+container, which frees the memory, CPU and processes it uses while you do not need it. It asks
+first, and says what is lost and what is kept:
+
+- It ends every process in the workspace, those started with `nohup` or `setsid` too, the
+  terminal's shell and the containers running inside the workspace, and closes its forwarded
+  ports until it is started again. Its server is stopped first,
+  as its own **Stop** stops it, so that its sessions are kept.
+- It keeps the files in the workspace — the work folder, your home, Claude's settings, what
+  Podman stored inside it and what is in `/tmp` — the image the workspace is made from, and the
+  server's Claude sessions.
+
+While it stops, the button says **Stopping…** and waits; **Cancel** changes nothing. If the
+container does not stop, the workspace keeps running and the question says so; its server may
+have been stopped, and is started again from its **Claude server** card. A stopped
+workspace says **Stopped** beside its name, and stays stopped, through restarts and upgrades of
+rcman and restarts of the machine, until it is started. Its **Claude server** and **Ports**
+cards and its **Terminal** tab say it is stopped, and it has no **Changes** card.
+
+**Start workspace**, the stopped workspace's main button, starts its container again, or makes
+it again from the image it was made from, on its files, where it was lost; then the
+repository's `postStartCommand` runs, and a server that was running when the workspace was
+stopped starts again on the Claude Code version approved when it starts, picking up its sessions. The
+button says **Starting…** and waits until the workspace is up. If the container does not come
+up, the workspace stays stopped and says why. While rcman would refuse it, such as while
+rcman is starting, **Start workspace** is not offered and the panel says it cannot be started just
+now; while rcman is being upgraded, it says so.
+**Rebuild** of a stopped workspace starts it first, and fails, leaving it stopped, where it
+cannot. Once it has started it stays started, and its server starts again if it was running
+when it was stopped, whatever comes of the rebuild, even one rcman refuses. Its trash button
+deletes it as any other.
+
 ### Ports
 
 A port that the repository's `devcontainer.json` lists in `forwardPorts` can be opened in your
@@ -260,7 +297,8 @@ does not open, open it from the workspace's page. Only you can open it, not even
 administrator; the first time, and again once your session on the port has ended or rcman has
 restarted, rcman checks who you are on the way. A workspace that forwards no port says so, naming
 `forwardPorts`. While a rebuild makes the container again, the card says the ports can be opened
-once that is done. Stopping the workspace's Claude server does not close its ports: they follow
+once that is done, and while the workspace is stopped, being stopped or being started, it says
+so instead of listing them. Stopping the workspace's Claude server does not close its ports: they follow
 the container.
 
 What runs on the port must listen on `127.0.0.1` or `0.0.0.0` in the workspace, not on IPv6
@@ -375,7 +413,7 @@ question says so rather than that nothing would be lost. Confirming with
 workspace was deleted; when it was the one selected, no workspace is selected,
 and otherwise the selection stays as it was.
 
-A workspace that is ready or failed can be deleted, a workspace being rebuilt among them, and so
+A workspace that is ready, stopped or failed can be deleted, a workspace being rebuilt among them, and so
 can one being made from a GitHub repository. For any other, such as one being made empty or one
 already being deleted, the trash button says why it cannot be deleted now, and
 deletes nothing.
@@ -397,10 +435,11 @@ while a workspace is being rebuilt, the rebuild is settled when it starts, and t
   sessions, and they all work in the same workspace.
 - A workspace is yours alone: no one else can see it, reach it or act on its
   server. Administrators can see your workspaces and the states of their
-  servers, but cannot start, stop or otherwise act on them.
+  servers, can stop one, from **Everyone's workspaces**, and can limit what one uses (see
+  [Limits](users.md#limits)); only you can start it again, or act on its server.
 - Servers keep running when you close your browser, and while rcman restarts or
-  is upgraded. When the machine restarts, rcman brings your workspaces back, and
-  starts again each server that was running. A rebuild you ask for stops the workspace's
+  is upgraded. When the machine restarts, rcman brings your workspaces back, but for those that
+  were stopped, and starts again each server that was running. A rebuild you ask for stops the workspace's
   server while its container is made again, and starts it again afterwards.
 - An administrator can limit the memory, CPU and processes of a workspace, and of all
   your workspaces together. A workspace is also held to your limits, and a
@@ -496,9 +535,11 @@ sidebar, lists each person in rcman, by address, in a card of their own, with
 their workspaces: the name, the device name, the state — the workspace's while
 it is not ready, and otherwise its server's, or that it has none — the
 session's name, as each person's own Workspaces page shows them, and the Claude
-Code version a running server runs. It is for looking only; it has no buttons, because rcman lets only
-the person a workspace belongs to act on it. A workspace whose server rcman
-could not read is shown with the reason, and everything else is listed as usual.
+Code version a running server runs. Its one button is **Stop workspace**, on a workspace that
+may be stopped now: it asks first, as the person's own does, and says **Stopping…** while it
+runs (see [Stopping and starting a workspace](#stopping-and-starting-a-workspace)). Only the
+person a workspace belongs to can start it again or act on it otherwise. A workspace whose
+server rcman could not read is shown with the reason, and everything else is listed as usual.
 
 While anyone's server is on a screen rcman does not recognise, administrators
 are warned at the top of every page, with the person's address and the

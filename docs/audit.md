@@ -34,6 +34,8 @@ address, and its refusal of a request for what is no port's.
 | `workspace.create` | makes a workspace (see [Workspaces](workspaces.md)) | the workspace's name |
 | `workspace.delete` | deletes a workspace, with everything in it and its server | the workspace's name |
 | `workspace.rebuild` | asks for a workspace to be rebuilt on its volume from its devcontainer.json (see [Workspaces](workspaces.md)) | the workspace's name |
+| `workspace.stop` | stops a workspace's container, keeping its files; an administrator stopping another person's workspace is recorded as themselves | the workspace's name; for an administrator's Stop of another person's, its owner's address and its name (`owner@example.com/name`) |
+| `workspace.start` | starts a stopped workspace | the workspace's name |
 | `server.start` | starts a workspace's server | the workspace's name |
 | `server.resume` | resumes a server that stopped | the workspace's name |
 | `server.stop` | stops a server | the workspace's name |
@@ -88,6 +90,7 @@ use rcman any more is `not_allowed`:
 | `terminal_replaced` | A terminal opened on the same workspace, in another tab or window, replaced it |
 | `workspace_gone` | The terminal's workspace, or the forwarded port's, was deleted, or is not ready, or the person it belongs to is being removed |
 | `workspace_rebuilding` | The terminal's workspace, or the forwarded port's, is being rebuilt: its container is being made again |
+| `workspace_stopped` | The terminal's workspace, or the forwarded port's, was stopped, or is being stopped |
 | `signed_out` | The person signed out of rcman |
 | `service_closing` | rcman stopped |
 | `forwarding_off` | An administrator turned port forwarding off, which closed the WebSocket |

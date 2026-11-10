@@ -110,7 +110,8 @@ export type Workspace = {
   name: string;
   // The name claude.ai and the Claude app give its server, its container's hostname.
   device: string;
-  state: "creating" | "ready" | "failed" | "deleting";
+  // halted: stopped by its person or an administrator, its files kept, until it is started.
+  state: "creating" | "ready" | "failed" | "deleting" | "halted";
   error: string | null;
   // The address it is cloned from, null for an empty one; and the steps taken while it is
   // made, one to a line, null once it is ready.
@@ -131,6 +132,12 @@ export type Workspace = {
   // The ports it forwards, each with its label and its address, as the server gives them: none
   // while forwarding is off, nor for a workspace that is not ready.
   ports: ForwardedPort[];
+  // Whether it may be stopped, or started, now, as the server judges it; and whether a Stop or a
+  // Start of it is under way.
+  stoppable: boolean;
+  startable: boolean;
+  stopping: boolean;
+  starting: boolean;
 };
 
 export type ForwardedPort = { port: number; label: string | null; url: string };
@@ -139,12 +146,20 @@ export type Rebuild = { state: string | null; log: string | null; error: string 
 
 // What the server reads while a rebuild replaces a workspace's container: not its server.
 export const REBUILDING = "workspace_rebuilding";
+// What it reads of a workspace stopped, being stopped or being started: not its server either.
+export const STOPPED = "workspace_stopped";
+export const POWERING = [STOPPED, "workspace_stopping", "workspace_starting"];
+// The codes for a server that is not read because of what the workspace is doing, which are said
+// where it is shown and are no problem.
+export const NOT_READ = [REBUILDING, ...POWERING];
 
 // The dot a workspace carries: its server's kind, a problem where the workspace
 // failed or its server could not be read, and none otherwise, nor while a rebuild replaces
-// its container.
+// its container or it is being stopped or started; a stopped workspace's is not running.
 export function dotFor(workspace: Workspace): Kind | null {
-  if (workspace.server_error?.code === REBUILDING && workspace.state !== "failed") return null;
+  if (workspace.state === "halted") return "stopped";
+  const code = workspace.server_error?.code;
+  if (code && NOT_READ.includes(code) && workspace.state !== "failed") return null;
   if (workspace.state === "failed" || workspace.server_error) return "problem";
   return workspace.server ? kindOf(workspace.server.state) : null;
 }
@@ -155,6 +170,7 @@ export const WORKSPACE_KIND: Record<string, Kind> = {
   ready: "running",
   failed: "problem",
   deleting: "stopped",
+  halted: "stopped",
 };
 
 // A workspace's own state as a pill, in the words of m.workspaceStates.
@@ -164,6 +180,24 @@ export function WorkspaceBadge({ state }: { state: string }) {
       {m.workspaceStates[state] ?? state}
     </span>
   );
+}
+
+// Whether a workspace is being stopped or started, which its pill says in its state's place.
+export const powering = (workspace: { stopping?: boolean; starting?: boolean }) =>
+  workspace.stopping === true || workspace.starting === true;
+
+// A workspace's pill: Stopping or Starting, as waiting, while a Stop or a Start of it is under
+// way, and its own state otherwise (WorkspaceBadge).
+export function WorkspaceStateBadge({
+  workspace,
+}: {
+  workspace: { state: string; stopping?: boolean; starting?: boolean };
+}) {
+  if (workspace.stopping === true)
+    return <span className="badge badge-waiting">{m.workspacePower.stopping}</span>;
+  if (workspace.starting === true)
+    return <span className="badge badge-waiting">{m.workspacePower.starting}</span>;
+  return <WorkspaceBadge state={workspace.state} />;
 }
 
 export function StateBadge({ state }: { state: string }) {

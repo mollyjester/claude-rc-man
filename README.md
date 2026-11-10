@@ -15,8 +15,9 @@ Implemented and tested:
   `rcman-admin`.
 - **Workspaces** as containers of rootless Podman, run by rcman's own account,
   made empty or cloned from GitHub. They keep running while rcman restarts, and
-  rcman brings them back, with their servers, when it starts. Administrators see
-  everyone's.
+  rcman brings them back, with their servers, when it starts. Their owners stop one to free
+  what it uses, and it stays stopped until they start it again. Administrators see
+  everyone's, and can stop any.
 - **A server in each workspace**, its screens read and the questions Claude
   asks answered.
 - **One Claude sign-in per person**, which every workspace of theirs shares.

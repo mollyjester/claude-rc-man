@@ -151,6 +151,35 @@ const popUp =
     await page.getByRole("button", { name: button, exact: true, expanded: true }).waitFor();
   };
 
+// The screenshot workspace stopped, as the listing gives it: no server read, no ports.
+const STOPPED = {
+  state: "halted",
+  startable: true,
+  stoppable: false,
+  rebuildable: true,
+  server: null,
+  server_error: { code: "workspace_stopped", title: "stopped" },
+  claude_version: null,
+  ports: [],
+};
+
+// alice's workspaces on Everyone's workspaces, in order: running and stoppable, stopped, and
+// being stopped.
+const EVERYONE_MIX: Record<string, unknown>[] = [
+  {
+    stoppable: true,
+    server: { state: "ready", session_name: "shot-widget-quiet-otter", exit_code: null },
+    claude_version: "1.0.0",
+  },
+  { state: "halted", stoppable: false, server: null, claude_version: null },
+  {
+    stoppable: false,
+    stopping: true,
+    server: null,
+    server_error: { code: "workspace_stopping", title: "stopping" },
+  },
+];
+
 // The states a page has only when asked, by name.
 const STATES: Record<string, State> = {
   // the New workspace dialog
@@ -267,6 +296,73 @@ const STATES: Record<string, State> = {
         .getByRole("button", { name: m.rebuild })
         .click();
       await page.getByRole("dialog", { name: m.rebuildTitle(WORKSPACE) }).waitFor();
+    },
+  },
+  // a ready workspace that may be stopped, Stop workspace in its Container card
+  stoppable: { pages: ["/"], opens: listedAs({ stoppable: true, rebuildable: true }, false) },
+  // the question before a Stop, from the Container card
+  stop: {
+    pages: ["/"],
+    window: true,
+    opens: async (page, path, id) => {
+      await listedAs({ stoppable: true, rebuildable: true }, false)(page, path, id);
+      await page
+        .getByRole("region", { name: m.containerTitle })
+        .getByRole("button", { name: m.stopWorkspace })
+        .click();
+      await page.getByRole("dialog", { name: m.stopWorkspaceTitle(WORKSPACE) }).waitFor();
+    },
+  },
+  // a stopped workspace, Start workspace leading, its ports none, as the server lists them
+  stopped: {
+    pages: ["/"],
+    opens: async (page, path, id) => {
+      await listedAs(STOPPED, null)(page, path, id);
+      await page.getByRole("button", { name: m.startWorkspace }).waitFor();
+    },
+  },
+  // a stopped workspace's Terminal tab
+  "stopped-terminal": {
+    pages: ["/"],
+    window: true,
+    opens: async (page, path, id) => {
+      await listedAs(STOPPED, null)(page, path, id);
+      await page.getByRole("tab", { name: m.tabTerminal }).click();
+      await page.getByText(m.terminalPower.workspace_stopped).waitFor();
+    },
+  },
+  // a workspace being started
+  starting: {
+    pages: ["/"],
+    opens: async (page, path, id) => {
+      await listedAs(
+        {
+          starting: true,
+          stoppable: false,
+          server: null,
+          server_error: { code: "workspace_starting", title: "starting" },
+          ports: [],
+        },
+        null,
+      )(page, path, id);
+      await page.getByRole("button", { name: m.startWorkspaceBusy }).waitFor();
+    },
+  },
+  // Everyone's workspaces, alice's three as an administrator sees them: one with a running server
+  // that may be stopped, one stopped and one being stopped
+  "everyone-stop": {
+    pages: ["/admin/workspaces"],
+    opens: async (page, path, id) => {
+      await page.route("**/api/servers/everyone", async (route) => {
+        const got = await answered(route, {});
+        got.people = got.people.map((person: { workspaces: Record<string, unknown>[] }) => ({
+          ...person,
+          workspaces: person.workspaces.map((w, at) => ({ ...w, ...EVERYONE_MIX[at] })),
+        }));
+        await route.fulfill({ json: got });
+      });
+      await plain(page, path, id);
+      await page.getByRole("button", { name: m.stopWorkspaceBusy }).waitFor();
     },
   },
   // the menu of bob's actions on People

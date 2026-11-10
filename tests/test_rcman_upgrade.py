@@ -796,3 +796,40 @@ def test_a_roll_out_asked_for_during_the_admission_is_refused(client, show, app)
     with pytest.raises(Exception) as frozen:
         app.state.versions.upgrade("2.2.0", ALICE)
     assert frozen.value.code == "rcman_upgrading"
+
+
+def test_no_upgrade_is_admitted_while_a_workspace_is_stopped(client, show, app, monkeypatch):
+    """A Stop or a Start runs in this process only, so it is asked of the workspaces, under the
+    images' lock the admission holds."""
+    from tests.conftest import made_workspace
+
+    made = made_workspace(client, ALICE, "alpha")
+    runtime = app.state.workspaces.runtime
+    entered, release = threading.Event(), threading.Event()
+    real = runtime.stop
+
+    def held(name):
+        entered.set()
+        assert release.wait(HANG_GUARD)
+        return real(name)
+
+    monkeypatch.setattr(runtime, "stop", held)
+    answers: list = []
+    stopping = threading.Thread(
+        target=lambda: answers.append(
+            client.post(f"/api/workspaces/{made['id']}/stop", headers=changing(ALICE))
+        ),
+        daemon=True,
+    )
+    stopping.start()
+    try:
+        assert entered.wait(HANG_GUARD)
+        assert reason(get(client)) == "stopping_or_starting"
+        r = post(client)
+        assert (r.status_code, r.json()["reason"]) == (409, "stopping_or_starting")
+        assert not up.REQUEST.exists()
+    finally:
+        release.set()
+    stopping.join(HANG_GUARD)
+    assert not stopping.is_alive() and answers[0].status_code == 200
+    assert post(client).status_code == 202  # the positive: once it is over, it is admitted

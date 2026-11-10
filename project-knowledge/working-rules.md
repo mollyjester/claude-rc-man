@@ -196,7 +196,8 @@ else; this file is the full list. Rules are referred to by their bold name.
   memory only as long as needed.
 - **A person reaches only their own workspaces.** Every route that names a
   workspace finds it among the signed-in person's, and answers as if it were
-  not there otherwise; every workspace of a person runs in their own uid
+  not there otherwise, but for an administrator's: the limits the People page
+  sets, and a Stop of anyone's workspace; every workspace of a person runs in their own uid
   range, and no workspace mounts another's volume.
 - **rcman drives containers through `podman --remote` only**, as its own
   account, with an argv and never a shell; the limits on what they may use are

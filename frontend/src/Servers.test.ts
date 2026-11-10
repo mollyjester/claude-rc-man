@@ -82,6 +82,10 @@ describe("the dot a workspace carries", () => {
     rebuild: { state: null, log: null, error: null },
     rebuildable: false,
     ports: [],
+    stoppable: false,
+    startable: false,
+    stopping: false,
+    starting: false,
     ...extra,
   });
   const server = (state: string) => ({
@@ -120,5 +124,10 @@ describe("the dot a workspace carries", () => {
     expect(dotFor(at({ server_error: rebuilding, rebuild: switching }))).toBeNull();
     // a failed workspace keeps the problem dot whatever its server says
     expect(dotFor(at({ state: "failed", server_error: rebuilding }))).toBe("problem");
+    // nor while it is being stopped or started; a stopped one is not running
+    for (const code of ["workspace_stopping", "workspace_starting"])
+      expect(dotFor(at({ server_error: { code, title: "Planted." } }))).toBeNull();
+    const stopped = { code: "workspace_stopped", title: "Planted." };
+    expect(dotFor(at({ state: "halted", server_error: stopped }))).toBe("stopped");
   });
 });
