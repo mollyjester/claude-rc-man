@@ -333,15 +333,6 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
     },
   ],
   [
-    "stopping a workspace",
-    "/?workspace=1",
-    async () => {
-      const card = await screen.findByRole("region", { name: m.containerTitle });
-      await userEvent.click(await within(card).findByRole("button", { name: m.stopWorkspace }));
-      await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") });
-    },
-  ],
-  [
     "upgrading rcman",
     "/admin/rcman",
     async () => {

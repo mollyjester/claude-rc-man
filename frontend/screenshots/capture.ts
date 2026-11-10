@@ -300,19 +300,6 @@ const STATES: Record<string, State> = {
   },
   // a ready workspace that may be stopped, Stop workspace in its Container card
   stoppable: { pages: ["/"], opens: listedAs({ stoppable: true, rebuildable: true }, false) },
-  // the question before a Stop, from the Container card
-  stop: {
-    pages: ["/"],
-    window: true,
-    opens: async (page, path, id) => {
-      await listedAs({ stoppable: true, rebuildable: true }, false)(page, path, id);
-      await page
-        .getByRole("region", { name: m.containerTitle })
-        .getByRole("button", { name: m.stopWorkspace })
-        .click();
-      await page.getByRole("dialog", { name: m.stopWorkspaceTitle(WORKSPACE) }).waitFor();
-    },
-  },
   // a stopped workspace, Start workspace leading, its ports none, as the server lists them
   stopped: {
     pages: ["/"],

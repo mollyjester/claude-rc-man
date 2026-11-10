@@ -162,11 +162,7 @@ test("an administrator's one action is Stop, on a workspace that may be stopped,
   const stop = within(row(alice, "alpha")).getByRole("button", { name: m.stopWorkspace });
   expect(within(main).getAllByRole("button")).toEqual([stop]);
   await userEvent.click(stop);
-  const dialog = within(await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") }));
-  expect(fake.made("POST", "/api/workspaces/1/stop")).toEqual([]); // it asked first
-  await userEvent.click(dialog.getByRole("button", { name: m.stopWorkspaceConfirm }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(fake.made("POST", "/api/workspaces/1/stop")).toHaveLength(1);
+  await waitFor(() => expect(fake.made("POST", "/api/workspaces/1/stop")).toHaveLength(1));
   expect(await within(row(alice, "alpha")).findByText(m.workspaceStates.halted)).toHaveClass(
     "badge",
   );
