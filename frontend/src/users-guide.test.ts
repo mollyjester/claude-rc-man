@@ -41,33 +41,34 @@ function unknownNames(markdown: string): string[] {
 // The names the guide should give in bold and does not.
 const missingNames = (markdown: string) => NAMED.filter((name) => !names(markdown).includes(name));
 
-test("every name the people guide gives in bold is text the interface shows", () => {
+// The words about limits that say something in numbers, which would go stale: the server's
+// refusals give the minimums.
+const LIMITS_WORDS = [
+  ...Object.values(m.limitsHints),
+  m.limitsHeldToPerson,
+  m.limitsMemoryHard,
+  m.limitsBelowUse,
+  m.limitsNotLimited,
+];
+const numbered = (words: string[]) => words.filter((text) => /[0-9]/.test(text));
+
+test("every name the people guide gives in bold is text the interface shows, it names the page, its columns and the controls that add, remove and limit, and the words about limits say nothing in numbers", () => {
   const guide = readFileSync(GUIDE, "utf-8");
   expect(names(guide).length).toBeGreaterThan(0); // positive control: the guide was read
   expect(unknownNames(guide)).toEqual([]);
+  expect(missingNames(guide)).toEqual([]);
+  expect(LIMITS_WORDS.every((text) => text.length > 0)).toBe(true);
+  expect(numbered(LIMITS_WORDS)).toEqual([]);
 });
 
-test("the guide names the page, its columns and the controls that add, remove and limit", () => {
-  expect(missingNames(readFileSync(GUIDE, "utf-8"))).toEqual([]);
-});
-
-test("the checks fail on a guide that names something the page does not show, or leaves out a name", () => {
+test("the checks fail on a guide that names something the page does not show, or leaves out a name, and on words about limits in numbers", () => {
   const planted = "On **People**, press **Frobnicate**.";
   expect(names(planted)).toEqual([m.usersTitle, "Frobnicate"]);
   expect(unknownNames(planted)).toEqual(["Frobnicate"]);
   expect(unknownNames("On **People**, press **Remove**.")).toEqual([]);
   expect(missingNames("**People**")).toEqual(NAMED.filter((name) => name !== m.usersTitle));
   expect(missingNames(NAMED.map((name) => `**${name}**`).join(" "))).toEqual([]);
-});
-
-test("the words about limits say nothing in numbers, which would go stale: the server's refusals give the minimums", () => {
-  const words = [
-    ...Object.values(m.limitsHints),
-    m.limitsHeldToPerson,
-    m.limitsMemoryHard,
-    m.limitsBelowUse,
-    m.limitsNotLimited,
-  ];
-  expect(words.every((text) => text.length > 0)).toBe(true);
-  for (const text of words) expect(text).not.toMatch(/[0-9]/);
+  expect(numbered([...LIMITS_WORDS, "Planted: at least 6 MB."])).toEqual([
+    "Planted: at least 6 MB.",
+  ]);
 });

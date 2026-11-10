@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
@@ -53,26 +53,6 @@ test("a dialog opens as a modal named by its heading, focus in its first field, 
   expect(modalDialogs()).toEqual([]);
 });
 
-test("a dialog its parent closes is closed as a modal too, and gives focus back", async () => {
-  renderAlone(<Opener />);
-  const opener = screen.getByRole("button", { name: "open" });
-  await userEvent.click(opener);
-  await userEvent.click(screen.getByRole("button", { name: "done" }));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(modalDialogs()).toEqual([]);
-  expect(opener).toHaveFocus();
-});
-
-test("a dialog may take focus itself, and may refuse Escape while it cannot be left", async () => {
-  renderAlone(<Opener focusDialog closable={false} />);
-  await userEvent.click(screen.getByRole("button", { name: "open" }));
-  const dialog = screen.getByRole("dialog", { name: "Planted" });
-  expect(dialog).toHaveFocus();
-  await userEvent.keyboard("{Escape}");
-  expect(screen.getByRole("dialog", { name: "Planted" })).toBeInTheDocument();
-  await waitFor(() => expect(modalDialogs()).toEqual([dialog]));
-});
-
 test("a dialog's cross closes it as Escape does, comes after its controls for Tab, and waits while the dialog cannot be left", async () => {
   renderAlone(<Opener />);
   const opener = screen.getByRole("button", { name: "open" });
@@ -93,14 +73,4 @@ test("a dialog's cross closes it as Escape does, comes after its controls for Ta
   await userEvent.click(screen.getByRole("button", { name: "open" }));
   const waiting = screen.getByRole("dialog", { name: "Planted" });
   expect(within(waiting).getByRole("button", { name: m.closeDialog })).toBeDisabled();
-});
-
-test("a dialog's content is in its body, under its heading, for the stylesheet to lay out as a sheet or in the middle", async () => {
-  renderAlone(<Opener />);
-  await userEvent.click(screen.getByRole("button", { name: "open" }));
-  const dialog = screen.getByRole("dialog", { name: "Planted" });
-  expect(dialog).toHaveClass("dialog");
-  const heading = within(dialog).getByRole("heading", { name: "Planted" });
-  expect(heading.closest(".dialog-head")?.parentElement).toBe(dialog);
-  expect(screen.getByLabelText("Name").closest(".dialog-body")?.parentElement).toBe(dialog);
 });

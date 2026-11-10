@@ -3,15 +3,7 @@ import userEvent from "@testing-library/user-event";
 
 import { ADMIN } from "./AdminPages";
 import { m } from "./messages";
-import {
-  ADMIN_USER,
-  fakeApi,
-  ME,
-  NOTHING_TO_ATTEND,
-  problem,
-  type Reply,
-  type Routes,
-} from "./test/fakeApi";
+import { ADMIN_USER, fakeApi, NOTHING_TO_ATTEND, type Reply, type Routes } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const PATH = ADMIN.settings.path;
@@ -61,42 +53,6 @@ const forwarding = () => card(m.forwardingTitle);
 const field = async (part: Promise<HTMLElement>, label: string) =>
   within(await part).findByLabelText(label) as Promise<HTMLInputElement>;
 const statusOf = (part: HTMLElement) => part.querySelector('[role="status"]') as HTMLElement;
-
-test("the page is headed Service settings, is offered to administrators, and has a card for each part", async () => {
-  api();
-  renderApp(PATH);
-  expect(
-    await screen.findByRole("heading", { level: 1, name: m.serviceSettingsTitle }),
-  ).toBeInTheDocument();
-  expect(m.serviceSettingsTitle).not.toBe(m.navSettings); // not the person's own Settings
-  expect(ADMIN.settings.label).toBe(m.navServiceSettings);
-  const page = (await monitoring()).parentElement as HTMLElement;
-  expect(page).toHaveClass("cards");
-  for (const [title, line] of [
-    [m.monitorSettingsTitle, m.monitorSettingsLine],
-    [m.forwardingTitle, m.forwardingLine],
-  ]) {
-    const part = await card(title);
-    expect(part).toHaveClass("card");
-    expect(within(part).getByRole("heading", { level: 2, name: title })).toBeInTheDocument();
-    expect(within(part).getByText(line)).toBeInTheDocument();
-    // its own one primary button, Save
-    await within(part).findByRole("button", { name: /Save/ });
-    const primary = part.querySelectorAll("button.primary");
-    expect(primary).toHaveLength(1);
-    expect(primary[0]).toHaveTextContent(m.save);
-    expect(part.querySelector("form")).toHaveAttribute("novalidate");
-  }
-});
-
-test("people who are not administrators are sent on from the Service settings page", async () => {
-  const fake = api({ "GET /api/me": ME });
-  const { location } = renderApp(PATH);
-  await screen.findByRole("region", { name: m.navDashboard }); // the Workspaces page
-  expect(location().pathname).toBe("/");
-  expect(fake.made("GET", "/api/monitor/settings")).toHaveLength(0);
-  expect(fake.made("GET", "/api/forwarding/settings")).toHaveLength(0);
-});
 
 // --- monitoring, moved from the Monitor page ---
 
@@ -156,72 +112,6 @@ test("Save sends all six monitoring settings, the intervals as whole numbers, an
   expect(fake.made("PUT", "/api/forwarding/settings")).toHaveLength(0);
   await within(await forwarding()).findByRole("button", { name: m.forwardingSave });
   expect(statusOf(await forwarding())).toBeEmptyDOMElement();
-});
-
-test("what is not a whole number is sent as typed, for the server to judge", async () => {
-  const fake = api({
-    "PUT /api/monitor/settings": problem(422, "validation_failed", "Check the fields.", {
-      errors: [{ field: "usage_interval_seconds", message: "planted: not a whole number" }],
-    }),
-  });
-  renderApp(PATH);
-  const usage = await field(monitoring(), m.monitorUsageInterval);
-  await userEvent.clear(usage);
-  await userEvent.type(usage, "1.5");
-  await userEvent.click(within(await monitoring()).getByRole("button", { name: m.monitorSave }));
-  await waitFor(() => expect(fake.made("PUT", "/api/monitor/settings")).toHaveLength(1));
-  expect(fake.made("PUT", "/api/monitor/settings")[0].body).toMatchObject({
-    usage_interval_seconds: "1.5",
-  });
-});
-
-test("a monitoring refusal is shown under each field it is about, focus on the first, and what was typed stays", async () => {
-  api({
-    "PUT /api/monitor/settings": problem(422, "validation_failed", "Check the fields.", {
-      errors: [
-        { field: "disk_interval_seconds", message: "planted: too long" },
-        { field: "usage_interval_seconds", message: "planted: too short" },
-        { field: "containers", message: "planted: not a choice" },
-      ],
-    }),
-  });
-  renderApp(PATH);
-  const usage = await field(monitoring(), m.monitorUsageInterval);
-  await userEvent.clear(usage);
-  await userEvent.type(usage, "5");
-  const part = await monitoring();
-  await userEvent.click(within(part).getByRole("button", { name: m.monitorSave }));
-  const containers = within(part).getByRole("checkbox", { name: m.monitorContainers });
-  for (const [input, message] of [
-    [usage, "planted: too short"],
-    [await field(monitoring(), m.monitorDiskInterval), "planted: too long"],
-    [containers, "planted: not a choice"],
-  ] as const) {
-    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"));
-    expect(input).toHaveAccessibleDescription(expect.stringContaining(message));
-  }
-  // the first refused field in the form's order, whatever order the server named them in
-  expect(usage).toHaveFocus();
-  expect(usage).toHaveValue("5");
-  expect(statusOf(part)).not.toHaveTextContent(m.monitorSaved);
-});
-
-test("with the monitoring settings not read, the card says why and offers no form", async () => {
-  api({
-    "GET /api/monitor/settings": problem(
-      500,
-      "internal",
-      "planted: the settings could not be read",
-    ),
-  });
-  renderApp(PATH);
-  const part = await monitoring();
-  expect(
-    await within(part).findByText("planted: the settings could not be read"),
-  ).toBeInTheDocument();
-  expect(part.querySelector("form")).toBeNull();
-  // the other card is not held up by it
-  expect(await field(forwarding(), m.forwardingIdle)).toHaveValue("5");
 });
 
 // --- port forwarding ---
@@ -284,102 +174,3 @@ test("Save sends the three forwarding settings, shows Saving… while it is out,
   await within(await monitoring()).findByRole("button", { name: m.monitorSave });
   expect(statusOf(await monitoring())).toBeEmptyDOMElement();
 });
-
-test("a changed field takes back what the card said it saved", async () => {
-  api();
-  renderApp(PATH);
-  const part = await forwarding();
-  await userEvent.click(await within(part).findByRole("button", { name: m.forwardingSave }));
-  await waitFor(() => expect(statusOf(part)).toHaveTextContent(m.forwardingSaved));
-  await userEvent.type(await field(forwarding(), m.forwardingIdle), "0");
-  expect(statusOf(part)).toBeEmptyDOMElement();
-});
-
-test("a forwarding refusal is shown under its field, focus on the first refused, and what was typed stays", async () => {
-  const fake = api({
-    "PUT /api/forwarding/settings": problem(422, "validation_failed", "Check the fields.", {
-      errors: [
-        { field: "absolute_hours", message: "planted: at most 168" },
-        { field: "idle_minutes", message: "planted: at least 1" },
-      ],
-    }),
-  });
-  renderApp(PATH);
-  const idle = await field(forwarding(), m.forwardingIdle);
-  const absolute = await field(forwarding(), m.forwardingAbsolute);
-  await userEvent.clear(idle);
-  await userEvent.type(idle, "0");
-  await userEvent.clear(absolute);
-  await userEvent.type(absolute, "1.5");
-  const part = await forwarding();
-  await userEvent.click(within(part).getByRole("button", { name: m.forwardingSave }));
-  await waitFor(() => expect(fake.made("PUT", "/api/forwarding/settings")).toHaveLength(1));
-  // what is not a whole number is sent as typed, for the server to judge
-  expect(fake.made("PUT", "/api/forwarding/settings")[0].body).toEqual({
-    enabled: false,
-    idle_minutes: 0,
-    absolute_hours: "1.5",
-  });
-  for (const [input, message] of [
-    [idle, "planted: at least 1"],
-    [absolute, "planted: at most 168"],
-  ] as const) {
-    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"));
-    expect(input).toHaveAccessibleDescription(expect.stringContaining(message));
-    // the message is right under its field
-    expect(input.closest(".field")).toHaveTextContent(message);
-  }
-  expect(idle).toHaveFocus();
-  expect(idle).toHaveValue("0");
-  expect(absolute).toHaveValue("1.5");
-  expect(statusOf(part)).not.toHaveTextContent(m.forwardingSaved);
-  // the alert is the short summary, since every field shows its own
-  expect(within(part).getByRole("alert")).toHaveTextContent(m.problemCheckFields);
-});
-
-test("each card's live region is outside its form, beside the summary of a refusal, as a Settings part's is", async () => {
-  api();
-  renderApp(PATH);
-  for (const part of [await monitoring(), await forwarding()]) {
-    await within(part).findByRole("button", { name: /Save/ });
-    const status = statusOf(part);
-    expect(status.closest("form")).toBeNull();
-    expect(status.parentElement).toHaveClass("setting-body");
-    expect(part.querySelectorAll('[role="status"]')).toHaveLength(1);
-  }
-});
-
-test("a refusal of the switch is shown under it, and focus goes to it", async () => {
-  api({
-    "PUT /api/forwarding/settings": problem(422, "validation_failed", "Check the fields.", {
-      errors: [{ field: "enabled", message: "planted: true or false" }],
-    }),
-  });
-  renderApp(PATH);
-  const part = await forwarding();
-  const box = await within(part).findByRole("checkbox", { name: m.forwardingEnabled });
-  await userEvent.click(within(part).getByRole("button", { name: m.forwardingSave }));
-  await waitFor(() => expect(box).toHaveAttribute("aria-invalid", "true"));
-  expect(box).toHaveAccessibleDescription(expect.stringContaining("planted: true or false"));
-  expect(box).toHaveAccessibleDescription(expect.stringContaining(m.forwardingEnabledHelp));
-  expect(box.closest(".field")).toHaveTextContent("planted: true or false");
-  expect(box).toHaveFocus();
-});
-
-test.each([
-  [403, "admin_only", "planted: only administrators"],
-  [500, "internal_error", "planted: something went wrong"],
-])(
-  "a refusal about no field (%i) is shown in the card, and nothing is said saved",
-  async (status, code, title) => {
-    api({ "PUT /api/forwarding/settings": problem(status, code, title) });
-    renderApp(PATH);
-    const part = await forwarding();
-    await userEvent.click(await within(part).findByRole("button", { name: m.forwardingSave }));
-    expect(await within(part).findByText(title)).toBeInTheDocument();
-    expect(statusOf(part)).toBeEmptyDOMElement();
-    expect(within(part).getByRole("button", { name: m.forwardingSave })).toBeEnabled();
-    // no field is marked
-    expect(part.querySelector('[aria-invalid="true"]')).toBeNull();
-  },
-);

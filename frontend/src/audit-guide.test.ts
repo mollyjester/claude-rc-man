@@ -18,16 +18,14 @@ const same = (found: string[], words: Record<string, string>) =>
     Object.keys(words).filter((c) => !found.includes(c)),
   ] as const;
 
-test("every action the audit guide lists has its words, and no words are for an action it does not list", () => {
-  const found = codes(readFileSync(GUIDE, "utf-8"), ACTIONS);
-  expect(found.length).toBeGreaterThan(0); // positive control: the table was read
-  expect(same(found, m.auditActions)).toEqual([[], []]);
-});
-
-test("every result the audit guide lists has its words", () => {
-  const found = codes(readFileSync(GUIDE, "utf-8"), RESULTS);
-  expect(found.length).toBeGreaterThan(0);
-  expect(same(found, m.auditResults)).toEqual([[], []]);
+test("every action and result the audit guide lists has its words, and no words are for one it does not list", () => {
+  const guide = readFileSync(GUIDE, "utf-8");
+  const actions = codes(guide, ACTIONS);
+  expect(actions.length).toBeGreaterThan(0); // positive control: the table was read
+  expect(same(actions, m.auditActions)).toEqual([[], []]);
+  const results = codes(guide, RESULTS);
+  expect(results.length).toBeGreaterThan(0);
+  expect(same(results, m.auditResults)).toEqual([[], []]);
 });
 
 test("the check fails on an action with no words, and on words for no action", () => {

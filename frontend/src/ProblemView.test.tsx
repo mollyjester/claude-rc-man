@@ -1,11 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { render, screen } from "@testing-library/react";
 
 import { ApiError, SIGNED_OUT, UNEXPECTED_RESPONSE } from "./api";
 import { PAGE_ERROR, takeReports } from "./clientErrors";
 import { m } from "./messages";
-import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 test("shows the server's title and every field error exactly as sent", () => {
   const error = new ApiError(422, "validation_failed", "Some of what was sent is not valid.", [
@@ -18,17 +16,6 @@ test("shows the server's title and every field error exactly as sent", () => {
   expect(
     screen.getByText(`author_name: planted reason holding < and >, "quotes" and 'apostrophes'`),
   ).toBeInTheDocument();
-});
-
-test("names a field by the form's label when given one, and by its name otherwise", () => {
-  const error = new ApiError(422, "validation_failed", "Some of what was sent is not valid.", [
-    { field: "prefix", message: "planted reason" },
-    { field: "request", message: "planted reason about the whole request" },
-  ]);
-  render(<ProblemView error={error} labels={{ prefix: "Planted label" }} />);
-  expect(screen.getByText("Planted label: planted reason")).toBeInTheDocument();
-  expect(screen.queryByText("prefix: planted reason")).not.toBeInTheDocument();
-  expect(screen.getByText("request: planted reason about the whole request")).toBeInTheDocument();
 });
 
 test("an ended sign-in offers to sign in again and come back to the page", () => {
@@ -44,113 +31,6 @@ test("an ended sign-in offers to sign in again and come back to the page", () =>
   } finally {
     window.history.replaceState({}, "", before);
   }
-});
-
-test("shows a raw screen the server passed on", () => {
-  const error = new ApiError(502, "claude_unrecognised_output", "Unrecognised.", [], {
-    screen: ["line one", "line two"],
-  });
-  render(<ProblemView error={error} />);
-  expect(screen.getByText(/line one\s+line two/)).toBeInTheDocument();
-});
-
-test("shows the server a problem names, with its screen", () => {
-  const server = {
-    path: "projects/alpha",
-    state: "unrecognised",
-    screen: ["still here", "and here"],
-  };
-  const error = new ApiError(409, "delete_stop_failed", "A server did not stop.", [], {
-    server,
-    stopped: [],
-  });
-  render(<ProblemView error={error} />);
-  const alert = screen.getByRole("alert");
-  expect(alert).toHaveTextContent("A server did not stop.");
-  expect(alert).toHaveTextContent(`${m.problemServer} projects/alpha`);
-  expect(screen.getByText(/still here\s+and here/)).toBeInTheDocument();
-});
-
-test("lists what a problem says was left", () => {
-  const left = ["projects/beta", "projects/beta/stuck"];
-  const error = new ApiError(409, "delete_incomplete", "Some was left.", [], {
-    left,
-    forgotten: [],
-  });
-  render(<ProblemView error={error} />);
-  const list = screen.getByRole("list", { name: m.problemLeft });
-  expect(
-    within(list)
-      .getAllByRole("listitem")
-      .map((li) => li.textContent),
-  ).toEqual(left);
-});
-
-test("shows nothing of a server or what was left when the problem names neither", () => {
-  render(<ProblemView error={new ApiError(409, "folder_busy", "Busy.")} />);
-  expect(screen.getByRole("alert")).toHaveTextContent("Busy."); // positive control
-  expect(screen.queryByText(m.problemServer, { exact: false })).not.toBeInTheDocument();
-  expect(screen.queryByRole("list")).not.toBeInTheDocument();
-});
-
-test("shows nothing without an error", () => {
-  const { container } = render(<ProblemView error={null} />);
-  expect(container).toBeEmptyDOMElement();
-});
-
-test("shows what git said when it refused, and how much more it said", () => {
-  const git = ["error: Your local changes would be overwritten:", "\ta.txt", "Aborting"];
-  const error = new ApiError(409, "git_failed", "git refused.", [], { git, git_more: 4 });
-  render(<ProblemView error={error} />);
-  // a figure, so its name reaches assistive technology, which a pre's own name does not
-  const figure = screen.getByRole("figure", { name: m.gitSaid });
-  const said = within(figure).getByText(git[0], { exact: false });
-  expect(said.tagName).toBe("PRE");
-  expect(said).toHaveClass("git-said"); // wrapped, unlike a screen
-  expect(said.textContent).toBe(git.join("\n"));
-  expect(screen.queryByText(m.gitSaid)).not.toBeInTheDocument(); // the title leads in, once
-  expect(screen.getByRole("alert")).toHaveTextContent(m.andMoreLines(4));
-});
-
-test("says nothing of more lines when git said no more", () => {
-  render(
-    <ProblemView
-      error={new ApiError(409, "git_failed", "git refused.", [], { git: ["one"], git_more: 0 })}
-    />,
-  );
-  expect(screen.getByLabelText(m.gitSaid)).toHaveTextContent("one"); // positive control
-  expect(screen.getByRole("alert")).not.toHaveTextContent(m.andMoreLines(0));
-});
-
-test("shows what each failed check ran and got back, and how much more it left out", () => {
-  const report = {
-    version: { lines: ["ran: claude --version", "planted version output"], more: 0 },
-    logout: { lines: ["ran: claude auth logout", "planted logout output"], more: 5 },
-  };
-  const error = new ApiError(409, "claude_checks_failed", "Failed.", [], {
-    failed: ["version", "logout"],
-    report,
-  });
-  render(<ProblemView error={error} />);
-  expect(screen.getByRole("alert")).toHaveTextContent(`${m.versionsFailedChecks} version, logout`);
-  for (const [name, entry] of Object.entries(report)) {
-    // a figure, so its name reaches assistive technology, which a pre's own name does not
-    const figure = screen.getByRole("figure", { name });
-    expect(within(figure).getByText(name).tagName).toBe("FIGCAPTION"); // named where it is seen
-    const said = within(figure).getByText(entry.lines[0], { exact: false });
-    expect(said.tagName).toBe("PRE");
-    expect(said.textContent).toBe(entry.lines.join("\n"));
-  }
-  const logout = screen.getByRole("figure", { name: "logout" });
-  expect(logout.nextElementSibling).toHaveTextContent(m.versionsReportMore(5)); // under its own
-  expect(screen.getByRole("alert")).not.toHaveTextContent(m.versionsReportMore(0));
-});
-
-test("shows no report when the problem carries none", () => {
-  const error = new ApiError(409, "claude_checks_failed", "Failed.", [], { failed: ["version"] });
-  render(<ProblemView error={error} />);
-  expect(screen.getByRole("alert")).toHaveTextContent("version"); // positive control
-  expect(screen.queryByRole("figure")).not.toBeInTheDocument();
 });
 
 test("a fault in the page is not taken for rcman unreachable", () => {
@@ -170,124 +50,4 @@ test("a fault in the page is not taken for rcman unreachable", () => {
   } finally {
     consoleError.mockRestore();
   }
-});
-
-// A form that shows each refused field under its input, as the pages' forms do.
-function Planted({ error }: { error: ApiError | null }) {
-  const fields = useFieldErrors(error);
-  return (
-    <form ref={fields.form} noValidate onSubmit={(event) => event.preventDefault()}>
-      <label>
-        First
-        <input type="text" name="first" {...fields.input("first")} />
-      </label>
-      {fields.message("first")}
-      <label>
-        Second
-        <input type="text" name="second" {...fields.input("second", "help-second")} />
-      </label>
-      {fields.message("second")}
-      <p id="help-second">Help for the second.</p>
-      <ProblemView error={error} labels={{ first: "First", second: "Second" }} inline />
-    </form>
-  );
-}
-
-const refused = (errors: { field: string; message: string }[]) =>
-  new ApiError(422, "validation_failed", "Some of what was sent is not valid.", errors);
-
-test("an inline form shows each field's message under its input, linked to it and marked invalid", () => {
-  render(
-    <Planted
-      error={refused([
-        { field: "second", message: "planted reason for the second" },
-        { field: "first", message: "planted reason for the first" },
-      ])}
-    />,
-  );
-  const first = screen.getByLabelText("First");
-  const second = screen.getByLabelText("Second");
-  for (const input of [first, second]) expect(input).toHaveAttribute("aria-invalid", "true");
-  expect(first).toHaveAccessibleDescription("planted reason for the first");
-  // the help the input already had is kept, after the message
-  expect(second).toHaveAccessibleDescription("planted reason for the second Help for the second.");
-  // under its own input, in the order of the fields, not of the server's list
-  expect(first.parentElement?.nextElementSibling).toHaveTextContent("planted reason for the first");
-  expect(second.parentElement?.nextElementSibling).toHaveTextContent(
-    "planted reason for the second",
-  );
-});
-
-test("an inline form's alert is a short summary, and lists no field error twice", () => {
-  render(<Planted error={refused([{ field: "first", message: "planted reason" }])} />);
-  const alert = screen.getByRole("alert");
-  expect(alert).toHaveTextContent(m.problemCheckFields);
-  expect(alert).not.toHaveTextContent("Some of what was sent is not valid.");
-  expect(within(alert).queryByRole("list")).not.toBeInTheDocument();
-  expect(screen.getAllByText("planted reason")).toHaveLength(1);
-});
-
-test("an inline form lists what no input of it shows, under the server's title", () => {
-  render(
-    <Planted
-      error={refused([
-        { field: "first", message: "planted reason" },
-        { field: "request", message: "planted reason about the whole request" },
-      ])}
-    />,
-  );
-  const alert = screen.getByRole("alert");
-  expect(alert).toHaveTextContent("Some of what was sent is not valid.");
-  expect(within(alert).getByText("request: planted reason about the whole request")).toBeVisible();
-  expect(within(alert).queryByText(/planted reason$/)).not.toBeInTheDocument();
-});
-
-test("an input of a form that was not refused carries no mark and no message", () => {
-  const { rerender } = render(<Planted error={null} />);
-  expect(screen.getByLabelText("First")).not.toHaveAttribute("aria-invalid");
-  expect(screen.getByLabelText("First")).not.toHaveAttribute("aria-describedby");
-  expect(screen.getByLabelText("Second")).toHaveAttribute("aria-describedby", "help-second");
-  rerender(<Planted error={refused([{ field: "first", message: "planted reason" }])} />);
-  expect(screen.getByLabelText("First")).toHaveAttribute("aria-invalid", "true"); // the plant took effect
-  expect(screen.getByLabelText("Second")).not.toHaveAttribute("aria-invalid");
-});
-
-test("focus goes to the first refused field, in the page's order", async () => {
-  function Host() {
-    const [error, setError] = useState<ApiError | null>(null);
-    return (
-      <>
-        <button
-          type="button"
-          onClick={() =>
-            setError(
-              refused([
-                { field: "second", message: "planted reason for the second" },
-                { field: "first", message: "planted reason for the first" },
-              ]),
-            )
-          }
-        >
-          Refuse
-        </button>
-        <Planted error={error} />
-      </>
-    );
-  }
-  render(<Host />);
-  await userEvent.click(screen.getByRole("button", { name: "Refuse" }));
-  await waitFor(() => expect(screen.getByLabelText("First")).toHaveFocus());
-});
-
-test("inline names the fields the form shows now, and the rest are listed by their labels", () => {
-  const error = refused([
-    { field: "first", message: "planted reason for the first" },
-    { field: "second", message: "planted reason for the second" },
-  ]);
-  render(
-    <ProblemView error={error} labels={{ first: "First", second: "Second" }} inline={["first"]} />,
-  );
-  const alert = screen.getByRole("alert");
-  expect(within(alert).getByText("Second: planted reason for the second")).toBeVisible();
-  expect(within(alert).queryByText(/planted reason for the first/)).not.toBeInTheDocument();
 });

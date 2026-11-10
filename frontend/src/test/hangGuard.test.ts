@@ -7,15 +7,11 @@ import { waitForIt } from "./waitForIt";
 
 // The component tests run under their tier's hang guard (src/test/hangGuard.ts), as configured.
 
-test("a test runs under the component tests' guard", ({ task }) => {
+test("a test runs under the component tests' guard, and a findBy*, a waitFor and waitForIt wait for its step", async ({
+  task,
+}) => {
   expect(task.timeout).toBe(UNIT_TEST_GUARD_MS);
-});
-
-test("a findBy* or waitFor waits for the component tests' step", () => {
   expect(getConfig().asyncUtilTimeout).toBe(UNIT_HANG_GUARD_MS);
-});
-
-test("waitForIt hands vi.waitFor the component tests' step", async () => {
   const waitFor = vi.spyOn(vi, "waitFor");
   try {
     await waitForIt(() => true);
