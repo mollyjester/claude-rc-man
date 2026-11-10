@@ -131,7 +131,7 @@ test("connected, it says so, and what rcman sends is drawn and what is typed goe
 
 // The reasons after which rcman would refuse another terminal on the workspace, and those
 // after which it would not.
-const REFUSED_AGAIN = ["workspace_gone", "signed_out", "not_allowed"];
+const REFUSED_AGAIN = ["workspace_gone", "workspace_stopped", "signed_out", "not_allowed"];
 const OPEN_AGAIN = PROTOCOL.reasons.filter((r) => !REFUSED_AGAIN.includes(r));
 
 test("the reasons are split between those that offer Reconnect and those that do not", () => {

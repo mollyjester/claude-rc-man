@@ -81,6 +81,14 @@ MESSAGES = {
     "rcman_starting": (
         "rcman is still bringing the workspaces back after it started. Try again in a moment."
     ),
+    "workspace_stopped": "The workspace is stopped. Start it first.",
+    "workspace_not_stopped": "The workspace is not stopped, so there is nothing to start.",
+    "workspace_stopping": "The workspace is being stopped. Try again once it is stopped.",
+    "workspace_starting": "The workspace is being started. Try again once it has started.",
+    "workspace_stop_failed": (
+        "The workspace's container did not stop, so the workspace is still running. Its server "
+        "may have stopped: start it again, or try stopping the workspace again."
+    ),
     # forwarded ports (forward.py, routers/forward.py)
     "forwarding_off": "Port forwarding is off: an administrator turns it on in Service settings.",
     "forwarding_starting": (
@@ -231,6 +239,9 @@ UPGRADE_REFUSED_MESSAGES = {
     ),
     "creating": "A workspace is being made. Try again once it is made.",
     "rebuilding": "A workspace is being rebuilt. Try again once it is rebuilt.",
+    "stopping_or_starting": (
+        "A workspace is being stopped or started. Try again once that is done."
+    ),
     "images": "rcman is clearing away images no workspace uses. Try again in a moment.",
 }
 # The status of ``claude_install_failed`` by kind: a release site that does not answer is a
@@ -502,6 +513,11 @@ REBUILD_MESSAGES = {
         "Why it failed is below.\n{cause}"
     ),
 }
+# What a stopped workspace whose Start, or a Rebuild's start of it, could not bring its
+# container up is told (workspaces.py), the cause after it: it is stopped still.
+POWER_MESSAGES = {
+    "not_started": "The workspace's container did not start, so the workspace is still stopped:",
+}
 # The words of the page that hands its owner over to a forwarded port (routers/forward.py).
 HAND_OFF_PAGE = {
     "title": "Opening port {port}",
@@ -554,6 +570,11 @@ STATUS = {
     "rebuild_empty": 409,
     "rebuild_no_container": 409,
     "rcman_starting": 409,
+    "workspace_stopped": 409,
+    "workspace_not_stopped": 409,
+    "workspace_stopping": 409,
+    "workspace_starting": 409,
+    "workspace_stop_failed": 502,
     "claude_not_installed": 409,
     "claude_install_failed": 409,
     "claude_checks_failed": 409,

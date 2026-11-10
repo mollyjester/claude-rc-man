@@ -1,6 +1,6 @@
 """The signed-in person's workspaces: listing them, with the ports each forwards, making,
-rebuilding and deleting them, and whether a workspace's devcontainer.json changed since it was
-made or last rebuilt."""
+rebuilding, stopping, starting and deleting them, and whether a workspace's devcontainer.json
+changed since it was made or last rebuilt. An administrator may stop anyone's workspace too."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ from pydantic import BaseModel, Field
 
 from helpers import rules
 from rcman import db, people
+from rcman import everyone as everyone_
 from rcman.audit import Record, Recorder
 from rcman.identity import Identity, current_user
-from rcman.problems import ruled
+from rcman.problems import Problem, ruled
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 WorkspaceName = ruled(rules.WORKSPACE_NAME)
@@ -115,6 +116,57 @@ def rebuild(
     found = service.owned(record.identity.person, workspace)
     record.target = found.name
     started = service.rebuild(person_of(request, record.identity), found.id, body.confirm)
+    return {"workspace": owned(request, record.identity.person, [started])[0]}
+
+
+@router.post("/{workspace}/stop")
+def stop(
+    workspace: WorkspaceId,
+    request: Request,
+    record: Record = Depends(Recorder("workspace.stop")),
+) -> dict:
+    """Stop the workspace's container, keeping its volume, its files and its image, to free
+    what it uses: its server is stopped first, keeping its sessions, and its terminal and
+    forwarded ports are closed; what runs in it and the containers in it are lost, and its /tmp
+    is kept with its container. It stays stopped, whatever restarts rcman or the machine, until
+    it is started. Its owner, and an administrator, may stop it; an administrator stopping
+    another person's is recorded as themselves, the target the owner's address and the
+    workspace's name, and is answered the workspace as the Everyone page shows it
+    (``everyone.shown``). A container that does not stop leaves it running
+    (``workspace_stop_failed``)."""
+    service = request.app.state.workspaces
+    identity = record.identity
+    found = service.get(workspace)
+    if found is None or (found.person != identity.person and not identity.admin):
+        raise Problem("workspace_not_found")
+    if found.person == identity.person:
+        record.target = found.name
+        return {"workspace": owned(request, identity.person, [service.stop(found)])[0]}
+    con = db.connect(request.app.state.settings.database)
+    try:
+        owner = people.by_id(con, found.person)
+    finally:
+        con.close()
+    record.target = f"{owner.email if owner else found.person}/{found.name}"
+    return {"workspace": everyone_.shown(service.listing([service.stop(found)])[0])}
+
+
+@router.post("/{workspace}/start", status_code=202)
+def start(
+    workspace: WorkspaceId,
+    request: Request,
+    record: Record = Depends(Recorder("workspace.start")),
+) -> dict:
+    """Start a stopped workspace, in the background, as rcman brings its workspaces back when it
+    starts: its container is started, or made again on its volume from the image it was made
+    from where it was lost, its postStartCommand runs, and its server is started with the
+    approved Claude Code version if it ran when the workspace was stopped. Listed as starting
+    until then (``starting``); a container that does not come up leaves it stopped, with why.
+    Only its owner may start it."""
+    service = request.app.state.workspaces
+    found = service.owned(record.identity.person, workspace)
+    record.target = found.name
+    started = service.start(found)
     return {"workspace": owned(request, record.identity.person, [started])[0]}
 
 

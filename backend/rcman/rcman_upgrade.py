@@ -281,6 +281,8 @@ class Upgrades:
             return "creating"
         if self.workspaces.any_rebuilding():
             return "rebuilding"
+        if self.workspaces.any_powering():
+            return "stopping_or_starting"
         return None
 
     def _read(self) -> tuple[dict | None, dict[str, Unit] | None, bool]:

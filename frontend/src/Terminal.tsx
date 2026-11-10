@@ -35,8 +35,8 @@ type Phase =
 type Closed = Extract<Phase, { kind: "closed" }>;
 
 // The reasons after which rcman would refuse another terminal on the workspace: it is gone
-// or not ready, or its person signed out or is no longer allowed in.
-const REFUSED_AGAIN = new Set(["workspace_gone", "signed_out", "not_allowed"]);
+// stopped, gone or not ready, or its person signed out or is no longer allowed in.
+const REFUSED_AGAIN = new Set(["workspace_gone", "workspace_stopped", "signed_out", "not_allowed"]);
 
 const CONNECTING: Phase = { kind: "connecting" };
 const encoder = new TextEncoder();
@@ -268,6 +268,19 @@ export function Terminal({
         </div>
       )}
       <div className="terminal-screen" ref={screen} />
+    </div>
+  );
+}
+
+// The Terminal tab of a workspace that has no terminal to open, stopped or being started: the
+// terminal's bar alone, saying why, its dot not running, and no screen.
+export function TerminalNotice({ said }: { said: string }) {
+  return (
+    <div className="terminal card">
+      <div className="terminal-bar">
+        <span className="dot dot-stopped" aria-hidden="true" />
+        <p role="status">{said}</p>
+      </div>
     </div>
   );
 }

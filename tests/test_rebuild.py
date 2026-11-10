@@ -1337,6 +1337,90 @@ def test_a_server_that_was_not_running_is_not_started(client, app, runtime, publ
     assert started == []
 
 
+# --- starting a stopped workspace ----------------------------------------------------------
+
+
+def power(client, workspace_id: int, verb: str):
+    return client.post(f"/api/workspaces/{workspace_id}/{verb}", headers=changing(ALICE))
+
+
+def powered(client, workspace_id: int) -> dict:
+    """The workspace once no Stop or Start of it is under way."""
+    return until(
+        lambda: (
+            (found := entry(client, workspace_id))
+            and not (found["starting"] or found["stopping"])
+            and found
+        )
+    )
+
+
+def test_a_start_makes_a_lost_container_again_on_its_volume(client, runtime, publish, settings):
+    """A stopped workspace whose container was lost is made again at its Start from the image it
+    was made from, on its volume; one that cannot be made is left stopped, saying why. A Rebuild
+    of a stopped workspace starts it first, and fails, leaving it stopped, where it cannot; one
+    that is refused leaves it started, with its server."""
+    found = made(client, publish)
+    name = name_of(found)
+    keep_work(runtime, found)
+    assert power(client, found["id"], "stop").status_code == 200
+    runtime.discard(name)
+    assert power(client, found["id"], "start").status_code == 202
+    assert powered(client, found["id"])["state"] == "ready"
+    assert runtime.running(name)
+    assert (spec_of(runtime, found).image, spec_of(runtime, found).image_id) == (IMAGE, OLD_ID)
+    assert work_kept(runtime, found)
+
+    # Its image lost from the storage, and its registry not answering: it stays stopped.
+    assert power(client, found["id"], "stop").status_code == 200
+    runtime.discard(name)
+    plan = plan_of(settings, found["id"])
+    digest = "sha256:" + "c" * 64
+    set_row(
+        settings, found["id"], environment=dataclasses.replace(plan, image_digest=digest).to_json()
+    )
+    runtime.lost_ids.add(OLD_ID)
+    runtime.pull_error = "connection refused"
+    assert power(client, found["id"], "start").status_code == 202
+    now = powered(client, found["id"])
+    assert now["state"] == "halted" and now["startable"], now
+    assert problems.POWER_MESSAGES["not_started"] in now["error"]
+    assert "connection refused" in now["error"]
+    assert not runtime.exists(name)
+
+    # A Rebuild starts it first; it cannot, so the rebuild fails and it stays stopped.
+    assert ask(client, found["id"]).status_code == 202
+    now = settled(client, found["id"])
+    assert (now["state"], now["rebuild"]["state"]) == ("halted", None)
+    assert "connection refused" in now["error"]
+    assert not runtime.exists(name)
+    runtime.pull_error = None
+    runtime.lost_ids.discard(OLD_ID)
+    rewrite(runtime, found, to())
+    # Its server ran when it was stopped: once rebuilt, it runs again on the approved version.
+    signed_in(client.app, found, trusted=True)
+    set_row(settings, found["id"], wanted=1, server=1)
+    done = rebuilt(client, found["id"])
+    assert (done["state"], done["rebuild"]["error"]) == ("ready", None)
+    assert spec_of(runtime, found).image == OTHER and work_kept(runtime, found)
+    assert runtime.running(name)
+    server = until(lambda: entry(client, found["id"])["server"])
+    assert server["exit_code"] is None
+    approved = client.get("/api/workspaces", headers=as_user(ALICE)).json()["claude_approved"]
+    assert approved and row(settings, found["id"])["claude_version"] == approved
+
+    # A Rebuild that is refused leaves it started, its container running and its server
+    # started again, as a Start does.
+    assert power(client, found["id"], "stop").status_code == 200
+    assert row(settings, found["id"])["claude_version"] is None
+    rewrite(runtime, found, to(capAdd=["SYS_ADMIN"]))
+    done = rebuilt(client, found["id"])
+    assert (done["state"], done["rebuild"]["state"]) == ("ready", None)
+    assert problems.REBUILD_ADVICE in done["rebuild"]["error"]
+    assert runtime.running(name)
+    assert until(lambda: row(settings, found["id"])["claude_version"]) == approved
+
+
 # --- a restart of rcman in each window -------------------------------------------------------
 
 

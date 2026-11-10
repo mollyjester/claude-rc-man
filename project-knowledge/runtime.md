@@ -620,6 +620,10 @@ runtime - and rcman adds no restriction and takes none away.
   through `on_kept_running`: every session whose pidfile is not a live terminal's and whose
   leader still runs (`terminals.sweep`). A container that stopped lost its tmpfs, and its
   processes with it.
+- **Stopping.** A Stop calls `on_stopping` before the container stops, which ends the terminal
+  with `workspace_stopped` (see
+  [Stopping and starting a workspace](#stopping-and-starting-a-workspace)); the stop ends what
+  is left, and the tmpfs that holds the pidfiles goes with it.
 - **Deleting.** `_remove` calls `on_removing` before the container goes, which ends the
   workspace's terminal through its channel; on the host runtime, whose removal ends only tmux
   and the channels' shells, that is what ends the terminal's shell.
@@ -730,12 +734,13 @@ this is the transport, and what cleans up after it.
   sweep until the channel's request times out; meanwhile a deletion's sweep holds the
   workspace's lock, and a restore's one of the restore's places. `Workspaces.sweep_forwards`
   sweeps a workspace whose container is there and runs, logging a failure and never raising: in
-  `_remove` before the container goes, in `_switch` before a rebuild replaces the container, and
-  in `_restore_workspace` for a container that kept running and for one it started; and the
+  `_remove` before the container goes, in `_switch` before a rebuild replaces the container, in a
+  Stop before the container stops, and in `_restore_workspace` for a container that kept running
+  and for one it started; and the
   forwarding server sweeps every workspace it started a relay in as it stops, after closing its
   relays and before the channels close. A sweep ends every relay of its workspace: in `_remove`
   and `_switch` the workspace's forward sessions have been ended just before (`on_removing`,
-  `on_rebuilding`), and at the restore none can have started. A server's stop sweeps nothing:
+  `on_rebuilding`), and in a Stop by `on_stopping`; at the restore none can have started. A server's stop sweeps nothing:
   forwarding follows the container, whose apps a server's stop leaves running. On the host
   runtime, whose removal ends no relay, the sweep is what ends one.
 
@@ -757,8 +762,7 @@ helpers; one left from before is removed first. The checks need `python3` in the
 the real binary needs no network for them is a check of
 [the real-Claude list](real-claude-checklist.md); if it does, the canary would have to use the
 workspace network. `HostRuntime` runs the same program with the host's interpreter and a
-clean environment, or a test's `canary_script`. The cases for both are `tests/runtime_contract.py`'s,
-and against real Podman `tests/container/test_claude_versions_in_podman.py`'s.
+clean environment, or a test's `canary_script`. The cases for both are `tests/runtime_contract.py`'s.
 
 ## A repository's devcontainer.json
 
@@ -980,9 +984,11 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
 - **Admission.** `rebuild_refusal` is the one test, which the listing's `rebuildable` uses too:
   refused while an upgrade of rcman is under way (`rcman_upgrading`), before the restore is
   done (`rcman_starting`), while the workspace is being made or deleted (`workspace_not_ready`),
-  or anything works on it (`_working`, `_making`, a `rebuild_state` set: `workspace_rebuilding`); a ready workspace
-  needs a `source` (`rebuild_empty`) and its container (`rebuild_no_container`, from
-  `Runtime.exists`); a failed one needs a `failure` in `RECOVERABLE`, a `source` and its volume
+  while a Stop or a Start of it is under way (`workspace_stopping`, `workspace_starting`), or
+  anything works on it (`_working`, `_making`, a `rebuild_state` set: `workspace_rebuilding`); a
+  ready workspace needs a `source` (`rebuild_empty`) and its container (`rebuild_no_container`,
+  from `Runtime.exists`); a stopped one a `source` and its volume, and is started first (see
+  [Stopping and starting a workspace](#stopping-and-starting-a-workspace)); a failed one needs a `failure` in `RECOVERABLE`, a `source` and its volume
   (`Runtime.has_volume`), else `workspace_not_ready`. What the row says is looked at first
   (`_rebuild_refusal_by_row`), and the runtime asked only about a workspace that passes it: the
   listing asks `Runtime.labelled()` once for every container instead of `exists` for each
@@ -1078,6 +1084,75 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
   the outcome `_rebuild`, `_replace`, `_roll_back` and `_recover` return: what it ended in, and
   the first line of the reason where there is one.
 
+## Stopping and starting a workspace
+
+`Workspaces.stop` and `Workspaces.start` (`POST /api/workspaces/{id}/stop` and `/start`, see
+[backend.md](backend.md#workspaces-and-servers); what colleagues are told is in
+[the workspaces guide](../docs/workspaces.md)) stop a workspace's container to free what it uses,
+and bring it back as a restore would. A stopped workspace is the state `halted` (`HALTED`; the
+page says Stopped): its container is stopped on purpose, and its volume, its image and its row
+are kept.
+
+- **Admission.** `_power_refusal` is the one test, which the listing's `stoppable` and
+  `startable` use too, from the row and this process alone: refused while an upgrade of rcman is
+  under way (`rcman_upgrading`), before the restore is done (`rcman_starting`), for a Start while
+  the instructions for Claude are missing from the tools, for a workspace that is not `ready` or
+  `halted` (`workspace_not_ready`), while a Stop or a Start of it is under way
+  (`workspace_stopping`, `workspace_starting`, looked at before what follows, as a Start's own
+  thread works on the workspace), while it is rebuilt or anything else works on it
+  (`workspace_rebuilding`), and for a Stop of a stopped one or a Start of a ready one. It is asked
+  before any lock, and again under `_images_lock` and then the workspace's lock, so that an
+  upgrade's admission, which holds the images' lock, and a Stop or a Start each see the other:
+  `rcman_upgrade._reason` gives `stopping_or_starting` while `any_powering()` finds one under way.
+- **Stop.** The admission puts the workspace in `_stopping` (under `_lock`) until the Stop is
+  done, which `ready()` refuses (`workspace_stopping`: the servers' verbs, git, the terminal),
+  the listing reads no server for, a forwarded port refuses (`Forwarding._open`) and the
+  terminal's revocation look ends with `workspace_stopped`. Then, under the workspace's lock, the
+  server, if tmux says it runs, is stopped with `Server.stop` (Ctrl+C, then `STOP_TIMEOUT`),
+  killed if it still runs, never through `stop_server`, so `wanted` stays as the record that it
+  ran. Without the lock, each step logged on failure and none stopping the rest:
+  `on_stopping` (terminals.py ends the terminal, forward.py the forward sessions, each with
+  `workspace_stopped`), `sweep_forwards`, the channel closed, and `Runtime.stop` where the
+  container is there and runs, which ends what runs in it, the containers in it among it, after
+  the runtime's grace, and loses its tmpfs. Under the lock again, the row is written `halted`,
+  `claude_version` and `error` cleared, only once the runtime says the container is not there or
+  does not run (`_known_down`); one that still runs, or whose state cannot be told, leaves the
+  row `ready`, its version kept, and the Stop is `workspace_stop_failed`. `_stopped(person)`
+  runs once every lock is let go, since it takes the person's lock.
+- **Start.** The admission writes the row `ready` and registers a thread in `_bringing_up`
+  (under `_changed`), from when `ready()` refuses `workspace_starting`, the listing reads no
+  server, and `close` waits for it; a thread that does not start puts the row back. The thread
+  (`_bring_up`) does what a restore does for the workspace (`_restore_workspace`): the container
+  started where it stopped, or made again where it is lost from the image it was made from on
+  its volume (`_remake`, the pinned image by its id, pulled again by its digest where the
+  storage lost it), its `postStartCommand` run. Then, under the lock, a row still `ready` with no
+  rebuild whose container is not there or does not run is stopped again, with
+  `POWER_MESSAGES["not_started"]` and the cause in its `error` (`_still_down`): an exception's,
+  or what a pull that may pass said (the `report` `_restore_workspace` hands `_remake`); one
+  failed meanwhile, its image gone (`_image_gone`), deleted or whose state cannot be told is
+  left. Then the server is started, pinned to the approved version, where `wanted` is set, the
+  container runs and rcman is not closing (`_restore_server`).
+- **Rebuild.** A stopped workspace cloned from a repository may be rebuilt, its volume there
+  (`rebuild_refusal`): its thread (`_rebuild_halted`) writes it `ready`, brings its container
+  back as a Start does but without its server (`_container_back`), and then rebuilds it as a
+  ready one (`_replace`); whatever came of that but a cancel, rebuilt, put back as it was or
+  refused, its server is started on the approved version if `wanted` is set, the row is ready,
+  its rebuild ended or left only at `promoting` (a name move that failed, as `_replace` has it
+  for a ready one), and its container runs, as a Start does (`_start_again`). A container that
+  does not come up fails the rebuild, and the workspace is stopped again with why, in its `error`
+  and its rebuild's.
+- **Restore** follows the container's real state: a `halted` row whose container runs - one started
+  outside rcman, or one that came up after its Start was found not to have - is written `ready`
+  and brought back as a ready one with a container that kept running, its server started if
+  `wanted`; nothing is stopped, since that would end what runs in it. One whose container is
+  stopped or lost stays `halted` (`_restore_halted`). Nothing else starts a stopped workspace's
+  container: `_reading_container` starts only a failed one's, and the canary runs a container of
+  its own.
+- **Deleting** a stopped workspace is deleting any other. A person's deletion waits for a Stop or
+  a Start of their workspaces under way (`_wait_while_made`), which ends having found the
+  workspace gone.
+- **Limits.** Stopping and starting change no limit: the slices stay as they are set.
+
 ## The workspaces' condition
 
 `Workspaces._changed`, a condition on a plain lock, not reentrant, is what every wait on the
@@ -1094,7 +1169,11 @@ waiters look for different things). It guards:
 - `_unended`, the threads that make or rebuild a workspace (`_Made`) that have not ended, and
   `_ended_here`, the workspaces such a thread of this process ended for, until the workspace is
   removed;
-- `_putting_back`, the put-backs of `settle_left_over` under way.
+- `_putting_back`, the put-backs of `settle_left_over` under way;
+- `_bringing_up`, the threads of `start` bringing a workspace up (see
+  [Stopping and starting a workspace](#stopping-and-starting-a-workspace)). `_stopping`, the
+  workspaces a Stop is under way for, is under `_lock`, and a Stop tells `_changed` as it ends,
+  for a person's deletion that waits for it.
 
 A thread that makes or rebuilds a workspace has two marks: it counts as making it while its
 `_Made` is in `_making` (under `_lock`), which `_being_made`, `delete`, the collection and
@@ -1113,7 +1192,8 @@ what each way a making thread ends leaves of its marks, and the deletion just af
 is made.
 
 **`close`**, rcman's shutdown, sets `_closing` and waits on `_changed`, `CLOSE_WITHIN_SECONDS` in
-all, for the restore and its tasks, the making and rebuilding threads, and the put-backs; then
+all, for the restore and its tasks, the making and rebuilding threads, the put-backs, the
+threads starting a workspace and the Stops under way (`_stopping`, read under `_lock`); then
 it closes every channel. What has not ended by then is said in the journal and left to the next
 start. Restore stops between steps, but a step under way is not cut short: a repository's
 lifecycle command, a pull or a server's start goes on, so one that hangs makes a shutdown wait
@@ -1124,7 +1204,8 @@ rcman is closing.
 ## What rcman keeps, and brings back
 
 The `workspaces` table (`backend/rcman/db.py`) holds each workspace's state —
-`creating`, `ready`, `failed` or `deleting` — and what should run: whether a
+`creating`, `ready`, `failed`, `deleting` or `halted` (stopped by its person, see
+[Stopping and starting a workspace](#stopping-and-starting-a-workspace)) — and what should run: whether a
 server is recorded in it (from its start until it is forgotten), whether it
 should be running (`wanted`: set by a start or resume, cleared by a stop), and
 the prefix it was started with.
@@ -1168,8 +1249,10 @@ the prefix it was started with.
   fails a `creating` one with a `source`, which a restart interrupted while it was being made,
   with `CLONE_MESSAGES["restarted"]` (it is not cloned again, nor are its create commands run
   again, whatever it had done: the person deletes it and decides); settles a rebuild a restart
-  cut short (see [Rebuilding](#rebuilding), Restarts); makes again a `ready` workspace whose
-  container is gone, from its stored plan if it has one, and starts one that is stopped, and
+  cut short (see [Rebuilding](#rebuilding), Restarts); brings a `halted` workspace whose container
+  runs back as a `ready` one, and leaves one whose container is stopped or lost as it is (see
+  [Stopping and starting a workspace](#stopping-and-starting-a-workspace)); makes again a `ready`
+  workspace whose container is gone, from its stored plan if it has one, and starts one that is stopped, and
   runs the plan's `postStartCommand` after either; ends what earlier terminals left in one that
   kept running (see [The terminal's shell](#the-terminals-shell)); removes what an interrupted
   read of an image left (`clean_probes`: probe containers, staging folders and the anonymous

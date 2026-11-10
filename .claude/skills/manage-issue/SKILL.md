@@ -82,6 +82,13 @@ and keep iterating with them until you are satisfied with the outcome.
   documentation the change affects, found by searching. Where the plan rests
   on something not yet proven, its first step is a gate: tests that prove it
   before anything depends on it.
+- Tests come first, and cover the core only: the happy path of each behaviour
+  the change adds, one test for it, extending a test that already covers the
+  area rather than adding one. No variant, edge-case or refusal tests for
+  every small piece. Each test is compact, fast and effective, and has no
+  flaky shape: no sleeps or waits on real time, no races, nothing left
+  running when it fails. Every brief for planning, implementation and review
+  repeats this.
 - A plan that touches the sandbox, the runtime, the installer, the uid mapping
   or anything security-related is challenged by a reviewer until it holds up
   against the current code; a smaller plan is challenged by its planner

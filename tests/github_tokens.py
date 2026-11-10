@@ -1,6 +1,5 @@
 """GitHub tokens of many shapes the token rule (helpers/rules.py: GITHUB_TOKEN) lets in, for
-the tests of what is written for git and gh (tests/test_git_account.py) and of what real gh
-reads back (tests/container/test_github_in_podman.py).
+the tests of what is written for git and gh (tests/test_git_account.py).
 
 Not a test module: the tests that need the tokens import it.
 """

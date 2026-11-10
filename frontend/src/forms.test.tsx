@@ -100,6 +100,7 @@ function api() {
           claude_version: null,
           rebuild: { state: null, log: null, error: null },
           rebuildable: true,
+          stoppable: true,
         },
         {
           id: 2,
@@ -329,6 +330,15 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
       const card = await screen.findByRole("region", { name: m.containerTitle });
       await userEvent.click(await within(card).findByRole("button", { name: m.rebuild }));
       await screen.findByRole("dialog", { name: m.rebuildTitle("alpha") });
+    },
+  ],
+  [
+    "stopping a workspace",
+    "/?workspace=1",
+    async () => {
+      const card = await screen.findByRole("region", { name: m.containerTitle });
+      await userEvent.click(await within(card).findByRole("button", { name: m.stopWorkspace }));
+      await screen.findByRole("dialog", { name: m.stopWorkspaceTitle("alpha") });
     },
   ],
   [

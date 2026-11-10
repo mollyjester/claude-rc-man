@@ -1,4 +1,5 @@
-"""Everyone's workspaces and servers, for administrators, to look at only.
+"""Everyone's workspaces and servers, for administrators, to look at and, the one thing this page
+lets them do to another person's, to stop (routers/workspaces.py).
 
 Each person in the people table with each of their workspaces, its server read
 side by side with the others' (Workspaces.listing). A workspace whose server
@@ -17,6 +18,25 @@ from rcman import db, people
 SERVER_FIELDS = ("state", "session_name", "exit_code")
 
 
+def shown(entry: dict) -> dict:
+    """A workspace as an administrator is shown it, from its entry of ``Workspaces.listing``:
+    its id, name, device, state, server (only SERVER_FIELDS), why its server could not be read,
+    the version it runs, and whether it may be stopped now and is being stopped. Nothing else
+    the listing gives - its error, its address, its steps, its rebuild's - reaches them."""
+    server = entry["server"]
+    return {
+        "id": entry["id"],
+        "name": entry["name"],
+        "device": entry["device"],
+        "state": entry["state"],
+        "server": server and {key: server.get(key) for key in SERVER_FIELDS},
+        "server_error": entry["server_error"],
+        "claude_version": entry["claude_version"],
+        "stoppable": entry["stoppable"],
+        "stopping": entry["stopping"],
+    }
+
+
 def everyone(request: Request) -> list[dict]:
     """Each person, with their workspaces and what is known of each one's server."""
     con = db.connect(request.app.state.settings.database)
@@ -26,28 +46,16 @@ def everyone(request: Request) -> list[dict]:
         con.close()
     service = request.app.state.workspaces
     workspaces = service.everything()
-    shown = dict(zip([w.id for w in workspaces], service.listing(workspaces), strict=True))
+    entries = dict(zip([w.id for w in workspaces], service.listing(workspaces), strict=True))
     watch = request.app.state.watch
     answer = []
     for person in found:
-        theirs = [shown[w.id] for w in workspaces if w.person == person.id]
+        theirs = [entries[w.id] for w in workspaces if w.person == person.id]
         watch.listed(person.email, {w["name"]: w["server"] for w in theirs})
         answer.append(
             {
                 "email": person.email,
-                "workspaces": [
-                    {
-                        "id": w["id"],
-                        "name": w["name"],
-                        "device": w["device"],
-                        "state": w["state"],
-                        "server": w["server"]
-                        and {key: w["server"].get(key) for key in SERVER_FIELDS},
-                        "server_error": w["server_error"],
-                        "claude_version": w["claude_version"],
-                    }
-                    for w in theirs
-                ],
+                "workspaces": [shown(w) for w in theirs],
             }
         )
     return answer

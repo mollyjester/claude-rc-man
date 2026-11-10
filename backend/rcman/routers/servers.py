@@ -1,5 +1,7 @@
 """The server of each of the signed-in person's workspaces, and everyone's, for
-administrators, to look at only."""
+administrators, to look at: an administrator cannot act on another person's server, and the one
+thing the Everyone page lets them do to another person's workspace is stop it
+(routers/workspaces.py)."""
 
 from __future__ import annotations
 
@@ -56,8 +58,9 @@ def _act(request: Request, record: Record, verb: str, workspace: int, call) -> d
 
 @router.get("/everyone", dependencies=[Depends(admin_user)])
 def everyone(request: Request) -> dict:
-    """Every person's workspaces and servers, to look at only: administrators cannot act
-    on them."""
+    """Every person's workspaces and servers, for administrators to look at: they cannot act on
+    another person's servers, and the one thing this page lets them do to another person's
+    workspace is stop it (``POST /api/workspaces/{workspace}/stop``)."""
     return {"people": everyone_.everyone(request)}
 
 

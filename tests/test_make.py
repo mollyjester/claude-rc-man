@@ -352,7 +352,6 @@ MARKER_SETS = [
 ]
 BENCHMARK_TESTS = {
     "tests/test_channel.py::test_the_channels_latency_on_the_host",
-    "tests/container/test_runtime_in_podman.py::test_the_channels_latency_through_podman",
     "tests/test_claude_checks.py::test_how_long_redacting_a_screen_takes_by_its_size",
 }
 

@@ -140,6 +140,7 @@ def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
         "terminal_replaced",
         "workspace_gone",
         "workspace_rebuilding",
+        "workspace_stopped",
         "signed_out",
         "service_closing",
         "forwarding_off",

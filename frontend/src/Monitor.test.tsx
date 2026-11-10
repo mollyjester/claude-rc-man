@@ -85,6 +85,7 @@ const SNAPSHOT: Snapshot = {
       disk_bytes: 1_500_000_000,
     },
     { id: 2, name: "beta", owner: "alice@example.com", state: "failed", ...UNKNOWN },
+    { id: 3, name: "gamma", owner: "alice@example.com", state: "halted", ...UNKNOWN },
   ],
 };
 
@@ -246,6 +247,17 @@ test("the Containers table shows each workspace's container by its name and owne
     "beta",
     "alice@example.com",
     m.workspaceStates.failed,
+    m.monitorNotKnown,
+    m.monitorNotKnown,
+    m.monitorNotKnown,
+    m.monitorNotKnown,
+  ]);
+  // a stopped workspace is shown as stopped, its figures not known
+  expect(m.workspaceStates.halted).toBe("Stopped");
+  expect(await cells(m.monitorContainers, /gamma/)).toEqual([
+    "gamma",
+    "alice@example.com",
+    m.workspaceStates.halted,
     m.monitorNotKnown,
     m.monitorNotKnown,
     m.monitorNotKnown,

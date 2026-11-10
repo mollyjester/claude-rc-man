@@ -71,6 +71,7 @@ export const m = {
     ready: "Ready",
     failed: "Failed",
     deleting: "Being deleted",
+    halted: "Stopped",
   } as Record<string, string>,
   // Beside New workspace while rcman is being upgraded, which makes none meanwhile.
   workspacesUpgrading:
@@ -114,7 +115,56 @@ export const m = {
   workspaceDeleted: (name: string) => `${name} was deleted.`,
   start: "Start",
 
-  // The tabs of a ready workspace's panel.
+  // Stopping a workspace, from its Container card or, for an administrator, from Everyone's
+  // workspaces, and starting it again.
+  stopWorkspace: "Stop workspace",
+  stopWorkspaceBusy: "Stopping…",
+  stopWorkspaceTitle: (name: string) => `Stop ${name}?`,
+  stopWorkspaceIntro:
+    "The workspace's container stops, which frees the memory, CPU and processes it uses. It stays stopped, through restarts of rcman and of the machine, until it is started again.",
+  stopWorkspaceEnds: [
+    "Every process running in the workspace, those started with nohup or setsid too.",
+    "The terminal's shell.",
+    "The containers running inside the workspace.",
+    "Its forwarded ports, until it is started again.",
+  ],
+  stopWorkspaceKeeps: [
+    "The files in the workspace: the work folder, your home, Claude's settings, the storage of Podman inside it, and what is in /tmp.",
+    "The image the workspace is made from.",
+    "The server's Claude sessions. A server that was running starts again with the workspace and picks them up.",
+  ],
+  stopWorkspaceConfirm: "Stop workspace",
+  startWorkspace: "Start workspace",
+  startWorkspaceBusy: "Starting…",
+  workspaceHalted: "This workspace is stopped, and its files are kept. Start it to use it again.",
+  workspaceStarting:
+    "This workspace is starting. Its server starts again once it is up, if it was running.",
+  // Each area of a workspace's panel while the workspace is stopped, being started or being
+  // stopped, by the code the listing gives for its server.
+  serverPower: {
+    workspace_stopped:
+      "The workspace is stopped, so its server is not running. A server that was running starts again when the workspace is started.",
+    workspace_starting: "The workspace is starting. Its server is shown once it is up.",
+    workspace_stopping: "The workspace is being stopped, and its server with it.",
+  } as Record<string, string>,
+  portsPower: {
+    workspace_stopped: "The workspace is stopped. Its ports open again once it is started.",
+    workspace_starting: "The workspace is starting. Its ports open once it is up.",
+    workspace_stopping: "The workspace is being stopped, which closes its ports.",
+  } as Record<string, string>,
+  terminalPower: {
+    workspace_stopped: "The workspace is stopped, so it has no terminal. Start it to open one.",
+    workspace_starting: "The workspace is starting. Its terminal opens once it is up.",
+  } as Record<string, string>,
+  // A workspace's pill while it is being stopped or started, in its own state's place.
+  workspacePower: { stopping: "Stopping", starting: "Starting" },
+  // Why a stopped workspace offers no Start workspace now.
+  startUpgrading:
+    "rcman is being upgraded, so this workspace can be started once the upgrade is done.",
+  startNotNow:
+    "This workspace cannot be started just now. Start workspace is offered here once it can be.",
+
+  // The tabs of a ready or stopped workspace's panel.
   workspaceTabs: "Workspace views",
   tabOverview: "Overview",
   tabTerminal: "Terminal",
@@ -136,6 +186,8 @@ export const m = {
     workspace_gone: "The workspace is no longer ready, so its terminal was closed.",
     workspace_rebuilding:
       "The workspace is being rebuilt, which closed the terminal. Reconnect once the rebuild is done.",
+    workspace_stopped:
+      "The workspace was stopped, which closed the terminal. Start it to reconnect.",
     signed_out: "You signed out of rcman, which closed the terminal.",
     not_allowed: "You are no longer allowed into rcman, which closed the terminal.",
     service_closing: "rcman is restarting, which closed the terminal.",
@@ -148,7 +200,7 @@ export const m = {
   serverRebuilding:
     "The workspace's container is being made again, so its server is not running just now. A server that ran is started again once that is done.",
 
-  // The Container card of a ready workspace's Overview, and rebuilding a workspace.
+  // The Container card of a ready or stopped workspace's Overview, and rebuilding a workspace.
   containerTitle: "Container",
   containerIntro:
     "Made from the repository's devcontainer.json, or from rcman's default image where it has none.",
@@ -156,7 +208,7 @@ export const m = {
     "This workspace has no repository, so its container is made from rcman's default image and has nothing to be rebuilt from.",
   devcontainerChanged:
     "This workspace's devcontainer.json has changed since its container was made. Rebuild to apply it.",
-  // The Ports card of a ready workspace's Overview, shown while forwarding is on.
+  // The Ports card of a ready or stopped workspace's Overview, shown while forwarding is on.
   portsTitle: "Ports",
   portsIntro:
     "The ports this workspace's devcontainer.json forwards. Each opens in a new tab, for you alone.",
@@ -388,6 +440,8 @@ export const m = {
     "workspace.create": "Made a workspace",
     "workspace.delete": "Deleted a workspace",
     "workspace.rebuild": "Asked for a workspace to be rebuilt",
+    "workspace.stop": "Stopped a workspace",
+    "workspace.start": "Started a workspace",
     "server.start": "Started a server",
     "server.resume": "Resumed a server",
     "server.stop": "Stopped a server",
@@ -439,6 +493,7 @@ export const m = {
     terminal_replaced: "Another terminal on the workspace replaced it",
     workspace_gone: "Its workspace was deleted or is no longer ready",
     workspace_rebuilding: "Its workspace was being rebuilt",
+    workspace_stopped: "Its workspace was stopped",
     signed_out: "Signed out of rcman",
     service_closing: "rcman stopped",
     forwarding_off: "Port forwarding was turned off",
@@ -452,7 +507,7 @@ export const m = {
 
   everyoneTitle: "Everyone's workspaces",
   everyoneIntro:
-    "Each person's workspaces and their servers, to look at only. Only the person a workspace belongs to can act on it.",
+    "Each person's workspaces and their servers. You can stop a person's workspace; only the person it belongs to can start it again or act on it otherwise.",
   everyoneNone: "No workspaces.",
   everyoneWorkspace: "Workspace",
   everyoneNoServer: "No server",

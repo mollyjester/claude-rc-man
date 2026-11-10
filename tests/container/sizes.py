@@ -3,7 +3,7 @@ which the runtime is given as constructor parameters (rcman/runtime.py INJECTED)
 per slot small enough that every slot the suites use fits in one user's subordinate ids, people
 in the first slots and the builder after them, and the engine's own network.
 
-Not a test module. tests/container/test_engine_in_podman.py holds them to the engine's map."""
+Not a test module."""
 
 # The ids of one slot, as runtime.RANGE is the product's.
 TEST_RANGE = 8192

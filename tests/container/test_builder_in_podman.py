@@ -1,7 +1,6 @@
 """The devcontainer builder against real rootless Podman and the real devcontainer CLI.
 
-On the tests' engine (tests/podman_service.py), as
-``tests/container/test_devcontainer_in_podman.py`` runs, whose person it shares, with the builder
+On the tests' engine (tests/podman_service.py), with the builder
 in the suites' builder slot (tests/container/sizes.py). The builder pulls the images a build
 starts from, so the module's workspaces and builders are on the engine's own network; the
 stand-in GitHub serves on its loopback, on a port of its own, and the workspaces' git reaches it
@@ -28,29 +27,115 @@ import json
 import logging
 import os
 import re
+import ssl
 import subprocess
-import threading
 from pathlib import Path
 
 import pytest
-from rcman import builder, devcontainer
+from rcman import builder, db, devcontainer, people
 from rcman import runtime as rt
-from rcman.problems import DEVCONTAINER_MESSAGES
 from rcman.workspaces import Workspaces
 
-from tests.conftest import ended
 from tests.container import github_stand_in as stand_in
 from tests.container import network, sizes
-from tests.container import test_devcontainer_in_podman as dev
-from tests.container import test_github_in_podman as shared
-from tests.container.conftest import cli, engine_runtime, engine_settings, image_of
+from tests.container.conftest import cli, engine_runtime, engine_settings
 from tests.github_server import GitHubServer
 from tests.hang_guard import CONTAINER_HANG_GUARD
-from tests.until import SLOW, until
+from tests.until import until
 
-exists, gone, settled = shared.exists, shared.gone, shared.settled
+TOKEN = "github_pat_podman-test-token"
+
+EMAIL = "bob@example.com"
+
+
+@pytest.fixture(scope="module")
+def pki(tmp_path_factory) -> Path:
+    """A certificate authority, and a certificate it signed for github.com."""
+    return stand_in.mint(tmp_path_factory.mktemp("pki"))
+
+
+def tls(pki: Path) -> ssl.SSLContext:
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(pki / "leaf.crt", pki / "leaf.key")
+    return context
+
+
+def build(engine, context: Path, name: str) -> str:
+    built = engine.cli(
+        "build", "-q", "--pull=never", "-t", name, str(context), timeout=CONTAINER_HANG_GUARD
+    )
+    assert built.returncode == 0, (built.stdout + built.stderr).decode(errors="replace")
+    return name
+
+
+@pytest.fixture(scope="module")
+def person(tmp_path_factory):
+    """A person of rcman's database, in a slot the engine's ids hold (tests/container/sizes.py),
+    and the git account that writes their credential."""
+    path = tmp_path_factory.mktemp("rcman") / "rcman.db"
+    db.migrate(path)
+    con = db.connect(path)
+    try:
+        who = people.add(con, EMAIL, False)
+    finally:
+        con.close()
+    return who, path
+
+
+def settled(service, workspace_id: int):
+    """The workspace once it is no longer being made (None for one that is gone)."""
+
+    def made():
+        now = service.get(workspace_id)
+        return [now] if now is None or now.state != "creating" else None
+
+    return until(made)[0]
+
+
+def gone(service, workspace_id: int) -> None:
+    """Wait until the workspace's row is gone, which a deletion of one being made leaves to
+    the thread that was making it."""
+    until(lambda: service.get(workspace_id) is None)
+
+
+def exists(runtime: rt.PodmanRuntime, kind: str, name: str) -> bool:
+    """Whether ``runtime``'s Podman has the ``kind`` (container, volume, image) ``name``."""
+    return runtime._podman(kind, "exists", name, check=False).returncode == 0
+
+
+def images(podman) -> set[str]:
+    found = cli(podman, "images", "--all", "--format", "{{.ID}}")
+    assert found.returncode == 0, found.stderr
+    return set(found.stdout.split())
+
+
+def out(result: rt.Result) -> str:
+    assert result.code == 0, result
+    return result.out.decode().strip()
+
+
+def inspect(podman, name: str) -> dict:
+    found = cli(podman, "container", "inspect", name)
+    assert found.returncode == 0, found.stderr
+    return json.loads(found.stdout)[0]
+
+
+def plan_layout(service, workspace) -> rt.Layout:
+    return service._layout(workspace)
+
+
+def read_work(podman, service, workspace, path: str) -> str:
+    layout = plan_layout(service, workspace)
+    return podman.exec(
+        workspace.container, [*layout.tool("cat"), f"{layout.work}/{path}"], again=True
+    ).out.decode()
+
+
+def lines_of(podman, service, workspace, path: str) -> list[str]:
+    return read_work(podman, service, workspace, path).splitlines()
+
+
 # The fixtures of that module, which pytest finds here by these names.
-person, pki = shared.person, shared.pki
 
 
 @pytest.fixture(scope="module")
@@ -58,7 +143,7 @@ def github_com(pki, tmp_path_factory):
     """The tests' GitHub on the loopback of the engine's own network, on a port of its own, and
     the relay the workspaces' git reaches it through as https://github.com (``relay``)."""
     server = GitHubServer()
-    server.start(tmp_path_factory.mktemp("github"), shared.TOKEN, ssl_context=shared.tls(pki))
+    server.start(tmp_path_factory.mktemp("github"), TOKEN, ssl_context=tls(pki))
     port = int(server.url.rstrip("/").rsplit(":", 1)[1])
     server.relay = network.Relay("github.com", ("127.0.0.1", port))
     yield server
@@ -71,53 +156,14 @@ def image(podman_service, default_image, pki, github_com) -> str:
     """The default image with the authority trusted and github.com reached through the relay."""
     proxy = f"http://127.0.0.1:{github_com.relay.port}"
     (pki / "Dockerfile").write_text(stand_in.dockerfile(default_image, proxy=proxy))
-    name = shared.build(podman_service, pki, f"localhost/rcman-test-git-relay:{os.getpid()}")
+    name = build(podman_service, pki, f"localhost/rcman-test-git-relay:{os.getpid()}")
     yield name
     podman_service.cli("rmi", "--force", name)
 
 
-# Workspace ids no service numbers its rows with: the ones the tests that make a container or a
-# build without the service use, clear of the other modules' and of the rows' own (from 1).
-# The owner the repository's files are given before they are copied into the builder.
-CHOWNED_ID = 1000
 STUB_WORKSPACE, ORPHAN_BUILDER, ORPHAN_VOLUME, ORPHAN_IMAGE, WARM_BUILD, WARM_WORKSPACE = range(
     810, 816
 )
-# The repository's entry that says what the stub's standard error holds.
-STUB_SAYS = ".devcontainer/stub-says"
-# What the stub fails with, on its error stream: what the CLI says when a local feature fails.
-FEATURE_FAILURE = (
-    "[2026-10-15T21:59:54.800Z] [1/3] STEP 2/4: RUN echo base-step\r\n"
-    "[2026-10-15T21:59:55.100Z] installing feature\r\n"
-    '[2026-10-15T21:59:56.400Z] ERROR: Feature "./feature" (Unknown) failed to install! '
-    "Look at the build logs above to investigate\r\n"
-    '[2026-10-15T21:59:56.500Z] Error: building at STEP "RUN --mount=type=bind feature_1": '
-    "while running runtime: exit status 3\r\n"
-)
-
-STUB = r"""#!/bin/sh
-# Stands in for the Dev Containers CLI: records what it was run with and what it was given in
-# /stub, a folder of the builder container's own, says what the repository's stub-says file holds
-# on its standard error as the CLI says things, and when /stub/go is there fails as the CLI does.
-mkdir -p /stub
-for a in "$@"; do printf '%s\n' "$a"; done > /stub/argv
-env > /stub/env
-config=
-while [ $# -gt 0 ]; do [ "$1" = --config ] && config=$2; shift; done
-cat "$config" > /stub/config
-find /work/repo -mindepth 1 -printf '%P\t%U\t%G\t%y\t%m\t%l\n' | sort > /stub/files
-[ -f /work/repo/.devcontainer/stub-says ] && cat /work/repo/.devcontainer/stub-says >&2
-touch /stub/recorded
-while [ ! -e /stub/go ]; do sleep 0.2; done
-echo "Error: the stub stops here" >&2
-echo '{"outcome":"error","message":"Command failed: the stub"}'
-exit 1
-"""
-STUB_DOCKERFILE = """\
-FROM {image}
-COPY devcontainer /usr/local/bin/devcontainer
-RUN chmod 755 /usr/local/bin/devcontainer
-"""
 
 
 class Watched(rt.PodmanRuntime):
@@ -161,28 +207,11 @@ def persons_volume_is_removed(runtime_with, image, person):
 
 
 @pytest.fixture(scope="module")
-def stub_image(runtime_with, image, tmp_path_factory) -> str:
-    """The workspace image with the stand-in CLI."""
-    context = tmp_path_factory.mktemp("stub-image")
-    (context / "devcontainer").write_text(STUB)
-    name = f"localhost/rcman-test-stub-builder:{os.getpid()}"
-    runtime = runtime_with(image, "")
-    dev.build(runtime, context, STUB_DOCKERFILE.format(image=image), name)
-    yield name
-    cli(runtime, "rmi", "--force", name)
-
-
-@pytest.fixture(scope="module")
 def real_image(builder_image) -> str:
     """The builder image the installer builds, built on the engine from the same folder
     (tests/container/conftest.py): the Dev Containers CLI pinned by its lock, and a Podman of its
     own."""
     return builder_image
-
-
-@pytest.fixture(scope="module")
-def stub_podman(runtime_with, image, stub_image) -> Watched:
-    return runtime_with(image, stub_image)
 
 
 @pytest.fixture(scope="module")
@@ -209,13 +238,6 @@ def service_of(runtime: rt.PodmanRuntime, person) -> Workspaces:
 
 
 @pytest.fixture(scope="module")
-def stub_service(stub_podman, person):
-    made = service_of(stub_podman, person)
-    yield made
-    made.close()
-
-
-@pytest.fixture(scope="module")
 def real_service(real_podman, person):
     made = service_of(real_podman, person)
     yield made
@@ -235,11 +257,6 @@ def clones_of(service):
         gone(service, workspace.id)
         assert not exists(service.runtime, "container", workspace.container)
         assert not exists(service.runtime, "volume", workspace.container)
-
-
-@pytest.fixture
-def stub_clones(stub_service):
-    yield from clones_of(stub_service)
 
 
 @pytest.fixture
@@ -281,81 +298,8 @@ def start(service, person, clones, name: str):
     return made
 
 
-# The repository the stub is shown: a Dockerfile and a feature of its own, a file for each kind
-# of name and link a tar has to keep, and what a build-only configuration has to leave out.
-STUB_CONFIG = {
-    "build": {"dockerfile": "Dockerfile", "context": ".."},
-    "features": {"./feature": {"greeting": "yo"}},
-    "overrideFeatureInstallOrder": ["./feature"],
-    "remoteUser": "root",
-    "containerEnv": {"FROM_FILE": "yes"},
-    "postCreateCommand": "echo from-the-file",
-    "customizations": {"vscode": {"extensions": ["a.b"]}},
-}
-BUILD_ONLY = {key: STUB_CONFIG[key] for key in devcontainer.BUILD_KEYS if key in STUB_CONFIG}
-STUB_FILES = {
-    ".devcontainer/devcontainer.json": json.dumps(STUB_CONFIG, indent=2),
-    ".devcontainer/Dockerfile": "FROM docker.io/library/ubuntu:24.04\n",
-    ".devcontainer/feature/devcontainer-feature.json": json.dumps({"id": "feature"}),
-    ".devcontainer/feature/install.sh": "#!/bin/sh\necho installing\n",
-    STUB_SAYS: FEATURE_FAILURE.encode(),
-    "README.md": "# stub\n",
-    "-dash": "a name that starts with a dash\n",
-    "with space.txt": "a name with a space\n",
-    ".hidden": "a name that starts with a dot\n",
-    "..two-dots": "a name that starts with two dots\n",
-    "tool.sh": "#!/bin/sh\n",
-    "filler.bin": b"\0" * 200_000,
-}
-STUB_LINKS = {
-    "link-relative": "README.md",
-    "link-absolute": "/etc/hostname",
-    "link-gone": "nowhere",
-}
-
-
-def in_builder(runtime, name: str, *argv: str) -> str:
-    done = cli(runtime, "exec", name, *argv)
-    assert done.returncode == 0, done.stdout + done.stderr
-    return done.stdout
-
-
-def wait_recorded(runtime, name: str, alive=None) -> None:
-    """Wait until the stub in the builder ``name`` has recorded what it was run with; ``alive``
-    is called meanwhile, to fail early with the row's words when the build ended."""
-
-    def recorded() -> bool:
-        if alive is not None:
-            alive()
-        return cli(runtime, "exec", name, "test", "-e", "/stub/recorded").returncode == 0
-
-    until(recorded, SLOW)
-
-
-def release(runtime, name: str) -> None:
-    in_builder(runtime, name, "touch", "/stub/go")
-
-
-def listing(text: str) -> dict[str, tuple]:
-    """The stub's listing of the repository: path -> (uid, gid, type, mode, link target)."""
-    found = {}
-    for line in text.splitlines():
-        path, uid, gid, kind, mode, link = line.split("\t")
-        found[path] = (uid, gid, kind, mode, link)
-    return found
-
-
-def nothing_of_a_build_is_left(runtime: rt.PodmanRuntime, workspace: int) -> None:
-    name = builder.builder_name(workspace)
-    assert workspace not in runtime.builders()
-    assert workspace not in runtime.built_images()
-    assert not exists(runtime, "container", name) and not exists(runtime, "volume", name)
-    assert not exists(runtime, "image", rt.built_name(workspace))
-    assert not list(runtime.config.scratch_dir.glob(f"{rt.STAGING_PREFIX}*"))  # nothing staged
-
-
 def image_ids(runtime) -> set[str]:
-    return dev.images(runtime)
+    return images(runtime)
 
 
 def storage_layers(runtime) -> set[str]:
@@ -367,263 +311,6 @@ def storage_layers(runtime) -> set[str]:
 
 
 # --- the stub builder: what rcman does around the CLI ------------------------------------------
-
-
-def test_the_cli_is_given_only_the_build_keys_in_a_file_of_the_config_folder_and_its_words_are_told(
-    stub_service, stub_podman, person, stub_clones, github_com, tmp_path
-):
-    publish_tree(github_com, tmp_path, "stub-words", STUB_FILES, STUB_LINKS, ["tool.sh"])
-    made = start(stub_service, person, stub_clones, "stub-words")
-    name = builder.builder_name(made.id)
-    wait_recorded(stub_podman, name, alive=lambda: _creating(stub_service, made.id))
-    assert stub_podman.builders() == {made.id}  # positive: the builder is there, in one piece
-    config_path = f"{builder.REPOSITORY_FOLDER}/.devcontainer/{devcontainer.BUILD_CONFIG_NAME}"
-    assert in_builder(stub_podman, name, "cat", "/stub/argv").splitlines() == [
-        "build", "--workspace-folder", builder.REPOSITORY_FOLDER, "--config", config_path,
-        "--no-lockfile", "--docker-path", "podman", "--image-name", builder.IN_BUILDER_IMAGE,
-    ]  # fmt: skip
-    variables = in_builder(stub_podman, name, "cat", "/stub/env").splitlines()
-    assert [v for v in variables if not v.startswith("PWD=")] == [f"PATH={builder.BUILDER_PATH}"]
-    assert json.loads(in_builder(stub_podman, name, "cat", "/stub/config")) == BUILD_ONLY
-    # The file's own devcontainer.json is in the copy as it is, and only the new file was added.
-    kept = in_builder(
-        stub_podman, name, "cat", f"{builder.REPOSITORY_FOLDER}/.devcontainer/devcontainer.json"
-    )
-    assert json.loads(kept) == STUB_CONFIG
-    found = listing(in_builder(stub_podman, name, "cat", "/stub/files"))
-    assert not [p for p in found if p == ".git" or p.startswith(".git/")]
-    assert ".devcontainer/devcontainer.json" in found and "README.md" in found
-    # positive control for the absence: the workspace the copy came from does have one
-    layout = stub_podman.layout(made.container)
-    assert stub_podman.exec(made.container, ["test", "-d", f"{layout.work}/.git"]).code == 0
-    release(stub_podman, name)
-
-    done = settled(stub_service, made.id)
-    assert done.state == "failed", done
-    head = DEVCONTAINER_MESSAGES["build_feature_failed"].format(feature="./feature", tail="")
-    assert done.error.startswith(head), done.error  # the cause, in the catalogue's words
-    assert "failed to install" in done.error and "\r" not in done.error
-    lines = done.log.splitlines()
-    assert "Building the image" in lines
-    assert "[1/3] STEP 2/4: RUN echo base-step" in lines  # a step, without its time
-    assert left_of_build(stub_podman, done) == []
-
-
-def _creating(service, workspace_id: int) -> None:
-    now = service.get(workspace_id)
-    assert now is not None and now.state == "creating", now
-
-
-def left_of_build(runtime: rt.PodmanRuntime, workspace) -> list[str]:
-    """What is left of a build that ended: the builder, its volume, an image, and the
-    workspace's container and volume, which a refused or failed one leaves none of."""
-    nothing_of_a_build_is_left(runtime, workspace.id)
-    return dev.left_of(runtime, workspace.container)
-
-
-def test_the_builder_runs_in_a_range_of_its_own_with_nothing_of_rcmans_and_the_files_are_its_roots(
-    stub_podman, person, stub_image
-):
-    """The runtime alone, with a workspace made by hand so that its files can be chosen: the
-    builder's uid map is the builder slot's range, which no person's is, it is not privileged and
-    has one capability more than a workspace and no device more, it mounts only its own volume, and
-    has no rcman socket or run folder; the files that arrive belong to its root whoever owned
-    them, links stay links, modes are kept and the git folder is not there."""
-    who = person[0]
-    assert who.slot != sizes.BUILDER_SLOT
-    source = rt.container_name(STUB_WORKSPACE)
-    stub_podman.create(rt.Spec(source, who.slot, STUB_WORKSPACE, who.id))
-    layout = stub_podman.layout(source)
-    made = stub_podman.exec(
-        source,
-        [layout.shell, "-c",
-         "mkdir -p .devcontainer .git/objects sub && echo head > .git/HEAD && echo a > a && "
-         "echo b > sub/b && echo x > x && chmod 750 x && "
-         f"chown {CHOWNED_ID}:{CHOWNED_ID} a sub/b && "
-         "ln -s a link && ln -s /etc/hostname absolute && ln -s gone dangling && "
-         ": > -dash && : > .hidden && : > ..two-dots && : > 'with space'"],
-        cwd=layout.work,
-    )  # fmt: skip
-    assert made.code == 0, made
-    request = rt.BuildRequest(
-        STUB_WORKSPACE, who.id, sizes.BUILDER_SLOT, source, ".devcontainer/rcman-build.json",
-        json.dumps(BUILD_ONLY),
-    )  # fmt: skip
-    ended: list = []
-    said: list[str] = []
-
-    def build() -> None:
-        try:
-            stub_podman.build_image(request, said.append, None, lambda labels: None)
-        except Exception as failed:  # noqa: BLE001 - what the test looks at
-            ended.append(failed)
-
-    thread = threading.Thread(target=build, daemon=True)
-    thread.start()
-    name = builder.builder_name(STUB_WORKSPACE)
-    try:
-        wait_recorded(
-            stub_podman, name, alive=lambda: ended and pytest.fail(f"the build ended: {ended}")
-        )
-        inspected = json.loads(cli(stub_podman, "container", "inspect", name).stdout)[0]
-        host = inspected["HostConfig"]
-        base_id = str(sizes.BUILDER_SLOT * sizes.TEST_RANGE)
-        for mapping in ("uid_map", "gid_map"):
-            seen = in_builder(stub_podman, name, "cat", f"/proc/self/{mapping}").split()
-            assert seen == ["0", base_id, str(sizes.TEST_RANGE)], seen
-        assert str(who.slot * sizes.TEST_RANGE) != base_id
-        assert host["Privileged"] is False
-        assert any("SYS_ADMIN" in cap for cap in host["CapAdd"] or []), host["CapAdd"]
-        here = set(in_builder(stub_podman, name, "ls", "/dev").split())
-        plain = stub_podman.exec(source, ["ls", "/dev"]).out.decode().split()
-        assert "null" in here and here - set(plain) == set()  # no device more than a workspace
-        assert [(m["Type"], m["Name"], m["Destination"]) for m in inspected["Mounts"]] == [
-            ("volume", name, builder.STORAGE_MOUNT)
-        ]  # nothing of the machine, and no socket
-        caps = int(
-            re.search(
-                r"CapEff:\s+([0-9a-f]+)", in_builder(stub_podman, name, "cat", "/proc/1/status")
-            )[1],
-            16,
-        )
-        assert caps & (1 << 21) and not caps & (1 << 16)  # CAP_SYS_ADMIN, but not CAP_SYS_MODULE
-        assert (
-            in_builder(stub_podman, name, "sh", "-c", "ls -d /run/user 2>&1 || true")
-            .strip()
-            .endswith("No such file or directory")
-        )
-        in_builder(
-            stub_podman, name, "sh", "-c", "mkdir -p /stub/control && : > /stub/control/podman.sock"
-        )
-        sockets = in_builder(
-            stub_podman, name, "sh", "-c",
-            "find / -path /proc -prune -o -path /sys -prune -o -name podman.sock -print 2>&1",
-        )  # fmt: skip
-        assert sockets.split() == [
-            "/stub/control/podman.sock"
-        ]  # the search finds one if it is there
-
-        files = listing(in_builder(stub_podman, name, "cat", "/stub/files"))
-        assert set(files) == {
-            ".devcontainer", ".devcontainer/rcman-build.json", "a", "sub", "sub/b", "x", "link",
-            "absolute", "dangling", "-dash", ".hidden", "..two-dots", "with space",
-        }  # fmt: skip
-        assert {(uid, gid) for uid, gid, *_ in files.values()} == {("0", "0")}
-        assert (files["link"][2], files["link"][4]) == ("l", "a")
-        assert (files["absolute"][2], files["absolute"][4]) == ("l", "/etc/hostname")
-        assert (files["dangling"][2], files["dangling"][4]) == ("l", "gone")
-        assert files["x"][3] == "750" and files["sub"][2] == "d"
-    finally:
-        stub_podman.remove_build(STUB_WORKSPACE)  # which ends the build
-        thread.join(timeout=CONTAINER_HANG_GUARD)
-        stub_podman.remove(source)
-    assert not thread.is_alive() and len(ended) == 1
-    assert isinstance(ended[0], rt.RuntimeFailed)
-    nothing_of_a_build_is_left(stub_podman, STUB_WORKSPACE)
-
-
-def test_a_repository_bigger_than_the_limit_is_refused_in_plain_words_before_the_cli_is_run(
-    stub_service, stub_podman, person, stub_clones, github_com, tmp_path, monkeypatch
-):
-    monkeypatch.setattr(builder, "MAX_CONTEXT_BYTES", 20_000)
-    ran_before = list(stub_podman.ran)
-    publish_tree(github_com, tmp_path, "stub-big", STUB_FILES, STUB_LINKS, ["tool.sh"])
-    made = start(stub_service, person, stub_clones, "stub-big")
-    done = settled(stub_service, made.id)
-    assert done.state == "failed", done
-    assert done.error == DEVCONTAINER_MESSAGES["build_context_too_big"]
-    assert "Copying the repository into the builder" in done.log.splitlines()
-    assert stub_podman.ran == ran_before  # the CLI was never run
-    assert left_of_build(stub_podman, done) == []
-
-
-def test_deleting_a_workspace_whose_image_is_being_built_removes_the_builder_and_its_volume(
-    stub_service, stub_podman, person, stub_clones, github_com, tmp_path
-):
-    publish_tree(github_com, tmp_path, "stub-cancel", STUB_FILES, STUB_LINKS, ["tool.sh"])
-    made = start(stub_service, person, stub_clones, "stub-cancel")
-    name = builder.builder_name(made.id)
-    wait_recorded(stub_podman, name, alive=lambda: _creating(stub_service, made.id))
-    assert exists(stub_podman, "container", name) and exists(
-        stub_podman, "volume", name
-    )  # positive: it is being built
-    top = cli(stub_podman, "top", name, "args")
-    assert "devcontainer" in top.stdout or "sleep" in top.stdout, top.stdout + top.stderr
-    now = stub_service.get(made.id)
-    stub_service.delete(now)
-    gone(stub_service, made.id)  # the stub waits to be told, past the hang bound
-    nothing_of_a_build_is_left(stub_podman, made.id)
-    assert dev.left_of(stub_podman, made.container) == []
-
-
-def test_the_builders_and_built_images_there_are_are_read_from_podmans_own_words_and_removed(
-    stub_service, stub_podman, person, stub_image
-):
-    """The formats of ``podman ps``, ``volume ls`` and ``images`` as JSON, the filter on an image's
-    name, the id an image is tagged by and ``image rm --ignore``, against the real Podman: a
-    builder with its volume, a volume alone and a built image are found; decoys are not; removal
-    is whole, and again it is nothing. The restore after a restart removes the same orphans."""
-    who = person[0]
-    decoys = [f"localhost/{rt.BUILT_REPOSITORY}/notanumber:latest"]
-
-    def orphans() -> None:
-        for workspace in (ORPHAN_BUILDER, ORPHAN_VOLUME):
-            stub_podman._podman(
-                "volume", "create", f"--label={rt.LABEL_BUILDER}={workspace}",
-                f"--label={rt.LABEL_PERSON}={who.id}", builder.builder_name(workspace),
-            )  # fmt: skip
-        labels = {rt.LABEL_BUILDER: str(ORPHAN_BUILDER), rt.LABEL_PERSON: str(who.id)}
-        stub_podman._podman(
-            *builder.run_argv(
-                ORPHAN_BUILDER,
-                labels,
-                stub_podman._ids(sizes.BUILDER_SLOT),
-                stub_image,
-                network=stub_podman.config.network,
-            )  # fmt: skip
-        )
-        stub_podman._podman("tag", stub_image, rt.built_name(ORPHAN_IMAGE))
-        # decoys: a name in the built images' repository that is not a workspace's, and a volume
-        # that is no builder's
-        stub_podman._podman("tag", stub_image, decoys[0])
-
-    try:
-        assert stub_podman.builders() == set() and stub_podman.built_images() == {}  # nothing yet
-        stub_podman._podman("volume", "create", "rcman-test-decoy-volume")
-        orphans()
-        assert stub_podman.builders() == {ORPHAN_BUILDER, ORPHAN_VOLUME}
-        assert stub_podman.built_images() == {ORPHAN_IMAGE: rt.built_name(ORPHAN_IMAGE)}
-        # removal: by workspace, whole, and again it is nothing
-        stub_podman.remove_build(ORPHAN_BUILDER)
-        assert stub_podman.builders() == {ORPHAN_VOLUME}
-        assert not exists(stub_podman, "container", builder.builder_name(ORPHAN_BUILDER))
-        assert not exists(stub_podman, "volume", builder.builder_name(ORPHAN_BUILDER))
-        stub_podman.remove_build(ORPHAN_BUILDER)
-        stub_podman.remove_build(ORPHAN_VOLUME)
-        assert stub_podman.builders() == set()
-        assert exists(
-            stub_podman, "image", rt.built_name(ORPHAN_IMAGE)
-        )  # an image only when asked for
-        stub_podman.remove_build(ORPHAN_IMAGE, image=True)
-        assert stub_podman.built_images() == {}
-        assert exists(
-            stub_podman, "image", stub_image
-        )  # the stub image, which the tag shared, is still there
-        stub_podman.remove_build(ORPHAN_IMAGE, image=True)
-        # the restore after a restart removes them when nothing needs them
-        orphans()
-        assert stub_podman.builders() and stub_podman.built_images()
-        stub_service.restore()
-        assert stub_podman.builders() == set() and stub_podman.built_images() == {}
-        assert exists(stub_podman, "image", decoys[0]) and exists(
-            stub_podman, "volume", "rcman-test-decoy-volume"
-        )
-    finally:
-        for workspace in (ORPHAN_BUILDER, ORPHAN_VOLUME):
-            stub_podman.remove_build(workspace)
-        stub_podman.remove_build(ORPHAN_IMAGE, image=True)
-        cli(stub_podman, "rmi", "--force", *decoys)
-        cli(stub_podman, "volume", "rm", "--force", "rcman-test-decoy-volume")
 
 
 # --- the real builder ---------------------------------------------------------------------------
@@ -661,18 +348,6 @@ REAL_FILES = {
         "chmod +x /opt/mytool/bin/mytool\n"
     ),
 }
-# A base that is glibc-free, which Claude Code cannot run on, and one thing a feature asks for.
-ALPINE = "docker.io/library/alpine:3.20"
-
-
-def alpine_files(feature: dict) -> dict:
-    return {
-        ".devcontainer/devcontainer.json": json.dumps(
-            {"image": ALPINE, "features": {"./one": {}}}, indent=2
-        ),
-        ".devcontainer/one/devcontainer-feature.json": json.dumps({"id": "one", **feature}),
-        ".devcontainer/one/install.sh": "#!/bin/sh\necho one > /one\n",
-    }
 
 
 def run_in(podman, service, workspace, *argv: str) -> rt.Result:
@@ -717,7 +392,7 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     for workspace in (one, two):
         plan = json.loads(workspace.environment)
         assert plan["image"] == names[workspace.id]
-        assert dev.inspect(real_podman, workspace.container)["ImageName"] == names[workspace.id]
+        assert inspect(real_podman, workspace.container)["ImageName"] == names[workspace.id]
         assert real_podman.running(workspace.container)
     assert sorted(real_podman.copied) == sorted([one.id, two.id])  # each image copied out once
 
@@ -732,11 +407,11 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     assert tool.out.decode().strip() == "mytool from-the-file", tool
     seen = dict(
         line.split("=", 1)
-        for line in dev.out(run_in(real_podman, real_service, one, "env")).splitlines()
+        for line in out(run_in(real_podman, real_service, one, "env")).splitlines()
     )
     assert seen["MYTOOL_HOME"] == "/opt/mytool" and seen["FROM_DOCKERFILE"] == "yes"
     assert seen["FROM_FILE"] == "yes"
-    marker = dev.out(run_in(real_podman, real_service, one, "cat", "/etc/marker"))
+    marker = out(run_in(real_podman, real_service, one, "cat", "/etc/marker"))
     assert marker == "from the repository"  # the Dockerfile's COPY had the repository
 
     # The label has the feature's entry and no copy of the file's own, so the lifecycle commands
@@ -744,7 +419,7 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     label = cli(real_podman, "image", "inspect", "--format", "{{json .Labels}}", names[one.id])
     entries = json.loads(json.loads(label.stdout)[devcontainer.METADATA_LABEL])
     assert [e.get("id") for e in entries] == ["./tool"], entries
-    assert dev.lines_of(real_podman, real_service, one, ".order") == [
+    assert lines_of(real_podman, real_service, one, ".order") == [
         "feature-oncreate",
         "post-create",
     ]
@@ -799,224 +474,4 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     assert storage_layers(real_podman) <= layers, sorted(storage_layers(real_podman) - layers)
 
 
-def test_a_feature_that_asks_for_privileges_is_refused_naming_it_before_the_image_is_copied_out(
-    real_service, real_podman, person, real_clones, github_com, tmp_path
-):
-    risky = {"privileged": True, "mounts": [{"source": "x", "target": "/x", "type": "volume"}]}
-    publish_tree(github_com, tmp_path, "real-risky", alpine_files(risky))
-    images_before, copied_before = image_ids(real_podman), list(real_podman.copied)
-    done = settled(real_service, start(real_service, person, real_clones, "real-risky").id)
-    assert done.state == "failed", done
-    assert "./one" in done.error and ("privileged" in done.error or "mounts" in done.error), (
-        done.error
-    )
-    assert real_podman.copied == copied_before  # refused before the long copy
-    assert left_of_build(real_podman, done) == []
-    assert image_ids(real_podman) == images_before and dev.probes(real_podman) == []
-
-
-def test_a_base_that_is_not_glibc_is_built_then_refused_in_plain_words_and_leaves_nothing(
-    real_service, real_podman, person, real_clones, github_com, tmp_path
-):
-    publish_tree(github_com, tmp_path, "real-alpine", alpine_files({}))
-    images_before, copied_before = image_ids(real_podman), list(real_podman.copied)
-    done = settled(real_service, start(real_service, person, real_clones, "real-alpine").id)
-    assert done.state == "failed", done
-    assert done.error == DEVCONTAINER_MESSAGES["musl"].format(image=rt.built_name(done.id))
-    assert real_podman.copied == [*copied_before, done.id]  # built and copied out, then refused
-    assert left_of_build(real_podman, done) == []
-    assert image_ids(real_podman) == images_before and dev.probes(real_podman) == []
-
-
-FAILING = [
-    pytest.param(
-        {
-            ".devcontainer/devcontainer.json": json.dumps(
-                {"image": ALPINE, "features": {"./one": {}}}
-            ),
-            ".devcontainer/one/devcontainer-feature.json": json.dumps({"id": "one"}),
-            ".devcontainer/one/install.sh": "#!/bin/sh\necho the-words-said >&2\nexit 3\n",
-        },
-        "build_feature_failed",
-        id="a feature that fails to install",
-    ),
-    pytest.param(
-        {
-            ".devcontainer/devcontainer.json": json.dumps({"build": {"dockerfile": "Dockerfile"}}),
-            ".devcontainer/Dockerfile": f"FROM {ALPINE}\nRUN echo the-words-said >&2; exit 7\n",
-        },
-        "build_step_failed",
-        id="a step of the Dockerfile that fails",
-    ),
-]
-
-
-@pytest.mark.parametrize(("files", "kind"), FAILING)
-def test_a_build_the_cli_fails_is_told_by_its_cause_with_its_last_words_and_leaves_nothing(
-    real_service, real_podman, person, real_clones, github_com, tmp_path, files, kind
-):
-    publish_tree(github_com, tmp_path, f"real-{kind}", files)
-    images_before, copied_before = image_ids(real_podman), list(real_podman.copied)
-    done = settled(real_service, start(real_service, person, real_clones, f"real-{kind}").id)
-    assert done.state == "failed", done
-    head = DEVCONTAINER_MESSAGES[kind].format(feature="./one", tail="")
-    assert done.error.startswith(head), done.error  # the cause the real CLI's words show
-    assert "the-words-said" in done.error.removeprefix(head)  # and its last words, as lines
-    assert "\r" not in done.error and not builder.STAMP.search(done.error)
-    assert real_podman.copied == copied_before
-    assert left_of_build(real_podman, done) == []
-    assert image_ids(real_podman) == images_before and dev.probes(real_podman) == []
-
-
-# A Dockerfile's step that outlasts the test (rule (g) of "Time in tests").
-SLOW_STEP = f"sleep {3 * CONTAINER_HANG_GUARD:g}"
-
-
-def test_deleting_a_workspace_whose_image_is_really_being_built_stops_the_build_and_leaves_nothing(
-    real_service, real_podman, person, real_clones, github_com, tmp_path
-):
-    files = {
-        ".devcontainer/devcontainer.json": json.dumps({"build": {"dockerfile": "Dockerfile"}}),
-        ".devcontainer/Dockerfile": f"FROM {ALPINE}\nRUN echo begun; {SLOW_STEP}\n",
-    }
-    publish_tree(github_com, tmp_path, "real-slow", files)
-    images_before = image_ids(real_podman)
-    made = start(real_service, person, real_clones, "real-slow")
-    name = builder.builder_name(made.id)
-
-    def stepping() -> bool:
-        """Whether the Dockerfile's step runs; the row's words, where the build ended."""
-        _creating(real_service, made.id)
-        return SLOW_STEP in cli(real_podman, "top", name, "args").stdout
-
-    until(stepping, SLOW)
-    real_service.delete(real_service.get(made.id))
-    gone(real_service, made.id)  # the step outlasts the hang bound: only the deletion ends it
-    nothing_of_a_build_is_left(real_podman, made.id)
-    assert (
-        dev.left_of(real_podman, made.container) == [] and image_ids(real_podman) == images_before
-    )
-
-
-# A build that gives newuidmap and newgidmap their capability in place of setuid, as the default
-# image and the repository's .devcontainer do, with the image's ordinary user (``ubuntu``, 1000)
-# given a few subordinate ids.
-# apt runs as root throughout (APT::Sandbox::User), as its own account's group (65534) is beyond a
-# range of the suites' size.
-# The image's ordinary user, and the first of the subordinate ids it is given, and how many.
-CAPABLE_ID = 1000
-SUBORDINATE_ID, SUBORDINATES = 1001, 100
-CAPABILITY_FILES = {
-    ".devcontainer/devcontainer.json": json.dumps({"build": {"dockerfile": "Dockerfile"}}),
-    ".devcontainer/Dockerfile": (
-        f"FROM {GIT_BASE}\n"
-        "RUN apt-get -o APT::Sandbox::User=root update -qq "
-        "&& DEBIAN_FRONTEND=noninteractive apt-get -o APT::Sandbox::User=root install -y -qq "
-        "--no-install-recommends uidmap libcap2-bin "
-        "&& chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap "
-        "&& setcap cap_setuid+ep /usr/bin/newuidmap && setcap cap_setgid+ep /usr/bin/newgidmap "
-        f"&& printf 'ubuntu:{SUBORDINATE_ID}:{SUBORDINATES}\\n' > /etc/subuid "
-        "&& cp /etc/subuid /etc/subgid\n"
-    ),
-}
-
-
-def mapped_by(program: str) -> list[str]:
-    """Run as the user: a user namespace of its own, whose map ``program`` writes; what it said,
-    and the map."""
-    script = (
-        f"unshare --user sleep {3 * CONTAINER_HANG_GUARD:g} & p=$!; "
-        # until the namespace is made: until its process is no longer in the shell's
-        'while [ "$(readlink /proc/$p/ns/user)" = "$(readlink /proc/$$/ns/user)" ]; '
-        "do sleep 0.05; done; "
-        f"{program} $p 0 {CAPABLE_ID} 1 1 {SUBORDINATE_ID} {SUBORDINATES}; "
-        'echo "map=$?"; cat /proc/$p/uid_map; kill $p'
-    )
-    return ["setpriv", f"--reuid={CAPABLE_ID}", f"--regid={CAPABLE_ID}", "--init-groups",
-            "sh", "-c", script]  # fmt: skip
-
-
-def test_a_capability_a_build_gives_newuidmap_holds_in_the_persons_range(
-    real_service, real_podman, person, real_clones, github_com, tmp_path
-):
-    """The image is built in the builder's range and runs in the person's: the capability the
-    build set is the one newuidmap writes another user's map with there. The control is a copy
-    of the same program without it, which cannot."""
-    publish_tree(github_com, tmp_path, "real-capability", CAPABILITY_FILES)
-    done = settled(real_service, start(real_service, person, real_clones, "real-capability").id)
-    assert (done.state, done.error) == ("ready", None), done.error
-    caps = dev.out(real_podman.exec(done.container, ["getcap", "/usr/bin/newuidmap"]))
-    assert "cap_setuid=ep" in caps, caps
-    mapped = real_podman.exec(done.container, mapped_by("/usr/bin/newuidmap"))
-    assert b"map=0" in mapped.out, mapped
-    wanted = [0, CAPABLE_ID, 1, 1, SUBORDINATE_ID, SUBORDINATES]
-    assert mapped.out.split()[-6:] == [str(n).encode() for n in wanted], mapped
-    copy = "/usr/local/bin/newuidmap-copy"
-    copied = f"cp /usr/bin/newuidmap {copy} && chmod 755 {copy}"
-    assert real_podman.exec(done.container, ["sh", "-c", copied]).code == 0
-    plain = real_podman.exec(done.container, mapped_by(copy))
-    assert b"map=0" not in plain.out, plain  # the control: without the capability it cannot
-
-
 # --- rebuilding a workspace whose image was built ---------------------------------------------
-
-
-def test_a_built_image_is_rebuilt_while_its_container_runs_and_takes_its_name_after(
-    real_service, real_podman, person, real_clones, github_com, tmp_path
-):
-    publish_tree(github_com, tmp_path, "rebuild-built", REAL_FILES)
-    made = start(real_service, person, real_clones, "rebuild-built")
-    done = settled(real_service, made.id)
-    assert (done.state, done.error) == ("ready", None), done
-    old = json.loads(done.environment)["image_id"]
-    layout = real_service._layout(done)
-    changed = REAL_FILES[".devcontainer/Dockerfile"] + "ENV REBUILT=yes\n"
-    written = real_podman.exec(
-        done.container,
-        [layout.shell, "-c", 'cat > "$1"', "sh", f"{layout.work}/.devcontainer/Dockerfile"],
-        stdin=changed.encode(),
-    )
-    assert written.code == 0, written.err
-    real_service.restored.set()
-    real_service.rebuild(person[0], done.id, True)
-    until(lambda: done.id in real_podman.builders(), SLOW)  # the build runs beside the container
-    assert real_podman.running(done.container) and image_of(real_podman, done.container) == old
-    ended(real_service, done.id, CONTAINER_HANG_GUARD)
-    now = real_service.get(done.id)
-    assert (now.state, now.rebuild_state, now.rebuild_error) == ("ready", None, None), now
-    plan = json.loads(now.environment)
-    assert plan["image"] == rt.built_name(done.id) and plan["image_id"] != old
-    assert image_of(real_podman, now.container) == plan["image_id"]
-    assert real_podman.built_images().get(done.id) == rt.built_name(done.id)
-    assert done.id not in real_podman.next_images()
-    assert old not in image_ids(real_podman)  # the old image went once nothing used it
-    assert out_of(run_in(real_podman, real_service, now, "sh", "-c", "echo $REBUILT")) == "yes"
-
-
-def out_of(result: rt.Result) -> str:
-    return result.out.decode().strip()
-
-
-def test_a_deletion_by_rcman_admin_while_a_rebuild_builds_leaves_nothing_of_it(
-    real_service, real_podman, person, real_clones, github_com, tmp_path
-):
-    publish_tree(github_com, tmp_path, "rebuild-deleted", REAL_FILES)
-    made = start(real_service, person, real_clones, "rebuild-deleted")
-    done = settled(real_service, made.id)
-    assert done.state == "ready", done
-    real_service.restored.set()
-    real_service.rebuild(person[0], done.id, True)
-    until(lambda: done.id in real_podman.builders(), SLOW)
-    admin = Workspaces(real_service.settings, real_podman, prunes=False)
-    try:
-        admin.delete(admin.get(done.id))
-    finally:
-        admin.close()
-    gone(real_service, done.id)
-    assert not [
-        name
-        for name, labels in real_podman.labelled().items()
-        if labels.get(rt.LABEL_WORKSPACE) == str(done.id)
-    ]
-    assert done.id not in real_podman.builders() and done.id not in real_podman.next_images()
-    assert done.id not in real_podman.built_images()

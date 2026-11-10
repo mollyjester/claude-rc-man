@@ -11,7 +11,9 @@ slows the shell, and nothing is queued. Nothing typed or shown is kept, recorded
 
 A terminal is open once its shell has written its pidfile: on Podman, ending the client does
 not end its exec, so a shell that had not named itself could not be found to end. A terminal
-ends when its shell does, when it is replaced, and when it is told to; ending it closes the pty,
+ends when its shell does, when it is replaced, and when it is told to: as its workspace is
+removed, rebuilt or stopped (``Workspaces.on_removing``, ``on_rebuilding``, ``on_stopping``),
+among others; ending it closes the pty,
 ends the program on it, and then, through the workspace's channel, ends the shell's session -
 every process in it, by the leader its pidfile named - and nothing that left the session.
 Opening, ending and sweeping a workspace's terminals take turns under its lock, and a terminal
@@ -43,6 +45,7 @@ from rcman.audit import (
     TERMINAL_REPLACED,
     WORKSPACE_GONE,
     WORKSPACE_REBUILDING,
+    WORKSPACE_STOPPED,
 )
 from rcman.problems import Problem
 from rcman.runtime import Launch, Layout, RuntimeFailed
@@ -58,6 +61,7 @@ __all__ = [
     "TERMINAL_REPLACED",
     "WORKSPACE_GONE",
     "WORKSPACE_REBUILDING",
+    "WORKSPACE_STOPPED",
     "Terminal",
     "Terminals",
     "end_leader",
@@ -407,6 +411,7 @@ class Terminals:
         self._sign_outs: dict[int, int] = {}
         service.on_removing = self.removing
         service.on_rebuilding = self.rebuilding
+        service.on_stopping = self.stopping
         service.on_kept_running = self.kept_running
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -559,6 +564,10 @@ class Terminals:
         """The workspace's container is about to be replaced by a rebuild: end its terminal
         while the old one is still there."""
         self._from_thread(self.end_workspace, workspace.id, WORKSPACE_REBUILDING)
+
+    def stopping(self, workspace: Workspace) -> None:
+        """The workspace's container is about to be stopped: end its terminal while it runs."""
+        self._from_thread(self.end_workspace, workspace.id, WORKSPACE_STOPPED)
 
     def kept_running(self, workspace: Workspace) -> None:
         """The workspace's container ran on while rcman did not: sweep it."""

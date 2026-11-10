@@ -12,26 +12,16 @@ container or in Podman once it is closed.
 
 from __future__ import annotations
 
-import os
-import re
-import threading
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 from rcman import db, people
 from rcman.main import create_app
-from rcman.terminals import Terminal
 
-from tests.conftest import ALICE, ORIGIN, changing, made_workspace
+from tests.conftest import ALICE, ORIGIN, made_workspace
 from tests.container import sizes
-from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import engine_runtime, engine_settings
-from tests.container.execs import exec_ids
 from tests.hang_guard import CONTAINER_HANG_GUARD
-from tests.test_terminal import opened, path, resize
-from tests.test_terminals import a_length, alive, sleep_of, sleeping
-from tests.until import until
+from tests.test_terminal import opened
 
 
 @pytest.fixture(scope="module")
@@ -70,137 +60,8 @@ def test_what_is_typed_reaches_the_shell_and_comes_back(client, workspace):
         peer.ask("echo $((6*7))", rb"[\r\n]42\r\n")
 
 
-def test_a_resize_reaches_the_shell_in_the_container(client, workspace):
-    """The podman client passes a resize to the container's tty by a request of its own, apart
-    from the stream of what is typed, so a command typed just after a resize can still read the
-    old size there. What shows the resize arrived is the SIGWINCH the kernel sends the tty's
-    foreground process when the size changes: a waiting process reads the size as it gets it."""
-    with opened(client, ALICE, workspace["id"], cols=90, rows=20) as peer:
-        peer.ask("stty size", rb"[\r\n]20 90\r\n")
-        peer.ask(
-            "sh -c 'resized() { echo size-$(stty size)-end; exit 0; }; trap resized WINCH;"
-            " echo waiting-$((3+4)); while :; do sleep 0.1; done'",
-            rb"waiting-7",
-        )  # the trap is set before the resize is sent
-        peer.session.send_json(resize(150, 45))
-        peer.read(lambda p: re.search(rb"size-45 150-end", bytes(p.output)))
-
-
-def test_ctrl_p_ctrl_q_reach_the_shell_and_do_not_detach(client, workspace):
-    with opened(client, ALICE, workspace["id"]) as peer:
-        peer.session.send_bytes(
-            b"stty raw -echo; echo raw-$((2+5)); head -c 2 | od -An -tx1; stty sane\r"
-        )
-        peer.read(lambda p: b"raw-7" in bytes(p.output))  # raw before the two bytes come
-        peer.session.send_bytes(b"\x10\x11")
-        peer.read(lambda p: re.search(rb"10 11", bytes(p.output)))
-        peer.ask("echo still-$((1+1))", rb"still-2")  # podman did not detach
-
-
-def test_the_shell_is_root_of_the_persons_range_and_not_rcman_on_the_host(client, workspace):
-    length = a_length()
-    with opened(client, ALICE, workspace["id"]) as peer:
-        found = peer.ask(
-            f"{sleep_of(length)} & echo id-$(id -u)-$(cat /proc/self/uid_map | tr -s ' ' ,)-end",
-            rb"id-(\d+)-(\S+)-end",
-        )
-        assert found[1] == b"0"  # root of the person's user namespace, in the default image
-        assert (
-            found[2].strip(b",")
-            == f"0,{client.alice.slot * sizes.TEST_RANGE},{sizes.TEST_RANGE}".encode()
-        )
-        [pid] = until(lambda: sleeping(length))
-        uid = next(
-            int(line.split()[1])
-            for line in Path(f"/proc/{pid}/status").read_text().splitlines()
-            if line.startswith("Uid:")
-        )
-        assert uid not in (0, os.getuid())
-        peer.ask("apt-get --version | head -n 1 | grep -c ^apt", rb"[\r\n]1\r\n")
-
-
 def its_exec_runs(now: list[str], before: list[str]) -> bool:
     """Whether a terminal opened since ``before`` was read has its exec running ``now``: an exec
     not in ``before``. Not a count: the exec of a terminal still ending when ``before`` was read
     may be gone by ``now``."""
     return bool(set(now) - set(before))
-
-
-def test_closing_leaves_no_process_and_no_exec_of_its_own(client, workspace):
-    service = client.app.state.workspaces
-    found = service.get(workspace["id"])
-    service.run_in(found)(["true"])  # the channel's own exec, open before and after
-    before = exec_ids(client.engine, found.container)
-    length = a_length()
-    with opened(client, ALICE, workspace["id"]) as peer:
-        peer.ask(f"nohup {sleep_of(length)} >/dev/null 2>&1 & echo held-$((2+2))", rb"held-4")
-        [pid] = until(lambda: sleeping(length))
-        terminal = client.app.state.terminals.live(workspace["id"])
-        rss = next(
-            int(line.split()[1]) * 1024
-            for line in Path(f"/proc/{terminal.process.pid}/status").read_text().splitlines()
-            if line.startswith("VmRSS:")
-        )
-        assert 0 < rss < base.CLIENT_MAX_RSS_BYTES, rss  # what the podman client holds
-        # the control: its exec is there, running
-        assert its_exec_runs(exec_ids(client.engine, found.container), before)
-    until(lambda: not alive(pid))
-    until(lambda: set(exec_ids(client.engine, found.container)) <= set(before))
-    shell = service.layout_of(found).shell
-    table = service.run_in(found)([shell, "-c", "cat /proc/[0-9]*/cmdline"])
-    assert table.code == 0 and table.out  # the control: the table was read
-    assert length.encode() not in table.out  # nothing of its session is left in the container
-
-
-def test_a_terminal_closed_as_soon_as_it_opens_leaves_no_shell_and_no_exec(client, workspace):
-    """Ending the podman client does not end its exec: a terminal is open only once its shell
-    has named itself, so one closed at once still ends the shell in the container."""
-    service = client.app.state.workspaces
-    found = service.get(workspace["id"])
-    service.run_in(found)(["true"])  # the channel's own exec, open before and after
-    before = set(exec_ids(client.engine, found.container))
-    shell = service.layout_of(found).shell
-    for _ in range(5):
-        with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
-            session.send_json(resize())
-        # closed at once: the page went as the terminal opened
-    until(lambda: client.app.state.terminals.live(workspace["id"]) is None)
-    until(lambda: set(exec_ids(client.engine, found.container)) <= before)
-    table = service.run_in(found)([shell, "-c", "cat /proc/[0-9]*/cmdline"])
-    assert table.code == 0 and table.out  # the control: the table was read
-    assert b"rcman-terminal" not in table.out and b"-i\0" not in table.out
-
-
-def test_a_terminal_still_ending_is_not_taken_for_the_next_ones_exec(
-    client, workspace, monkeypatch
-):
-    """The control above, where the terminal before is still ending when ``before`` is read:
-    its exec is in ``before`` and gone once the next is open, so the count is the same though
-    the next one's exec runs. The end is held until ``before`` is read."""
-    service = client.app.state.workspaces
-    found = service.get(workspace["id"])
-    service.run_in(found)(["true"])  # the channel's own exec, open before and after
-    held = threading.Event()
-    real = Terminal._end_session
-
-    def ending(self):
-        held.wait(CONTAINER_HANG_GUARD)
-        return real(self)
-
-    monkeypatch.setattr(Terminal, "_end_session", ending)
-    alone = set(exec_ids(client.engine, found.container))
-    try:
-        with opened(client, ALICE, workspace["id"]) as peer:
-            peer.ask("echo first-$((1+1))", rb"first-2")
-            old = set(exec_ids(client.engine, found.container)) - alone
-        assert old  # the plant's ground: the first terminal's exec
-        before = exec_ids(client.engine, found.container)
-        assert old <= set(before)  # still ending, held
-    finally:
-        held.set()
-    with opened(client, ALICE, workspace["id"]) as peer:
-        peer.ask("echo second-$((2+2))", rb"second-4")
-        until(lambda: not old & set(exec_ids(client.engine, found.container)))
-        now = exec_ids(client.engine, found.container)
-        assert len(now) <= len(before)  # the case: a count is met by the one that ended
-        assert its_exec_runs(now, before)

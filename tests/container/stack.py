@@ -1,6 +1,5 @@
 #!/usr/bin/python3
-"""The whole of rcman in one container of the tests' engine, for the checks of the whole stack
-(tests/container/test_stack_in_podman.py).
+"""The whole of rcman in one container of the tests' engine, for the checks of the whole stack.
 
 On the host, ``launched`` starts it (``a_stack`` in tests/container/conftest.py): a container of the
 system image (tests/container/system/) on the tests' engine (tests/podman_service.py) with no

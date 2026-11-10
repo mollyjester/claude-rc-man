@@ -11,7 +11,8 @@ its reason when something else ends it, and with a code alone for a frame it can
 Everything ``PROTOCOL`` names, backend.md's table names too.
 
 Besides its shell, a terminal ends when its person signs out of rcman (routers/me.py), its
-workspace is deleted (``Workspaces.on_removing``), another terminal is opened on the workspace,
+workspace is deleted, rebuilt or stopped (``Workspaces.on_removing``, ``on_rebuilding``,
+``on_stopping``), another terminal is opened on the workspace,
 rcman stops, and when a look every REVOCATION_SECONDS finds the person no longer allowed in or
 the workspace no longer theirs and ready, as a change rcman did not make itself (rcman-admin's
 deletion, from its own process) leaves them. There is no time limit. A page that vanished is
@@ -38,6 +39,7 @@ from rcman.audit import (
     TERMINAL_REPLACED,
     WORKSPACE_GONE,
     WORKSPACE_REBUILDING,
+    WORKSPACE_STOPPED,
     Opened,
     Session,
 )
@@ -78,6 +80,7 @@ PROTOCOL = {
         TERMINAL_REPLACED,
         WORKSPACE_GONE,
         WORKSPACE_REBUILDING,
+        WORKSPACE_STOPPED,
         SIGNED_OUT,
         NOT_ALLOWED,
         SERVICE_CLOSING,
@@ -123,7 +126,8 @@ def _resize_of(message: dict) -> tuple[int, int]:
 
 def _revoked(websocket: WebSocket, record: Opened, workspace: int) -> str | None:
     """Why the terminal may no longer be open, if it may not: its person is no longer allowed
-    in, its workspace is no longer theirs and ready, or a rebuild is replacing its container."""
+    in, its workspace is no longer theirs and ready, it is stopped or being stopped, or a rebuild
+    is replacing its container."""
     con = db.connect(websocket.app.state.settings.database)
     try:
         person = people.by_email(con, record.identity.email)
@@ -131,8 +135,13 @@ def _revoked(websocket: WebSocket, record: Opened, workspace: int) -> str | None
         con.close()
     if person is None or person.state != people.ACTIVE or person.id != record.identity.person:
         return NOT_ALLOWED
-    found = websocket.app.state.workspaces.get(workspace)
-    if found is None or found.person != record.identity.person or found.state != READY:
+    service = websocket.app.state.workspaces
+    found = service.get(workspace)
+    if found is None or found.person != record.identity.person:
+        return WORKSPACE_GONE
+    if service.halted_or_halting(found.id):
+        return WORKSPACE_STOPPED
+    if found.state != READY:
         return WORKSPACE_GONE
     if found.rebuild_state == REBUILD_SWITCHING:
         return WORKSPACE_REBUILDING

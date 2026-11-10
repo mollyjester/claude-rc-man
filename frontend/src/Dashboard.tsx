@@ -23,13 +23,17 @@ import {
   ACTIONS,
   dotFor,
   type ForwardedPort,
+  NOT_READ,
+  POWERING,
+  powering,
   REBUILDING,
   ServerCard,
   StatusDot,
   type Workspace,
-  WorkspaceBadge,
+  WorkspaceStateBadge,
 } from "./Servers";
-import { Terminal } from "./Terminal";
+import { StopWorkspace } from "./StopWorkspace";
+import { Terminal, TerminalNotice } from "./Terminal";
 import { usePopup } from "./usePopup";
 import { failureSentence } from "./workspaceError";
 
@@ -39,11 +43,11 @@ const workspaceLink = (id: number | null) => ({
   search: id === null ? "" : `?workspace=${id}`,
 });
 
-// Whether a workspace can be deleted now, as the server allows it: one that is ready or failed,
-// and one being made from a clone, whose delete cancels the clone; or else why not.
+// Whether a workspace can be deleted now, as the server allows it: one that is ready, stopped or
+// failed, and one being made from a clone, whose delete cancels the clone; or else why not.
 function whyNotDeletable(workspace: Workspace): string | null {
   const { state } = workspace;
-  if (state === "ready" || state === "failed") return null;
+  if (state === "ready" || state === "halted" || state === "failed") return null;
   if (state === "creating") return workspace.source === null ? m.cannotDeleteCreating : null;
   if (state === "deleting") return m.cannotDeleteDeleting;
   return m.cannotDeleteState(m.workspaceStates[state] ?? state);
@@ -358,7 +362,9 @@ function WorkspaceEntry({
         <span className="dot-slot">{dot && <StatusDot kind={dot} id={id} />}</span>
         <WorkspaceNames workspace={workspace} deviceId={deviceId} />
       </button>
-      {workspace.state !== "ready" && <WorkspaceBadge state={workspace.state} />}
+      {(workspace.state !== "ready" || powering(workspace)) && (
+        <WorkspaceStateBadge workspace={workspace} />
+      )}
       <button
         type="button"
         className="icon-button secondary-danger trash"
@@ -458,10 +464,10 @@ function PanelBar({
                   workspace={workspace}
                   deviceId={`${sheet.panelProps.id}-device-${workspace.id}`}
                 />
-                {workspace.state !== "ready" && (
+                {(workspace.state !== "ready" || powering(workspace)) && (
                   <>
                     {" "}
-                    <WorkspaceBadge state={workspace.state} />
+                    <WorkspaceStateBadge workspace={workspace} />
                   </>
                 )}
               </button>
@@ -800,7 +806,8 @@ function RebuildFailed({ error }: { error: string }) {
 }
 
 // Rebuild, offered where the server says a rebuild may be asked for now (`rebuildable`) and rcman
-// is not being upgraded, and shown waiting while one is under way; it asks first. `primary` where
+// is not being upgraded, and shown waiting while one is under way, in the row of actions it is
+// put in; it asks first. `primary` where
 // it is the thing to do next. Once one is started, focus goes to `focusAfter`, since the button
 // waits from then on.
 function RebuildAction({
@@ -830,16 +837,14 @@ function RebuildAction({
   if (!running && (!workspace.rebuildable || upgrading)) return null;
   return (
     <>
-      <div className="actions">
-        <button
-          type="button"
-          className={primary && !running ? "primary" : undefined}
-          disabled={running}
-          onClick={() => setAsking(true)}
-        >
-          {running ? m.rebuildBusy : m.rebuild}
-        </button>
-      </div>
+      <button
+        type="button"
+        className={primary && !running ? "primary" : undefined}
+        disabled={running}
+        onClick={() => setAsking(true)}
+      >
+        {running ? m.rebuildBusy : m.rebuild}
+      </button>
       {asking && (
         <RebuildWorkspaceDialog
           workspace={workspace}
@@ -964,19 +969,22 @@ function useDevcontainerChanged(workspace: number, pollMs: number): boolean | nu
   return changed;
 }
 
-// The Container card of a ready workspace's Overview: what its container is made from, whether
-// its devcontainer.json changed since, Rebuild, and how a rebuild goes or why the last one did
-// not finish.
+// The Container card of a ready or stopped workspace's Overview: what its container is made from,
+// whether its devcontainer.json changed since, Rebuild and Stop workspace, and how a rebuild goes
+// or why the last one did not finish. Once the workspace is stopped, focus goes to
+// `stoppedFocus`, since Stop workspace goes.
 function ContainerCard({
   workspace,
   upgrading,
   pollMs,
+  stoppedFocus,
   onUpdated,
   onChange,
 }: {
   workspace: Workspace;
   upgrading: boolean;
   pollMs: number;
+  stoppedFocus: RefObject<HTMLElement | null>;
   onUpdated: (workspace: Workspace) => void;
   onChange: () => void;
 }) {
@@ -999,26 +1007,46 @@ function ContainerCard({
       )}
       {!running && rebuild.error && <RebuildFailed error={rebuild.error} />}
       {rebuild.log && <Steps log={rebuild.log} live={running} />}
-      <RebuildAction
-        workspace={workspace}
-        upgrading={upgrading}
-        primary={changed === true}
-        focusAfter={heading}
-        onStarted={onUpdated}
-        onFailed={onChange}
-      />
+      <div className="actions">
+        <RebuildAction
+          workspace={workspace}
+          upgrading={upgrading}
+          primary={changed === true && workspace.state === "ready"}
+          focusAfter={heading}
+          onStarted={onUpdated}
+          onFailed={onChange}
+        />
+        <StopWorkspace<Workspace>
+          workspace={workspace}
+          stoppable={workspace.stoppable === true}
+          stopping={workspace.stopping === true}
+          focusAfter={stoppedFocus}
+          onStopped={onUpdated}
+          onFailed={onChange}
+        />
+      </div>
     </PanelSection>
   );
 }
 
-// The Ports card of a ready workspace's Overview, shown while forwarding is on: each port the
-// server lists, by its label or its number, and its real address as a link that opens it in a new
-// tab, with no button beside it. While a rebuild replaces the container (`replacing`) no port can
-// be opened, which it says instead.
-function PortsCard({ workspace, replacing }: { workspace: Workspace; replacing: boolean }) {
+// The Ports card of a ready or stopped workspace's Overview, shown while forwarding is on: each
+// port the server lists, by its label or its number, and its real address as a link that opens
+// it in a new tab, with no button beside it. While a rebuild replaces the container (`replacing`), and while
+// the workspace is stopped, being stopped or being started (`power`, the code the listing gives
+// for its server), no port can be opened, which it says instead: the server lists none then.
+function PortsCard({
+  workspace,
+  replacing,
+  power,
+}: {
+  workspace: Workspace;
+  replacing: boolean;
+  power: string | null;
+}) {
   const { ports } = workspace;
   let body: ReactNode;
-  if (replacing) body = <p className="muted">{m.portsStopped}</p>;
+  if (power) body = <p className="muted">{m.portsPower[power]}</p>;
+  else if (replacing) body = <p className="muted">{m.portsStopped}</p>;
   else if (ports.length === 0) body = <p className="muted">{m.portsNone}</p>;
   else
     body = (
@@ -1056,7 +1084,7 @@ function PortRow({ port }: { port: ForwardedPort }) {
   );
 }
 
-// The tabs of a ready workspace's panel, in order, each by the name the address gives it
+// The tabs of a ready or stopped workspace's panel, in order, each by the name the address gives it
 // (`?tab=`); the first is the one shown when the address names none it knows.
 const TABS = [
   { name: "overview", label: m.tabOverview },
@@ -1156,6 +1184,110 @@ function TabPanel({
   );
 }
 
+// What a stopped workspace's panel leads with, and one being started, under the panel's status
+// (`PowerStatus`): why its last start did not bring it up (`error`, its first line in the open
+// and the rest behind Details); and Start workspace, its one primary action, offered where the
+// server says it may be started (`startable`), or else why not: the upgrade under way or, softer,
+// that it cannot be just now. Start workspace says Starting… while its request runs and while the
+// workspace is starting, through `aria-disabled` and a guard, so that it keeps focus and a second
+// press sends nothing; a refusal is shown and the list read again (`onFailed`). Whether the button
+// holds focus is kept in `focused`, which the panel reads once it goes.
+function Stopped({
+  workspace,
+  upgrading,
+  focused,
+  onUpdated,
+  onFailed,
+}: {
+  workspace: Workspace;
+  upgrading: boolean;
+  focused: RefObject<boolean>;
+  onUpdated: (workspace: Workspace) => void;
+  onFailed: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const starting = workspace.state === "ready" && workspace.starting === true;
+  const waiting = busy || starting;
+
+  async function start() {
+    if (waiting) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const answer = await api.post<{ workspace: Workspace }>(
+        `/api/workspaces/${workspace.id}/start`,
+      );
+      onUpdated(answer.workspace);
+    } catch (e) {
+      setError(asApiError(e));
+      onFailed();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const [first, ...rest] = (workspace.error ?? "").trim().split("\n");
+  return (
+    <>
+      {!starting && workspace.error && (
+        <MessageBar kind="problem" role="alert">
+          <p>{first}</p>
+          {rest.length > 0 && (
+            <details>
+              <summary>{m.detailsTitle}</summary>
+              <pre className="screen workspace-error">{rest.join("\n")}</pre>
+            </details>
+          )}
+        </MessageBar>
+      )}
+      {workspace.startable || waiting ? (
+        <div className="actions">
+          <button
+            type="button"
+            className="primary"
+            aria-disabled={waiting}
+            onClick={start}
+            onFocus={() => {
+              focused.current = true;
+            }}
+            onBlur={() => {
+              focused.current = false;
+            }}
+          >
+            {waiting ? m.startWorkspaceBusy : m.startWorkspace}
+          </button>
+        </div>
+      ) : (
+        <p className="muted">{upgrading ? m.startUpgrading : m.startNotNow}</p>
+      )}
+      <ProblemView error={error} />
+    </>
+  );
+}
+
+// What the panel says of a workspace stopped or being started, in one status region that stays
+// while it is either, so that the change from stopped to starting is announced. A stopped
+// workspace whose last start failed says why in Stopped instead.
+function PowerStatus({ workspace }: { workspace: Workspace }) {
+  const starting = workspace.state === "ready" && workspace.starting === true;
+  const halted = workspace.state === "halted" && !workspace.error;
+  return (
+    <div role="status">
+      {starting && (
+        <MessageBar kind="info">
+          <p>{m.workspaceStarting}</p>
+        </MessageBar>
+      )}
+      {halted && (
+        <MessageBar kind="info">
+          <p>{m.workspaceHalted}</p>
+        </MessageBar>
+      )}
+    </div>
+  );
+}
+
 // The selected workspace: under its name, the GitHub page of the repository it was
 // cloned from, when the server gives one; what its state allows, and, once it is ready,
 // two tabs: Overview, with its Claude server or the offer to start one and the Changes of
@@ -1180,23 +1312,43 @@ function WorkspacePanel({
 }) {
   const [tab, chooseTab] = useTab();
   const ready = workspace.state === "ready";
-  // The terminal is opened when its tab is first shown, and kept from then on.
+  const halted = workspace.state === "halted";
+  const starting = ready && workspace.starting === true;
+  // A stopped workspace keeps its tabs, each saying it is stopped where it would show the
+  // workspace's own.
+  const tabbed = ready || halted;
+  // Where a terminal can be had: not while the workspace is stopped or starting. One open while
+  // it is being stopped stays, to say what closed it, until the workspace is stopped.
+  const reachable = ready && !starting;
+  // The terminal is opened when its tab is first shown, and kept from then on while it can be
+  // had; once it cannot, it is let go, so that none opens unasked when it can again.
   const [terminalOpened, setTerminalOpened] = useState(false);
-  const terminalShown = ready && tab === "terminal";
+  const terminalShown = tabbed && tab === "terminal";
   useEffect(() => {
-    if (terminalShown) setTerminalOpened(true);
-  }, [terminalShown]);
+    if (!reachable) setTerminalOpened(false);
+    else if (terminalShown) setTerminalOpened(true);
+  }, [reachable, terminalShown]);
   const tabsId = useId();
   const cloning = workspace.state === "creating" && workspace.source !== null;
   const { server, server_error: serverError } = workspace;
-  // While a rebuild replaces its container, the server is not read: that is said, not a problem.
+  // While a rebuild replaces its container, or the workspace is stopped, being stopped or being
+  // started, the server is not read: that is said, not a problem.
   const replacing = serverError?.code === REBUILDING;
-  const unread = replacing ? null : serverError;
+  const power = serverError && POWERING.includes(serverError.code) ? serverError.code : null;
+  const unread = serverError && NOT_READ.includes(serverError.code) ? null : serverError;
   const rebuild = rebuildOf(workspace);
   const failedRebuilding = workspace.state === "failed" && rebuild.state !== null;
   // A failed workspace's steps are its last rebuild's where it had one, else its making's.
   const steps = workspace.state === "failed" ? (rebuild.log ?? workspace.log) : workspace.log;
   const title = useRef<HTMLHeadingElement>(null);
+  // Start workspace goes once the workspace is up: focus it held goes to the panel's heading.
+  const leading = halted || starting;
+  const startFocused = useRef(false);
+  useEffect(() => {
+    if (leading || !startFocused.current) return;
+    startFocused.current = false;
+    title.current?.focus();
+  }, [leading]);
   return (
     <section aria-label={workspace.name} className="panel">
       <div className="panel-head">
@@ -1204,7 +1356,7 @@ function WorkspacePanel({
           <h2 ref={title} tabIndex={-1}>
             {workspace.name}
           </h2>
-          <WorkspaceBadge state={workspace.state} />
+          <WorkspaceStateBadge workspace={workspace} />
         </div>
         {workspace.source_page && (
           <a
@@ -1248,23 +1400,36 @@ function WorkspacePanel({
           </MessageBar>
         ))}
       {workspace.state === "failed" && (
-        <RebuildAction
+        <div className="actions">
+          <RebuildAction
+            workspace={workspace}
+            upgrading={upgrading}
+            primary
+            focusAfter={title}
+            onStarted={onUpdated}
+            onFailed={onChange}
+          />
+        </div>
+      )}
+      {leading && <PowerStatus workspace={workspace} />}
+      {leading && (
+        <Stopped
           workspace={workspace}
           upgrading={upgrading}
-          primary
-          focusAfter={title}
-          onStarted={onUpdated}
+          focused={startFocused}
+          onUpdated={onUpdated}
           onFailed={onChange}
         />
       )}
-      {!ready && steps && <Steps log={steps} live={failedRebuilding} />}
-      {ready && (
+      {!tabbed && steps && <Steps log={steps} live={failedRebuilding} />}
+      {tabbed && (
         <>
           <TabList id={tabsId} tab={tab} onChoose={chooseTab} />
           <TabPanel id={tabsId} name="overview" shown={tab === "overview"}>
             <div className="overview">
               <PanelSection title={m.serverTitle}>
                 {replacing && <p>{m.serverRebuilding}</p>}
+                {power && <p>{m.serverPower[power]}</p>}
                 {unread && (
                   <>
                     <ProblemView error={new ApiError(0, unread.code, unread.title)} />
@@ -1287,7 +1452,7 @@ function WorkspacePanel({
                   workspace.claude_version !== approved && (
                     <p className="muted">{m.serverVersionDiffers(approved)}</p>
                   )}
-                {!server && !serverError && (
+                {ready && !server && !serverError && (
                   <>
                     <p>{m.noServer}</p>
                     <StartServer workspace={workspace.id} onStarted={onChange} />
@@ -1298,16 +1463,25 @@ function WorkspacePanel({
                 workspace={workspace}
                 upgrading={upgrading}
                 pollMs={pollMs}
+                stoppedFocus={title}
                 onUpdated={onUpdated}
                 onChange={onChange}
               />
-              {forwarding && <PortsCard workspace={workspace} replacing={replacing} />}
-              <Changes workspace={workspace.id} pollMs={pollMs} />
+              {forwarding && (
+                <PortsCard workspace={workspace} replacing={replacing} power={power} />
+              )}
+              {/* git is not reached in a workspace that is stopped, or being stopped or started */}
+              {ready && !power && <Changes workspace={workspace.id} pollMs={pollMs} />}
             </div>
           </TabPanel>
           <TabPanel id={tabsId} name="terminal" shown={terminalShown}>
-            {(terminalOpened || terminalShown) && (
+            {reachable && (terminalOpened || terminalShown) && (
               <Terminal workspace={workspace.id} shown={terminalShown} onFailure={onChange} />
+            )}
+            {!reachable && (
+              <TerminalNotice
+                said={m.terminalPower[starting ? "workspace_starting" : "workspace_stopped"]}
+              />
             )}
           </TabPanel>
         </>

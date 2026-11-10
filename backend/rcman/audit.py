@@ -47,6 +47,7 @@ TERMINAL_LOST = "terminal_lost"  # its page closed the socket, or vanished
 TERMINAL_REPLACED = "terminal_replaced"  # a terminal opened on the same workspace replaced it
 WORKSPACE_GONE = "workspace_gone"  # the workspace was deleted, or is no longer ready
 WORKSPACE_REBUILDING = "workspace_rebuilding"  # its container is being made again by a rebuild
+WORKSPACE_STOPPED = "workspace_stopped"  # its workspace was stopped
 SIGNED_OUT = "signed_out"  # its person signed out of rcman
 SERVICE_CLOSING = "service_closing"  # rcman stopped
 # How a WebSocket to a forwarded port (forward.py) ended, besides those above:
@@ -61,6 +62,7 @@ RESULTS = (
     TERMINAL_REPLACED,
     WORKSPACE_GONE,
     WORKSPACE_REBUILDING,
+    WORKSPACE_STOPPED,
     SIGNED_OUT,
     SERVICE_CLOSING,
     FORWARDING_OFF,

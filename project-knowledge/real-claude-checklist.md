@@ -178,8 +178,9 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
 On a real machine, not in a container: the order of boot, lingering and the user
 manager are what is checked, and a container cannot show them. With a person
 added for the test, two workspaces of theirs with their servers running, one
-more workspace stopped on purpose, and a limit set on one workspace (see
-[Limits](../docs/users.md#limits)):
+more workspace whose server is stopped on purpose, a fourth whose server was running
+when the whole workspace was stopped with its **Stop** button (it is listed as Stopped),
+and a limit set on one workspace (see [Limits](../docs/users.md#limits)):
 
 1. **Before.** Write down what rcman's Podman lists (`podman ps` as `rcman`) and
    the sessions the account shows in claude.ai/code.
@@ -189,13 +190,20 @@ more workspace stopped on purpose, and a limit set on one workspace (see
 4. **The workspaces came back.** On the dashboard the workspaces are ready, the
    servers that were running are running again, and the one stopped on purpose is
    still stopped. `podman ps` as `rcman` lists the same containers as before.
+   The stopped workspace is still listed as Stopped, and its container is not
+   running (`podman ps -a` as `rcman` shows it exited).
 5. **The limit holds.** The workspace's limit is shown, and the unit manager has
    it again (see [Limits](runtime.md#limits)): the slice's files under `/sys/fs/cgroup` hold
    it, and they were written before the container started (their times, against the
    container's start in `podman container inspect`).
 6. **The sessions reconnect.** The sessions of the servers that were running
    show again in claude.ai/code, and answer.
-7. **The journal is clean.** `sudo journalctl -u rcman -b` shows no error.
+7. **Start the stopped workspace.** Its **Start** button says it is working, then the
+   workspace is ready, its container runs, and its server is running again on the approved
+   Claude Code version, with the session it had: the same session shows in claude.ai/code,
+   and answers with what it held before the stop. Its `postStartCommand`, if it has one,
+   ran (see [the devcontainer guide](../docs/devcontainer.md)).
+8. **The journal is clean.** `sudo journalctl -u rcman -b` shows no error.
 
 ## Servers surviving an rcman upgrade
 

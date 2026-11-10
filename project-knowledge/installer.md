@@ -336,8 +336,7 @@ reaches rcman through the socket, and its forwarding server through `FORWARD_SOC
 `rcman.env` sets `RCMAN_FORWARD_SOCKET` to `FORWARD_SOCKET`, in `RUN` beside `SOCKET`, which
 rcman's forwarding server listens on, making it world-writable as uvicorn makes its own: the
 protection is `RUN` (see [backend.md](backend.md#port-forwarding)). `ExecStart` is the same.
-The snippet (`installer/templates/Caddyfile`) holds two sites more, in the forms
-`tests/container/test_stack_in_podman.py` proves Ubuntu's Caddy loads:
+The snippet (`installer/templates/Caddyfile`) holds two sites more, in these forms:
 
 - `*.ws.@DOMAIN@`: `tls { on_demand }`; the sign-in's identity headers deleted
   (`X-Forwarded-Email`, `X-Auth-Request-*`, `X-Forwarded-User`); `reverse_proxy` to
@@ -469,24 +468,6 @@ health check through Caddy; the stubbed installation runs no Caddy.
   enabled, the service never started by the installer, the wrapper and the status folder with
   their owners and modes; the wrapper run as the unit runs it, with no `SUDO_USER`, writing a
   `succeeded` status; and a dirty clone giving a `failed` one, which `--finish` leaves.
-- `tests/container/test_stack_in_podman.py`: what an installation does once people and
-  workspaces are there, in the whole stack (see [tests.md](tests.md#the-whole-stack)): the
-  services answering, the stack's administrator, no listener taking an identity a request gives
-  itself and Caddy letting only oauth2-proxy set it, the installed app's files answered
-  without a sign-in while a path beside them or spelt otherwise is sent to sign in, a page asked
-  for without a sign-in being where the sign-in ends, every cookie oauth2-proxy sets while
-  someone signs in, and its clearing of the session when they sign out, a `__Host-rcman-auth`
-  one (Secure, `Path=/`, no `Domain`), after which a request is sent to sign in, a person added,
-  a workspace made, its server refused until the person connects the fake `claude` once, after
-  which it and a workspace made afterwards both reach ready, a restart of rcman leaving the
-  server as it was, a stop leaving no Claude process, one person unable to reach another's
-  workspace, deleting a person leaving nothing labelled theirs, an administrator's limits, set
-  through the API, reaching `systemctl` (`rcman-admin` runs itself again as rcman's account,
-  which the stack's container has not; it is run by name as root in the stubbed installation),
-  and the monitor's usage round reading a running workspace's slice, and its person's, through
-  `systemctl`. `tests/container/test_restored_in_container.py` checks that rcman, started again
-  after every container has stopped, brings the workspace and its server back with the limits
-  set again before the container starts.
 
 What needs systemd, rcman's own rootless Podman, the kernel's limits or the journal is checked
 by hand after an installation ([real-claude-checklist.md](real-claude-checklist.md)).

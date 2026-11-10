@@ -566,3 +566,120 @@ def test_a_database_of_the_schema_before_forwarding_gains_its_table_and_no_row(t
     con = sqlite3.connect(path)
     assert con.execute("select count(*) from forwarding_settings").fetchone()[0] == 0
     assert con.execute("select name from workspaces").fetchall() == [("old",)]
+
+
+# Writes each column of a workspace is tried with, before and after the migration that adds
+# halted: what the schema before it refuses, the schema after it must refuse too, but halted.
+PROBES = (None, 0, -1, 1, 2, "other", "halted", "ready")
+
+
+def _refused(con, statement: str, args: tuple) -> bool:
+    """Whether the database refuses the write, which is undone either way."""
+    con.execute("savepoint probe")
+    try:
+        con.execute(statement, args)
+    except sqlite3.IntegrityError:
+        return True
+    finally:
+        con.execute("rollback to probe")
+        con.execute("release probe")
+    return False
+
+
+def _verdicts(path) -> dict:
+    """What the database at ``path`` refuses: each column of ``workspaces`` set to each probe on
+    its first row, and a second row of the first one's person and name."""
+    con = db.connect(path)
+    try:
+        con.isolation_level = None  # the savepoints are the only transactions
+        first = con.execute("select * from workspaces order by id limit 1").fetchone()
+        columns = [r[1] for r in con.execute("pragma table_info(workspaces)")]
+        found = {
+            (column, value): _refused(
+                con, f"update workspaces set {column} = ? where id = ?", (value, first["id"])
+            )
+            for column in columns
+            if column != "id"
+            for value in PROBES
+        }
+        found["unique"] = _refused(
+            con,
+            "insert into workspaces (person, name, state) values (?, ?, 'ready')",
+            (first["person"], first["name"]),
+        )
+        return found
+    finally:
+        con.close()
+
+
+def _sequence(path) -> list[tuple]:
+    con = sqlite3.connect(path)
+    try:
+        return con.execute("select name, seq from sqlite_sequence order by name").fetchall()
+    finally:
+        con.close()
+
+
+def _next_id(path) -> int:
+    con = db.connect(path)
+    try:
+        cursor = con.execute(
+            "insert into workspaces (person, name, state) values (1, 'next', 'ready')"
+        )
+        con.commit()
+        return cursor.lastrowid
+    finally:
+        con.close()
+
+
+def test_a_database_of_the_schema_before_stopping_keeps_its_workspaces_their_ids_and_checks(
+    tmp_path,
+):
+    """The migration that adds the state halted rebuilds the table: its columns, every row, the
+    checks and the uniqueness the schema before it had, and the id it gives next, stay as they
+    were; halted is taken, and a state it does not know still is not."""
+    import shutil
+
+    path, con = migrated_before(tmp_path, "'halted'")
+    for name in ("two", "three"):
+        con.execute("insert into workspaces (person, name, state) values (1, ?, 'ready')", (name,))
+    con.execute(
+        "update workspaces set error = 'e', server = 1, wanted = 1, prefix = 'p', "
+        "source = 's', memory_mib = 5, rebuild_state = 'preparing', failure = 'f' where id = 2"
+    )
+    con.execute("delete from workspaces where id = 3")  # the highest: its id is not given again
+    con.commit()
+    columns = con.execute("pragma table_info(workspaces)").fetchall()
+    rows = con.execute("select * from workspaces order by id").fetchall()
+    con.close()
+    before = _sequence(path)
+    assert ("workspaces", 3) in before and len(rows) == 2  # positive control
+    old = tmp_path / "old.db"
+    shutil.copy(path, old)
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    assert con.execute("pragma table_info(workspaces)").fetchall() == columns
+    assert con.execute("select * from workspaces order by id").fetchall() == rows
+    names = {r[0] for r in con.execute("select name from sqlite_master")}
+    assert "workspaces_new" not in names
+    con.close()
+    assert _sequence(path) == before  # one row, the same high-water mark
+    was, now = _verdicts(old), _verdicts(path)
+    assert was[("state", "other")] and was[("memory_mib", 0)] and was["unique"]  # non-vacuity
+    assert was[("state", "halted")] and not now[("state", "halted")]
+    assert {k: v for k, v in now.items() if k != ("state", "halted")} == {
+        k: v for k, v in was.items() if k != ("state", "halted")
+    }
+    assert _next_id(path) == 4
+
+    # An empty table whose rows were all deleted still gives no id again.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    path, con = migrated_before(empty, "'halted'")
+    con.execute("delete from workspaces")
+    con.commit()
+    con.close()
+    assert _sequence(path) == [("people", 1), ("workspaces", 1)]
+    db.migrate(path)
+    assert _sequence(path) == [("people", 1), ("workspaces", 1)]
+    assert _next_id(path) == 2
