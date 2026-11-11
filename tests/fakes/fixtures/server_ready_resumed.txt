@@ -1,5 +1,5 @@
 
-·✔︎· Connected · {folder} · HEAD
+·✔︎· Connected · {folder}
     Capacity: 1/32 · New sessions will be created in the current directory
     {session_name}
 

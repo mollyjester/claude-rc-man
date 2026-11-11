@@ -4,5 +4,6 @@
   "apiProvider": "firstParty",
   "analyticsDisabled": false,
   "projectsDirectory": "{config_dir}/projects",
-  "configDirectory": "{config_dir}"
+  "configDirectory": "{config_dir}",
+  "loginExpiresAt": null
 }

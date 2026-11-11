@@ -5,14 +5,14 @@ command line does against the real `claude` (RealWatch): it waits, with tests.un
 the fake says it has done, or on the screen it expects.
 
 - ``TraceWatch`` drives the fake (devtools/fake_claude.py) through its trace and its gate: a
-  screen is settled once the fake has traced it drawn and the pane shows exactly that; an
-  ignored input is taken once the fake has traced its decision on it; the brief connected stage
-  is left only once released, after its capture; and the trust answer of a sequence that is to
-  be too quick is so at any speed, the fake's threshold put beyond any test.
+  screen is settled once the fake has traced it drawn and the pane shows exactly that; the
+  brief connected stage is left only once released, after its capture; and the trust answer of
+  a sequence that is to be too quick is so at any speed, the fake's threshold put beyond any
+  test.
 - ``ExpectWatch`` drives the real `claude`, which says nothing of what it has done: a screen
   is settled once it is, sanitised, the fixture of the capture it is for, and differs at once
-  when the program has exited showing something else. It has no ignored input, no gate and no
-  person to wait on.
+  when the program has exited showing something else. It has no gate and no person to wait
+  on.
 
 Each gives the pane's waits the tier's guard (tier_guard()), so that a hang ends there with
 tmuxctl's TimeoutError and the screen it last showed, as until's own bound ends the other waits.
@@ -27,9 +27,6 @@ from devtools import record_claude as rec
 from devtools import tmuxctl
 from tests.hang_guard import tier_guard
 from tests.until import until
-
-# The decisions the fake traces on an input it reads.
-DECISIONS = ("answered", "refused", "ignored")
 
 
 def drawn(trace: Path) -> list[str] | None:
@@ -48,32 +45,6 @@ def shown(pane: tmuxctl.Pane, trace: Path) -> list[str]:
         return screen if last is not None and screen == last else None
 
     return until(now)
-
-
-def decisions(trace: Path, sent: str) -> list[str]:
-    """The fake's decisions on the input ``sent`` (``interrupt`` for Ctrl+C), in order."""
-    return [
-        e["event"]
-        for e in fake.trace_events(trace)
-        if e["event"] in DECISIONS and e.get("input") == sent
-    ]
-
-
-def decided(pane: tmuxctl.Pane, trace: Path, sent: str, seen: int = 0) -> str:
-    """The fake's decision on its ``seen``-th taking of ``sent`` counted from 0, once traced;
-    ``exited`` if it ends with no more decision on it."""
-
-    def now() -> str | None:
-        made = decisions(trace, sent)
-        if len(made) > seen:
-            return made[seen]
-        return "exited" if pane.exit_status() is not None else None
-
-    found = until(now)
-    if found == "exited":  # a decision traced just before the exit is still the decision
-        made = decisions(trace, sent)
-        found = made[seen] if len(made) > seen else found
-    return found
 
 
 def release(gate: Path, stage: str) -> None:
@@ -102,20 +73,11 @@ class TraceWatch:
     def exited(self, pane):
         return pane.wait_exit(timeout=tier_guard())
 
-    def __init__(self) -> None:
-        self._taken: dict[tuple[str, str], int] = {}
-
     def env(self, sequence: rec.Sequence, folder: Path) -> dict[str, str]:
         return traced_env(folder, too_fast=sequence.answer_too_fast)
 
     def settled(self, run: rec.Run, name: str | None, kind: str) -> list[str]:
         return shown(run.pane, Path(run.env[fake.TRACE]))
-
-    def took(self, run: rec.Run, sent: str) -> None:
-        trace = run.env[fake.TRACE]
-        seen = self._taken.get((trace, sent), 0)
-        decided(run.pane, Path(trace), sent, seen)
-        self._taken[(trace, sent)] = seen + 1
 
     def release(self, run: rec.Run, stage: str) -> None:
         release(Path(run.env[fake.GATE]), stage)
@@ -170,9 +132,6 @@ class ExpectWatch:
                 f"{name} never showed its fixture:\n" + "\n".join(rec.compare(got, wanted))
             )
         return found
-
-    def took(self, run: rec.Run, sent: str) -> None:
-        raise RuntimeError("ExpectWatch has no ignored input to wait on: no such sequence runs")
 
     def release(self, run: rec.Run, stage: str) -> None:
         pass

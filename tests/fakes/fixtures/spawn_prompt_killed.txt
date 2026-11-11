@@ -14,4 +14,4 @@ Spawn mode for this project:
 
 This can be changed later or explicitly set with --spawn=same-dir or --spawn=worktree.
 
-Choose [1/2] (default: 1): 1
+Choose [1/2] (default: 1):

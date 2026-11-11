@@ -6,7 +6,7 @@ Quick safety check: is this a project you created or one you trust? Sessions sta
 Security guide: https://code.claude.com/docs/en/security
 Trust {cwd}? [y/N] y
 
-·✔︎· Connected · {folder} · HEAD
+·✔︎· Connected · {folder}
     Capacity: 0/32 · New sessions will be created in the current directory
 
 Continue coding in the Claude mobile app or {environment_url}

@@ -21,9 +21,9 @@ and needs no account.
 
 How the recorder waits for a screen is a :class:`Watch`, which :func:`record` is given:
 :class:`RealWatch`, the command line's, against the real `claude`, which says nothing of what
-it has done, so a screen is taken once it has stayed still a while and an ignored input once
-it has been watched a while; the tests give their own (tests/claude_watches.py), which wait
-on what the fake says it has done or on the fixture expected.
+it has done, so a screen is taken once it has stayed still a while; the tests give their own
+(tests/claude_watches.py), which wait on what the fake says it has done or on the fixture
+expected.
 
 Usage::
 
@@ -92,6 +92,8 @@ PLACEHOLDERS = (
     "org_id",
     "org_name",
     "subscription_type",
+    "login_expires_at",
+    "plan_tier",
     "branch",
     "session_id",
 )
@@ -100,6 +102,8 @@ ACCOUNT_FIELDS = {
     "orgId": "org_id",
     "orgName": "org_name",
     "subscriptionType": "subscription_type",
+    "loginExpiresAt": "login_expires_at",  # a date while signed in; null, left as it is, signed out
+    "planTier": "plan_tier",
 }
 
 
@@ -129,7 +133,8 @@ def sanitise(text: str, ctx: Context) -> str:
     paths = sorted([(ctx.cwd, "{cwd}"), (ctx.config_dir, "{config_dir}")], key=lambda p: -len(p[0]))
     for path, placeholder in paths:
         text = text.replace(path, placeholder)
-    text = re.sub(r"( Connected · )(.+?)( · )", r"\1{folder}\3", text)
+    # The folder, then the branch, or nothing more outside a repository.
+    text = re.sub(r"( Connected · )(.+?)( · |$)", r"\1{folder}\3", text, flags=re.MULTILINE)
     if ctx.branch:
         text = re.sub(
             r"( Connected · \{folder\} · )" + re.escape(ctx.branch) + "$",
@@ -244,10 +249,6 @@ class Watch(Protocol):
     def settled(self, run: Run, name: str | None, kind: str) -> list[str]:
         """The screen once it has settled; ``name`` is the capture it is for, if any."""
 
-    def took(self, run: Run, sent: str) -> None:
-        """Returns once the program has taken ``sent``, an input it is to ignore (``interrupt``
-        for Ctrl+C), so that what it did with it can be looked at."""
-
     def release(self, run: Run, stage: str) -> None:
         """Lets the program leave the brief ``stage`` it was captured in."""
 
@@ -257,16 +258,14 @@ class Watch(Protocol):
 
 class RealWatch:
     """The command line's watch, against the real `claude` with a person at hand: a screen is
-    settled once it has not changed for a while, and an ignored input taken once the program
-    has been watched a while. No test uses it: tests/claude_watches.py's watch the fake's trace,
-    or the fixtures, and test_record_claude.py holds every test to that."""
+    settled once it has not changed for a while. No test uses it: tests/claude_watches.py's
+    watch the fake's trace, or the fixtures, and test_record_claude.py holds every test to
+    that."""
 
     TIMEOUT = 60.0
     # How long a screen must stay still to be settled, by its kind: the connected stage is
     # brief, so it is captured after a short settle.
     QUIET = {SCREEN: 1.0, EXITED: 0.5, BRIEF: 0.3}
-    # How long Claude is watched after Ctrl+C, or an answer, at the spawn-mode question.
-    IGNORED_SECONDS = 3.0
     HUMAN_TIMEOUT = 15 * 60.0
     HANDOFF_POLL = 0.5  # seconds between looks at the handoff folder
 
@@ -281,9 +280,6 @@ class RealWatch:
 
     def settled(self, run: Run, name: str | None, kind: str) -> list[str]:
         return run.pane.wait_stable(quiet=self.QUIET[kind], timeout=15.0)
-
-    def took(self, run: Run, sent: str) -> None:
-        time.sleep(self.IGNORED_SECONDS)
 
     def release(self, run: Run, stage: str) -> None:
         pass
@@ -428,24 +424,11 @@ def _server_captures(name: str) -> tuple[str, ...]:
 SPAWN_QUESTION = r"^Choose \[1/2\]"  # Claude asks for a spawn mode
 
 
-def _still_asking(r: Run, after: str, sent: str) -> None:
-    r.watch.took(r, sent)
-    if r.pane.exit_status() is not None or re.search(CONNECTED, r.pane.text()):
-        raise RuntimeError(f"{after} moved the spawn-mode question on:\n{r.pane.text()}")
-    r.watch.settled(r, None, SCREEN)
-
-
 def _spawn_prompt(r: Run) -> None:
-    """The spawn-mode question a repository gets without --spawn: Ctrl+C and an answer
-    after it are ignored; SIGTERM ends it, with the status of a process ended by it."""
+    """The spawn-mode question a repository gets without --spawn; SIGTERM ends it, with the
+    status of a process ended by it."""
     _answer_trust(r)
     r.capture_when(SPAWN_QUESTION, "spawn_prompt")
-    r.pane.interrupt()
-    _still_asking(r, "Ctrl+C", "interrupt")
-    r.capture("spawn_prompt_interrupted", None)
-    r.pane.type_line("1")
-    _still_asking(r, "An answer after Ctrl+C", "1")
-    r.capture("spawn_prompt_answered_after_interrupt", None)
     r.pane.signal(signal.SIGTERM)
     r.capture_exit("spawn_prompt_killed")
     if (code := r.out["spawn_prompt_killed"].exit_code) != 128 + signal.SIGTERM:
@@ -613,8 +596,6 @@ SEQUENCES: list[Sequence] = [
         RC_ARGS_ASKING_SPAWN,
         (
             "spawn_prompt",
-            "spawn_prompt_interrupted",
-            "spawn_prompt_answered_after_interrupt",
             "spawn_prompt_killed",
         ),
         _spawn_prompt,
@@ -683,6 +664,28 @@ def help_refused_logged_out(text: str) -> bool:
     """Whether ``text`` is the recorded logged-out refusal rather than help."""
     refusal = next(line for line in load_fixtures()["rc_logged_out"].lines if line.strip())
     return refusal in text
+
+
+def help_gaps(
+    claude_bin: Path | str,
+    env: dict[str, str],
+    used: dict[tuple[str, ...], set[str]],
+) -> dict[str, list[str]]:
+    """What each command's ``--help`` lacks, by command: the command's own usage, such as
+    ``claude auth login [options]``, which the top-level help an unknown command prints does
+    not name, then the options of ``used`` it does not name; or that it was refused for want
+    of a login. Commands whose help has it all are left out."""
+    gaps: dict[str, list[str]] = {}
+    for command, options in used.items():
+        text = help_text(claude_bin, command, env)
+        if help_refused_logged_out(text):
+            absent = ["refused: not logged in"]
+        else:
+            wanted = [" ".join(("claude", *command, "[options]")), *sorted(options)]
+            absent = [w for w in wanted if w not in text]
+        if absent:
+            gaps[" ".join(command) or "(top level)"] = absent
+    return gaps
 
 
 def installed_version(claude_bin: Path | str, watch: Watch | None = None) -> str:

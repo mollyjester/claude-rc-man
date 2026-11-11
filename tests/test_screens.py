@@ -33,8 +33,6 @@ SERVER_STATES = {
     # rcman starts every server with --spawn same-dir, so Claude does not ask
     # this; shown all the same, it is no state rcman knows, and Stop ends it.
     "spawn_prompt": "unrecognised",
-    "spawn_prompt_interrupted": "unrecognised",
-    "spawn_prompt_answered_after_interrupt": "unrecognised",
     "spawn_prompt_killed": "exited",
     "spawn_connected_same_dir": "connected",
     "spawn_ready_same_dir": "ready",
@@ -234,7 +232,7 @@ def wrongly_reconnected(states: dict[str, str]) -> list[str]:
 
 def test_a_reconnect_appended_to_any_other_live_screen_is_not_reconnected():
     states = reconnect_appended(live_screens())
-    assert len(states) == sum(1 for _, code in live_screens().values() if code is None) > 20
+    assert len(states) == sum(1 for _, code in live_screens().values() if code is None) > 18
     for name in RECONNECTED_SCENARIOS:  # positive control: the allowed ones are found
         assert states[f"observed {name}"] == "reconnected"
     assert wrongly_reconnected(states) == []

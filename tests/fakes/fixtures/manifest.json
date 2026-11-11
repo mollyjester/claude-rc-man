@@ -125,16 +125,6 @@
       "exit_code": null,
       "needs_account": true
     },
-    "spawn_prompt_answered_after_interrupt": {
-      "sequence": "spawn_prompt",
-      "exit_code": null,
-      "needs_account": true
-    },
-    "spawn_prompt_interrupted": {
-      "sequence": "spawn_prompt",
-      "exit_code": null,
-      "needs_account": true
-    },
     "spawn_prompt_killed": {
       "sequence": "spawn_prompt",
       "exit_code": 143,
@@ -171,5 +161,5 @@
       "needs_account": false
     }
   },
-  "claude_version": "2.1.302"
+  "claude_version": "2.1.322"
 }

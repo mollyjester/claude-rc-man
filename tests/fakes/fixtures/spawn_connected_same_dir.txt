@@ -15,6 +15,7 @@ Spawn mode for this project:
 This can be changed later or explicitly set with --spawn=same-dir or --spawn=worktree.
 
 Choose [1/2] (default: 1): 1
+Spawn mode: same-dir (saved for this folder; press w to change)
 
 ·✔︎· Connected · {folder} · {branch}
     Capacity: 0/32 · New sessions will be created in the current directory

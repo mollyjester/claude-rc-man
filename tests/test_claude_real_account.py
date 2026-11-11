@@ -42,12 +42,5 @@ def test_account_screens_match_the_fixtures(tmp_path):
 
 def test_every_option_rcman_passes_is_in_help_when_logged_in(tmp_path):
     assert REAL is not None, "claude is not on PATH"
-    missing = {}
     env = rec.account_env(tmp_path / "home")  # the run's account, in a home of its own
-    for command, options in rec.options_used().items():
-        text = rec.help_text(REAL, command, env)
-        assert not rec.help_refused_logged_out(text), "the run's account is not logged in"
-        absent = sorted(o for o in options if o not in text)
-        if absent:
-            missing[" ".join(command) or "(top level)"] = absent
-    assert missing == {}
+    assert rec.help_gaps(REAL, env, rec.options_used()) == {}

@@ -1,5 +1,5 @@
 
-·✔︎· Connected · {folder} · HEAD
+·✔︎· Connected · {folder}
     Capacity: 0/32 · New sessions will be created in the current directory
 
 Continue coding in the Claude mobile app or {environment_url}

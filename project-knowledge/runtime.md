@@ -545,8 +545,8 @@ the read-only store notwithstanding. A server keeps the environment it started w
 change to `child_env` reaches it when it is next started or resumed, with no restart of its
 container, and a terminal at its next start. rcman sets no `GH_TOKEN` or `GITHUB_TOKEN`; one a plan sets
 comes first, and gh then takes it over `hosts.yml`. Its options are `server_command`, which a
-test holds to the recorder's, so the contract tests check each is in Claude's
-`--help`.
+test holds to the recorder's, so the contract tests check each is in its command's
+`--help` (see [How the fake is checked](fake-claude.md#how-the-fake-is-checked-against-the-real-binary)).
 
 - **Signed in.** `start` asks Claude with `auth status`, and refuses with
   `claude_not_logged_in` when no account is. `Workspaces.start_server` refuses
