@@ -8,7 +8,7 @@ Trust {cwd}? [y/N] y
 
 [{time}] Shutting down 1 active session(s)…
 [{time}] Environment preserved. Restart `claude remote-control` to reconnect existing sessions.
-·✔︎· Connected · {folder} · HEAD
+·✔︎· Connected · {folder}
     Capacity: 1/32 · New sessions will be created in the current directory
 
 Continue coding in the Claude mobile app or {environment_url}

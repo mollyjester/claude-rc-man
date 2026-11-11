@@ -2,7 +2,7 @@
 
 These need no Claude account. They run the no-account recording sequences
 against the installed binary and compare the sanitised screens with the
-fixtures, and check every option rcman passes is still in `--help`.
+fixtures, and check every option rcman passes is still in its command's own `--help`.
 
 When `claude` is not installed these tests skip, unless
 ``RCMAN_REQUIRE_REAL_CLAUDE=1`` (set by ``make check``), in which case they fail.
@@ -54,18 +54,15 @@ def test_no_account_screens_match_the_fixtures(tmp_path):
 def test_every_option_rcman_passes_is_in_help(tmp_path):
     used = rec.options_used()
     assert used  # non-vacuity
-    missing, gated = {}, set()
-    for command, options in used.items():
-        text = rec.help_text(REAL, command, rec.claude_env(tmp_path, tmp_path / "home"))
-        if rec.help_refused_logged_out(text):
-            gated.add(command)
-            continue
-        absent = sorted(o for o in options if o not in text)
-        if absent:
-            missing[" ".join(command) or "(top level)"] = absent
-    assert missing == {}
-    # No command's help is refused without a login, so every option is checked here.
-    assert gated == set()
+    env = rec.claude_env(tmp_path, tmp_path / "home")
+    # Each command's help names the command and every option rcman passes it; no
+    # command's help is refused without a login, so every option is checked here.
+    assert rec.help_gaps(REAL, env, used) == {}
+    # Known negative: an unknown command prints the top-level help, which is not its own.
+    unknown = ("rcman-no-such-command",)
+    assert rec.help_gaps(REAL, env, {unknown: set()}) == {
+        "rcman-no-such-command": ["claude rcman-no-such-command [options]"]
+    }
 
 
 # --- the credentials file rcman shares and empties (backend/rcman/accounts.py) ---------

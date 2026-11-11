@@ -29,9 +29,10 @@ fixture exists for exactly the captures the sequences define, and tests hold
 the two to each other in both directions.
 
 Captured text is sanitised before it is written: paths, URLs, clock times,
-session names, session IDs (`cse_…`), account details and the version become
-`{placeholders}`, which the fake fills in when it replays a screen. The
-placeholder set is `PLACEHOLDERS` in `devtools/record_claude.py`; email
+session names, session IDs (`cse_…`), account details (the plan and the
+sign-in's expiry among them) and the version become `{placeholders}`, which
+the fake fills in when it replays a screen. The placeholder set is
+`PLACEHOLDERS` in `devtools/record_claude.py`; email
 addresses and session IDs are found by `EMAIL_ADDRESS` and `SESSION_ID` in
 `helpers/claude_checks.py`, the same patterns that blank them in a refused
 upgrade's report. A test checks that no fixture or observed screen contains
@@ -123,12 +124,11 @@ It reproduces these behaviours of the real binary, each recorded:
   without asking about trust.
 - In a git repository — the folder or one above it has a `.git` — the
   server's status line names the branch, which the fake reads from the
-  repository's `HEAD`.
+  repository's `HEAD`; outside one it names the folder alone.
 - In a git repository, started without `--spawn`, Claude asks for a spawn
   mode after the trust question. Answered `1`, the server goes on as
-  anywhere else. Ctrl+C there changes nothing, and no answer is taken after
-  it; SIGTERM ends it, as any process is ended. With
-  `--spawn same-dir` it is not asked.
+  anywhere else; SIGTERM ends it, as any process is ended. With
+  `--spawn same-dir`, as rcman starts every server, it is not asked.
 
 Signing in succeeds, with the recorded screens, for `ACCEPTED_CODE`, and fails
 for any other. It writes the credentials file by rename, owner-only, and in
@@ -153,10 +153,8 @@ Two more let a test see what the fake has done instead of waiting for it to
 have done it; with neither set, nothing changes:
 
 - `FAKE_CLAUDE_TRACE` names a file the fake appends a JSON line to for each
-  event: `drawn`, with the lines of the screen it has just written whole, as
-  `tmuxctl`'s `Pane.screen` reads a screen; and its decision on each input it
-  reads, `answered`, `refused` (too quickly) or `ignored`, with the input
-  (`interrupt` for Ctrl+C).
+  screen it has just written whole: the event `drawn`, with the screen's lines
+  as `tmuxctl`'s `Pane.screen` reads a screen.
 - `FAKE_CLAUDE_GATE` names a folder: a server leaves its connected stage not
   after `READY_SECONDS` but once a file named `connected` is there, which it
   removes.
@@ -199,8 +197,9 @@ process has ended on one as `exited` (see [runtime.md](runtime.md#server-states)
   the fake refuses these as unsupported invocations;
 - a server in a repository with a detached HEAD — the fake's status line
   shows the commit's hash where the branch would be;
-- what follows Ctrl+C at an observed screen — the fake ends with exit
-  status 1, as in the `unrecognised` scenario;
+- what follows Ctrl+C at an observed screen, and at the spawn-mode question,
+  where Claude is seen to end, the screen and exit status it ends with — the
+  fake ends with exit status 1, as in the `unrecognised` scenario;
 - a refresh of the sign-in — the real one writes it in place over a bound
   file, truncated first, keeping keys it does not know; the fake never
   refreshes;
@@ -216,8 +215,8 @@ is in [real-claude-checklist.md](real-claude-checklist.md#the-shared-sign-in).
 | Tests | Needs | Runs |
 |---|---|---|
 | `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check; each observed screen's scenario must show that screen |
-| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The no-account screens must match the fixtures; every option rcman passes must be in `--help`, which is printed without a login; an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
-| `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in, under the account of the run: the folder `CLAUDE_CONFIG_DIR` names where it is set, otherwise the default configuration |
+| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The no-account screens must match the fixtures; each command's `--help` must be its own, its usage line naming the command (an unknown command prints the top-level help), and name every option rcman passes it, which is printed without a login (`help_gaps` in `devtools/record_claude.py`); an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
+| `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks each command's `--help` the same way while logged in, under the account of the run: the folder `CLAUDE_CONFIG_DIR` names where it is set, otherwise the default configuration |
 
 How the recorder waits on the program it drives is a `Watch`, which `record`
 is given and has no default:
@@ -225,15 +224,13 @@ is given and has no default:
 - `RealWatch`, in `devtools/record_claude.py`, is the command line's, against
   the real `claude`, which says nothing of what it has done: a screen is taken
   once it has not changed for a while (the brief connected stage after a
-  shorter while), an input Claude is to ignore is taken once Claude has been
-  watched a while, and the pane's waits give up at its `TIMEOUT`. Only the
+  shorter while), and the pane's waits give up at its `TIMEOUT`. Only the
   command line and the real-account tests, run by hand, use it;
   `tests/test_record_claude.py` holds every other test to that.
 - `TraceWatch`, in `tests/claude_watches.py`, is the round trip's, over the
   fake's trace and gate: a screen is taken once the fake has traced it drawn
   and the pane shows exactly that, since tmux may not yet have read all the
-  fake wrote; an ignored input once the fake has traced its decision on it; the
-  connected stage is left only once it has been captured. The
+  fake wrote; the connected stage is left only once it has been captured. The
   `trust_too_fast` sequence, the one marked `answer_too_fast`, runs the fake
   with its threshold beyond any test, so its answer is too quick at any speed,
   and every other sequence with a threshold of 0, so none is. How the real

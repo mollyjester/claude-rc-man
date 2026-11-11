@@ -5,8 +5,11 @@
   "analyticsDisabled": false,
   "projectsDirectory": "{config_dir}/projects",
   "configDirectory": "{config_dir}",
+  "loginExpiresAt": "{login_expires_at}",
   "email": "{email}",
   "orgId": "{org_id}",
   "orgName": "{org_name}",
-  "subscriptionType": "{subscription_type}"
+  "subscriptionType": "{subscription_type}",
+  "storedClaudeAiLogin": true,
+  "planTier": "{plan_tier}"
 }

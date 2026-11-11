@@ -31,15 +31,19 @@ def test_fill_is_the_inverse_of_sanitise_for_every_placeholder():
         org_id="o",
         org_name="n",
         subscription_type="t",
+        login_expires_at="2026-12-09T21:52:42.042Z",
+        plan_tier="p",
         session_id="cse_01abc",
     )
     template = (
         "{version} {cwd} {config_dir} {login_url} {environment_url} [{time}] {session_id}\n"
         '"email": "{email}", "orgId": "{org_id}", "orgName": "{org_name}", '
-        '"subscriptionType": "{subscription_type}"\n'
+        '"subscriptionType": "{subscription_type}", "loginExpiresAt": "{login_expires_at}", '
+        '"planTier": "{plan_tier}"\n'
         "    Capacity: 1/32 · New sessions\n"
         "    {session_name}\n"
-        "·✔︎· Connected · {folder} · {branch}"
+        "·✔︎· Connected · {folder} · {branch}\n"
+        "·✔︎· Connected · {folder}"  # outside a repository
     )
     assert set(re.findall(r"\{(\w+)\}", template)) == set(rec.PLACEHOLDERS)  # every one
     filled = rec.fill(template, values)

@@ -54,10 +54,9 @@ recorded screens. Tests that need a logged-in fake call :func:`write_state`.
 
 Two variables let a test see what the fake has done instead of waiting for it to
 have done it (TraceWatch in tests/claude_watches.py). With ``FAKE_CLAUDE_TRACE``
-naming a file, the fake appends one JSON line to it for each event: ``drawn``,
-with the screen it has just written whole, its lines as a terminal shows them
-(:func:`shown_lines`); and its decision on each input it reads, ``answered``,
-``refused`` (too quickly) or ``ignored``, with the input, ``interrupt`` for Ctrl+C.
+naming a file, the fake appends one JSON line to it for each screen it has just
+written whole, the event ``drawn`` with its lines as a terminal shows them
+(:func:`shown_lines`).
 With ``FAKE_CLAUDE_GATE`` naming a folder, a server leaves its connected stage
 not after READY_SECONDS but once a file named ``connected`` is in it, which it
 removes. With neither set, nothing changes.
@@ -102,6 +101,8 @@ FAKE_ACCOUNT = {
     "org_id": "00000000-0000-0000-0000-000000000000",
     "org_name": "Fake Org",
     "subscription_type": "max",
+    "login_expires_at": "2099-01-01T00:00:00.000Z",
+    "plan_tier": "max_5x",
 }
 # The one observed screen that takes an answer.
 REMOTE_CONTROL_PROMPT = "remote_control_prompt"
@@ -353,10 +354,8 @@ class Fake:
             asked = time.monotonic()
             answer = self.read_line()
             if time.monotonic() - asked >= self.min_answer:
-                self.traced("answered", input=answer.strip())
                 return answer
             self.show(too_fast_screen, prompt=True)
-            self.traced("refused", input=answer.strip())
 
     def run(self) -> int:
         a = self.args
@@ -470,7 +469,10 @@ class Fake:
                 return self.show("trust_declined")
             self.state["trusted"].append(self.cwd)
         if asks_spawn:
-            if self.spawn_question() != "1":
+            answer = self.spawn_question()
+            if answer is None:
+                return 1
+            if answer != "1":
                 return self.unsupported()
             screens = ("spawn_connected_same_dir", "spawn_ready_same_dir", "spawn_stopped_same_dir")
         else:
@@ -527,25 +529,15 @@ class Fake:
             time.sleep(GATE_POLL)
         opened.unlink()
 
-    def spawn_question(self) -> str:
-        """The spawn-mode answer; after Ctrl+C, which changes nothing on screen,
-        every answer is ignored. SIGTERM ends it, as it ends any process."""
-        interrupted: list[bool] = []
-
-        def interrupt(*_) -> None:
-            interrupted.append(True)
-            self.show("spawn_prompt_interrupted", prompt=True)
-            self.traced("ignored", input="interrupt")
-
-        signal.signal(signal.SIGINT, interrupt)
+    def spawn_question(self) -> str | None:
+        """The spawn-mode answer, or None for Ctrl+C, which is not recorded there and ends it
+        with exit status 1, as at an observed screen. SIGTERM ends it, as it ends any
+        process."""
         self.show("spawn_prompt", prompt=True)
-        answer = self.read_line()
-        while interrupted:
-            self.show("spawn_prompt_answered_after_interrupt", prompt=True)
-            self.traced("ignored", input=answer.strip())
+        try:
             answer = self.read_line()
-        self.traced("answered", input=answer.strip())
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        except KeyboardInterrupt:
+            return None
         return answer.strip()
 
     def unsupported(self) -> int:
