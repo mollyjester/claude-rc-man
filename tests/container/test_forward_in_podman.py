@@ -3,9 +3,9 @@ the tests' engine (tests/podman_service.py), with the suites' sizes (tests/conta
 the tools as the installer writes them and the default workspace image
 (tests/container/conftest.py).
 
-The relay is the product's own (``PodmanRuntime.port_argv``, runtime.py RELAY_SCRIPT): under
-busybox's ``setsid``, so that it leads a process group of its own in the workspace, the mounted
-busybox's shell writes its own id to a pidfile, then runs ``cat`` into ``nc``, and once
+The relay is the product's own (``PodmanRuntime.port_argv``, runtime.py RELAY_SCRIPT): the
+exec's own process, which leads a session and process group of its own in the workspace, the
+mounted busybox's shell writes its own id to a pidfile, then runs ``cat`` into ``nc``, and once
 either ends - ``cat`` having read its input to the end, or ``nc`` its connection's - it removes
 its pidfile and ``kill 0`` ends the relay's process group, the other with it. So the relay ends
 when either side does, whoever ended it, while the other holds its side open, and leaves no
@@ -186,8 +186,8 @@ def groups(podman, name: str) -> dict[int, int]:
 
 
 def wrapper_argv(pidfile: str, port: int) -> list[str]:
-    """The argv of the relay's shell, which busybox's ``setsid`` runs in its own place, and of
-    the subshells it forks for ``cat`` and ``nc``."""
+    """The argv of the relay's shell, which the exec runs, and of the subshells it forks for
+    ``cat`` and ``nc``."""
     return rt.relay_shell(rt.PODMAN_LAYOUT, pidfile, port)
 
 

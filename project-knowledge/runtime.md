@@ -671,25 +671,24 @@ this is the transport, and what cleans up after it.
 
 - **The relay.** `Runtime.port_argv(name, port, pidfile)` is what relays one connection to
   `port` on the workspace's own loopback: its standard input goes to the port and what the port
-  answers is its standard output. Both runtimes run the same argv (`relay_command`): the
-  layout's busybox (`Layout.busybox`, the mounted one in a container, the host's on the host
-  runtime; a path of `BUSYBOX_PATH`'s characters, since it is written into the script) running
-  `setsid` and then `RELAY_SCRIPT` with `sh -c` (`relay_shell`), which writes its shell's id to
-  the pidfile, then runs `cat` of its input into `nc 127.0.0.1 <port>`. When either ends - `cat`
-  once its input has ended, whether its client closed it, was killed or crashed, or `nc` once
-  the app has closed its side - it removes its pidfile and `kill 0` ends the relay's process
-  group, the other with it, so a relay outlives neither side and leaves its pidfile only where
-  it is killed. `setsid` makes the shell lead a session and process group of its own inside the
-  workspace, which holds the relay alone: the process a Podman exec starts belongs to a group
-  whose leader is outside the container, which `kill 0` would otherwise reach. busybox's
-  `setsid` runs its program in its own place, without a fork, unless what runs it leads a
-  process group already, which neither an exec's process nor a program rcman starts does: what
-  starts a relay must never start it as a process group's leader, or `setsid` forks, its parent
-  exits at once, and the client sees the relay end before anything has crossed. On Podman it is
-  `podman --remote exec --interactive <container>`, as the container's own user; the host
-  runtime runs the same argv itself, reaching the host's own `127.0.0.1`. A relay's exit code
-  carries no meaning. A port that is not one, a pidfile that is not a relay's, and a layout
-  without a usable busybox are refused.
+  answers is its standard output. Both runtimes run the layout's busybox (`Layout.busybox`, the
+  mounted one in a container, the host's on the host runtime; a path of `BUSYBOX_PATH`'s
+  characters, since it is written into the script) running `RELAY_SCRIPT` with `sh -c`
+  (`relay_shell`; on the host runtime under busybox's `setsid`, `relay_command`). The script
+  writes its shell's id to the pidfile, then runs `cat` of its input into `nc 127.0.0.1 <port>`.
+  When either ends - `cat` once its input has ended, whether its client closed it, was killed or
+  crashed, or `nc` once the app has closed its side - it removes its pidfile and `kill 0` ends
+  the relay's process group, the other with it, so a relay outlives neither side and leaves its
+  pidfile only where it is killed. The shell leads a session and process group of its own, which
+  holds the relay alone. On Podman it is `podman --remote exec --interactive <container>`, as
+  the container's own user, and the exec's process leads a session of its own in the container
+  already, as crun, the OCI runtime, makes it, so it runs no `setsid`: busybox's `setsid` forks
+  where what runs it leads a process group, its parent exits at once, the exec ends, and the
+  client sees the relay end before anything has crossed. The host runtime runs it itself, under
+  `setsid`, reaching the host's own `127.0.0.1`: there `setsid` runs the shell in its own place,
+  without a fork, since what starts a relay never starts it as a process group's leader. A
+  relay's exit code carries no meaning. A port that is not one, a pidfile that is not a relay's,
+  and a layout without a usable busybox are refused.
 - **What it cannot carry: a half-close.** The relay ends as soon as its input does, so a client
   that ends its sending side and then waits for the answer has the relay ended before the answer
   arrives, and the bytes it sent that are still in the pipe between `cat` and `nc` when the

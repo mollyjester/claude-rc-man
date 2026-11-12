@@ -1385,8 +1385,8 @@ class Forwarding:
 
     def _launch(self, target: Target) -> rt.Launch:
         """What starts a relay to the port, as the runtime runs one, in a thread: never as a
-        process group's leader, which busybox's ``setsid`` would fork for
-        (project-knowledge/runtime.md, "Forwarded ports")."""
+        process group's leader, which busybox's ``setsid``, under which the host runtime runs its
+        relay, would fork for (project-knowledge/runtime.md, "Forwarded ports")."""
         workspace = self.service.get(target.workspace)
         if workspace is None:
             raise rt.RuntimeFailed("the workspace is not there")

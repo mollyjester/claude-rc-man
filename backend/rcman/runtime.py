@@ -107,16 +107,15 @@ TERMINAL_PIDFILE = re.compile(r"[0-9a-f]{16}\.pid\Z")
 # in the runtime folder, which goes with the container.
 FORWARD_PIDFILE = re.compile(r"forward-[0-9a-f]{16}\.pid\Z")
 # What a relay to a port runs, as the busybox it is given (the first argument) runs it with
-# ``sh -c``, under busybox's ``setsid``: $1 its pidfile, $2 the port on the workspace's loopback.
-# It writes its own id to the pidfile, then runs ``cat`` of its input into ``nc``; when either
-# ends - its input reaching its end, or the app closing its side - it removes its pidfile and
-# ``kill 0`` ends the relay's process group, the other with it, so a relay never outlives either
-# side, and leaves no pidfile but where it is killed. ``setsid`` makes the
-# shell lead a session and process group of its own, in the workspace, so that the group ``kill
-# 0`` ends holds the relay alone: the process an exec starts belongs to a group whose leader is
-# outside the container. busybox's ``setsid`` runs its program in its own place, without a fork,
-# unless what runs it leads a process group already, which neither an exec's process nor a
-# program rcman starts does. It carries no half-close, and its exit code carries no meaning.
+# ``sh -c``: $1 its pidfile, $2 the port on the workspace's loopback. It writes its own id to the
+# pidfile, then runs ``cat`` of its input into ``nc``; when either ends - its input reaching its
+# end, or the app closing its side - it removes its pidfile and ``kill 0`` ends the relay's
+# process group, the other with it, so a relay never outlives either side, and leaves no pidfile
+# but where it is killed. Its shell leads a session and process group of its own, so that the
+# group ``kill 0`` ends holds the relay alone: in a container, as the process a Podman exec
+# starts, which crun, the OCI runtime, makes lead its own session there; on the host, under
+# busybox's ``setsid`` (``relay_command``). It carries no half-close, and its exit code carries
+# no meaning.
 RELAY_SCRIPT = (
     'echo $$ >"$1"; {{ {busybox} cat; {busybox} rm -f "$1"; kill 0; }} | '
     '{{ {busybox} nc 127.0.0.1 "$2"; {busybox} rm -f "$1"; kill 0; }}'
@@ -620,8 +619,8 @@ class Layout:
     # The Claude Code store as the programs in the workspace see it: a version is the file
     # ``versions/<version>`` in it.
     claude_root: str = ""
-    # The busybox a relay to a port runs (``relay_command``), by its path; none where there is
-    # none to run.
+    # The busybox a relay to a port runs (``relay_shell``, RELAY_SCRIPT), by its path; none where
+    # there is none to run.
     busybox: str = ""
 
     def tool(self, name: str) -> list[str]:
@@ -729,8 +728,13 @@ def relay_shell(layout: Layout, pidfile: str, port: int) -> list[str]:
 
 
 def relay_command(layout: Layout, pidfile: str, port: int) -> list[str]:
-    """The relay, as the workspace runs it: its shell (``relay_shell``) under busybox's
-    ``setsid``, leading a session and process group of its own."""
+    """The relay, as the host runtime runs it: its shell (``relay_shell``) under busybox's
+    ``setsid``, leading a session and process group of its own. busybox's ``setsid`` runs its
+    program in its own place, without a fork, unless what runs it leads a process group
+    already, which a program rcman starts does not; where it forks, its parent exits at once.
+    A Podman exec's process leads a session of its own already, as crun, the OCI runtime, makes
+    it, so ``setsid`` would fork there, and the exec would end before anything crossed: Podman
+    runs the shell itself."""
     shell = relay_shell(layout, pidfile, port)
     return [layout.busybox, "setsid", *shell]
 
@@ -922,7 +926,7 @@ class Runtime(ABC):
     def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
         """What relays a connection to ``port`` on the workspace's own loopback: its standard
         input is passed to the port and what the port answers is its standard output, and it
-        ends by itself once either side ends (``relay_command``), its pidfile ``pidfile``
+        ends by itself once either side ends (RELAY_SCRIPT), its pidfile ``pidfile``
         naming it while it runs. ValueError for a port that is not one and a pidfile that is not
         a relay's."""
 
@@ -2556,9 +2560,10 @@ class PodmanRuntime(Runtime):
         return Launch([*_host_tool("setsid"), "--ctty", *argv], podman_env())
 
     def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
-        """An exec of the relay with no tty, its input the podman client's, as the container's
-        own user."""
-        command = relay_command(self.layout(name), pidfile, port)
+        """An exec of the relay's shell with no tty, its input the podman client's, as the
+        container's own user: the exec's process, which crun makes lead a session and process
+        group of its own in the container, so no ``setsid`` (``relay_command``)."""
+        command = relay_shell(self.layout(name), pidfile, port)
         return Launch(self._argv("exec", "--interactive", name, *command), podman_env())
 
     # --- a person's Claude sign-in ----------------------------------------------------
