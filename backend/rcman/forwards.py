@@ -125,7 +125,7 @@ def is_relay(layout: Layout, cmdline: bytes, pidfile: str) -> bool:
         return False
     try:
         expected = rt.relay_shell(layout, pidfile, int(port))
-    except (ValueError, RuntimeFailed):
+    except ValueError, RuntimeFailed:
         return False
     return argv == [part.encode() for part in expected]
 
@@ -157,7 +157,7 @@ def parsed(data: bytes) -> tuple[list[tuple[str, str]], dict[int, tuple[int, int
         fields = stat.rpartition(b")")[2].split()
         try:
             table[int(pid)] = (int(fields[1]), int(fields[19]))
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             continue
     at += 2
     while at < len(data):
@@ -167,7 +167,7 @@ def parsed(data: bytes) -> tuple[list[tuple[str, str]], dict[int, tuple[int, int
             raise Unread("an argv is not framed")
         try:
             cmdlines[int(pid)] = bytes.fromhex(encoded.decode("ascii"))
-        except (UnicodeDecodeError, ValueError):
+        except UnicodeDecodeError, ValueError:
             raise Unread("an argv is not hexadecimal") from None
     return pidfiles, table, cmdlines
 

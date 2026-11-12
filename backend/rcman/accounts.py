@@ -60,7 +60,7 @@ class SignIn:
 def _expiry(millis) -> str | None:
     try:
         return dt.datetime.fromtimestamp(int(millis) / 1000, dt.UTC).isoformat()
-    except (TypeError, ValueError, OverflowError, OSError):
+    except TypeError, ValueError, OverflowError, OSError:
         return None
 
 
@@ -263,7 +263,7 @@ class Accounts:
         config = sign_in.channel.run([*layout.tool("cat"), f"{layout.config}/.claude.json"])
         try:
             named = json.loads(config.out).get("oauthAccount")
-        except (ValueError, AttributeError):
+        except ValueError, AttributeError:
             named = None
         if not isinstance(named, dict):
             raise Problem("claude_unrecognised_output", screen=tmux.screen())

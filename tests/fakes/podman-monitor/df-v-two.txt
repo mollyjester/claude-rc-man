@@ -1,19 +1,19 @@
 Images space usage:
 
 REPOSITORY                TAG         IMAGE ID      CREATED     SIZE        SHARED SIZE  UNIQUE SIZE  CONTAINERS
-docker.io/library/ubuntu  24.04       d9b8c34d61a9  2 weeks     80.7MB      0B           80.7MB       1
+docker.io/library/ubuntu  26.04       a8acf325a119  56 years    113MB       0B           113MB        1
 docker.io/library/alpine  3.20        bf8527eb54c3  6 months    8.104MB     0B           8.104MB      1
 
 Containers space usage:
 
 CONTAINER ID  IMAGE         COMMAND                                                  LOCAL VOLUMES  SIZE        CREATED             STATUS      NAMES
-d79e2b884d83  d9b8c34d61a9  sleep 2147483647                                         2              11.31kB     Less than a second  running     rcman-ws-1
-5863f5faf0da  bf8527eb54c3  sh -c echo a very long command line that goes on and on  2              0B          Less than a second  created     rcman-ws-2
+fcb97b3ce0f8  a8acf325a119  sleep 2147483647                                         2              11.23kB     5 seconds           running     rcman-ws-1
+e8da91865250  bf8527eb54c3  sh -c echo a very long command line that goes on and on  2              0B          Less than a second  created     rcman-ws-2
 
 Local Volumes space usage:
 
 VOLUME NAME                                                       LINKS       SIZE
 rcman-ws-1                                                        1           1MB
-68e71514a7e593fa2feb8c0eb263131212eb9de122d05f037e4764f2251ae01b  1           26B
-d115a20ba81bd01574fed823df56355d1084177687b8fdcba8ee35bb6ee13b67  1           0B
+d8857488d56c6813c40d0ba5acc2ca6f31081a14570b77d567b4cddacadd459b  1           26B
 rcman-ws-2                                                        1           0B
+9b688f6eac43887158e6db1a806cb2dc6c9e6c9a7d67b88952ce76c326f2cda4  1           0B

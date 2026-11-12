@@ -4,9 +4,9 @@
 # them), so that it installs no package (installer/install.py PACKAGES). The recorded stand-ins
 # of tests/container/stand_ins.py are mounted over systemctl, loginctl and rcman's podman at run
 # time, by tests/container/test_install_in_container.py.
-FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      podman crun uidmap catatonit slirp4netns dbus-user-session busybox-static ncurses-base \
+      podman crun uidmap catatonit passt dbus-user-session busybox-static ncurses-base \
       python3 git caddy curl ca-certificates xz-utils procps \
  && rm -rf /var/lib/apt/lists/*

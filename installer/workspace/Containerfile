@@ -1,7 +1,8 @@
-FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 # The default workspace image: what Claude Code and rcman need in a workspace, gh, which reads
 # the person's GitHub token from the files rcman writes for it, Podman, which the tools'
-# podman and docker run (backend/rcman/podman), and the tools a repository's own setup
+# podman and docker run (backend/rcman/podman), with passt, whose pasta is the network of a
+# container that asks for one of its own, and the tools a repository's own setup
 # commonly runs; nothing else. The packages are on one line. The label (helpers/instructions.py
 # TOOLS_LABEL) says an image is this one or is built from it, and so has these tools.
 # tmux, busybox and Claude Code are mounted into every workspace instead.
@@ -10,7 +11,7 @@ FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d
 # while one of the user's own with CAP_SETUID may. setcap is removed once used.
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      git ca-certificates curl python3 python3-venv make tar xz-utils zip unzip gh podman crun catatonit uidmap libcap2-bin \
+      git ca-certificates curl python3 python3-venv make tar xz-utils zip unzip gh podman crun catatonit uidmap libcap2-bin passt \
  && chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap \
  && setcap cap_setuid+ep /usr/bin/newuidmap \
  && setcap cap_setgid+ep /usr/bin/newgidmap \

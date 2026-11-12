@@ -2717,7 +2717,7 @@ class Workspaces:
             if not (memory or pids):
                 return held
             used = self.runtime.usage(person_id, workspace_id)
-        except (RuntimeFailed, RuntimeUnavailable):
+        except RuntimeFailed, RuntimeUnavailable:
             return held
         memory_kept = memory and (
             not used.memory_known or limits.memory_below(held.memory_mib, used)

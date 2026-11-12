@@ -6,6 +6,7 @@ tests/container/test_runtime_in_podman.py runs the same contract against real Po
 
 import dataclasses
 import json
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -131,7 +132,8 @@ def test_a_workspace_container_is_made_as_the_design_says(tmp_path):
     base = 3 * rt.RANGE
     for option in (
         "--init",
-        "--network=slirp4netns:allow_host_loopback=false",
+        "--network=pasta:--no-map-gw",
+        "--device=/dev/net/tun",
         f"--uidmap=0:{base}:{rt.RANGE}",
         f"--gidmap=0:{base}:{rt.RANGE}",
         "--volume=rcman-ws-7:/rcman",
@@ -230,11 +232,17 @@ def test_every_container_rcman_removes_goes_with_the_anonymous_volumes_of_its_im
         assert "--volumes" in call and "--force" in call and "--time=0" in call, call
 
 
+# Podman's output about images, recorded from Podman on the tests' engine.
+RECORDED_IMAGES = Path(__file__).parent / "fakes" / "podman-images"
+
+
 def image_entry(image_id: str, *names: str) -> dict:
     return {"Id": image_id, "Names": list(names) or None}
 
 
-def test_images_nothing_keeps_are_removed_by_name_without_force_and_the_fixed_ones_stay(tmp_path):
+def test_images_nothing_keeps_are_removed_by_name_without_force_and_the_fixed_ones_stay(
+    tmp_path, caplog
+):
     keep_id, other_id, none_id = "1" * 64, "2" * 64, "3" * 64
     listed = [
         image_entry("4" * 64, "localhost/rcman-workspace:test"),  # the default image
@@ -244,11 +252,22 @@ def test_images_nothing_keeps_are_removed_by_name_without_force_and_the_fixed_on
         image_entry(other_id, "registry.example.com/old:1", "registry.example.com/old:2"),
         image_entry(none_id),  # a named-nothing image: what a killed load leaves
     ]
-    recorder = Recorder(tmp_path, {"images": (0, json.dumps(listed), "")})
-    removed = podman_runtime(tmp_path, recorder).collect_images(
-        {keep_id[::-1]}, {"registry.example.com/kept:1"}
+    # What Podman's check said when it repaired two layers nothing referred to.
+    repaired = (RECORDED_IMAGES / "system-check-repair.txt").read_text()
+    recorder = Recorder(
+        tmp_path, {"images": (0, json.dumps(listed), ""), "system check": (0, repaired, "")}
     )
+    with caplog.at_level(logging.INFO, logger="rcman.runtime"):
+        removed = podman_runtime(tmp_path, recorder).collect_images(
+            {keep_id[::-1]}, {"registry.example.com/kept:1"}
+        )
     asked = [c[3:] for c in recorder.calls() if c[3:5] == ["image", "rm"]]
+    # Then the storage's own check, once the removals are done, repairing what is older than
+    # LOOSE_LAYER_AGE and never forcing; what it said is logged.
+    after = [c[3:] for c in recorder.calls()][-1]
+    assert after == ["system", "check", "--quick", "--repair", f"--max={rt.LOOSE_LAYER_AGE}"]
+    damaged = repaired.splitlines()[0]
+    assert damaged.startswith("Damaged layer ") and damaged in caplog.text
     assert asked == [
         ["image", "rm", "registry.example.com/old:1"],
         ["image", "rm", "registry.example.com/old:2"],
@@ -260,17 +279,17 @@ def test_images_nothing_keeps_are_removed_by_name_without_force_and_the_fixed_on
 
 # `podman images -a` of a plain two-step build, recorded from Podman on the tests' engine: the
 # leaf, its nameless step image and the base.
-RECORDED_STEPS = json.loads(
-    (Path(__file__).parent / "fakes" / "podman-images" / "images-a.json").read_text()
-)
+RECORDED_STEPS = json.loads((RECORDED_IMAGES / "images-a.json").read_text())
 
 
 def recorded_steps(step_age: int) -> tuple[dict, dict, dict]:
     """The recording's leaf, step and base, the step made ``step_age`` seconds ago."""
     import time
 
-    leaf, step, base = (dict(entry) for entry in RECORDED_STEPS)
-    assert leaf["ParentId"] == step["Id"] and step["ParentId"] == base["Id"] and not step["Names"]
+    (base,) = (dict(entry) for entry in RECORDED_STEPS if not entry["ParentId"])
+    (step,) = (dict(entry) for entry in RECORDED_STEPS if entry["ParentId"] == base["Id"])
+    (leaf,) = (dict(entry) for entry in RECORDED_STEPS if entry["ParentId"] == step["Id"])
+    assert not step["Names"] and leaf["Names"]
     step["Created"] = int(time.time()) - step_age
     return leaf, step, base
 
@@ -790,7 +809,7 @@ def test_a_workspace_takes_the_injected_range_and_network_and_no_slice_without_s
     runtime.create(rt.Spec(name="rcman-ws-7", slot=3, workspace=7, person=2))
     run = workspace_run(recorder)
     assert "--network=host" in run and "--uidmap=0:24576:8192" in run
-    assert not [a for a in run if a.startswith(("--network=slirp4netns", "--cgroup-parent"))]
+    assert not [a for a in run if a.startswith(("--network=pasta", "--cgroup-parent"))]
     assert "--pids-limit=-1" in run  # the limit of Podman's own is still lifted
 
 

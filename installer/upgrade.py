@@ -295,7 +295,7 @@ def read_status(path: Path | None = None) -> dict | None:
     """The status at ``path`` (STATUS), or None where there is none or it is not one."""
     try:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(found, dict) or set(found) != set(FIELDS):
         return None

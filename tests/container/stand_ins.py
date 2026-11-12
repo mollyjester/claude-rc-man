@@ -82,7 +82,7 @@ def record(name: str, args: list[str]) -> None:
 def _load(path: Path) -> dict:
     try:
         return json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
 
 
@@ -214,7 +214,7 @@ def _pid_file(name: str) -> Path:
 def _stop_unit(name: str) -> None:
     try:
         pid = int(_pid_file(name).read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return
     try:
         os.killpg(pid, signal.SIGTERM)

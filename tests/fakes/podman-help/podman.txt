@@ -4,6 +4,7 @@ Usage:
   podman [options] [command]
 
 Available Commands:
+  artifact    Manage OCI artifacts
   attach      Attach to a running container
   auto-update Auto update containers according to their auto-update policy
   build       Build an image using instructions from Containerfiles
@@ -43,6 +44,7 @@ Available Commands:
   ps          List containers
   pull        Pull an image from a registry
   push        Push an image to a specified destination
+  quadlet     Allows users to manage Quadlets
   rename      Rename an existing container
   restart     Restart one or more containers
   rm          Remove one or more containers
@@ -67,16 +69,18 @@ Available Commands:
   wait        Block on one or more containers
 
 Options:
+      --cdi-spec-dir stringArray    Set the CDI spec directory path (may be set multiple times) (default [/etc/cdi,/var/run/cdi])
       --cgroup-manager string       Cgroup manager to use ("cgroupfs"|"systemd") (default "cgroupfs")
+      --config string               Path to directory containing authentication config file
       --conmon string               Path of the conmon binary
-  -c, --connection string           Connection to use for remote Podman service
+  -c, --connection string           Connection to use for remote Podman service (CONTAINER_CONNECTION)
       --events-backend string       Events backend to use ("file"|"journald"|"none") (default "file")
       --help                        Help for podman
-      --hooks-dir strings           Set the OCI hooks directory path (may be set multiple times) (default [/usr/share/containers/oci/hooks.d])
+      --hooks-dir stringArray       Set the OCI hooks directory path (may be set multiple times) (default [/usr/share/containers/oci/hooks.d])
       --identity string             path to SSH identity file, (CONTAINER_SSHKEY)
       --imagestore string           Path to the 'image store', different from 'graph root', use this to split storing the image into a separate 'image store', see 'man containers-storage.conf' for details
       --log-level string            Log messages above specified level (trace, debug, info, warn, warning, error, fatal, panic) (default "warn")
-      --module strings              Load the containers.conf(5) module
+      --module stringArray          Load the containers.conf(5) module
       --network-cmd-path string     Path to the command for configuring the network
       --network-config-dir string   Path of the configuration directory for networks
       --out string                  Send output (stdout) from podman to a file
@@ -88,12 +92,15 @@ Options:
       --ssh string                  define the ssh mode (default "golang")
       --storage-driver string       Select which storage driver is used to manage storage of images and containers
       --storage-opt stringArray     Used to pass an option to the storage driver
-      --syslog                      Output logging information to syslog as well as the console (default false)
+      --syslog                      Output podman-internal logs to syslog as well as the console (default false)
+      --tls-ca string               path to TLS certificate Authority PEM file for remote.
+      --tls-cert string             path to TLS client certificate PEM file for remote.
+      --tls-key string              path to TLS client certificate private key PEM file for remote.
       --tmpdir string               Path to the tmp directory for libpod state content.
                                     
                                     Note: use the environment variable 'TMPDIR' to change the temporary storage location for container images, '/var/tmp'.
-                                     (default "/tmp/podman-run-1000/libpod/tmp")
+                                     (default "/run/libpod")
       --transient-store             Enable transient container storage
-      --url string                  URL to access Podman service (CONTAINER_HOST) (default "unix:///tmp/podman-run-1000/podman/podman.sock")
+      --url string                  URL to access Podman service (CONTAINER_HOST) (default "unix:///run/podman/podman.sock")
   -v, --version                     version for podman
       --volumepath string           Path to the volume directory in which volume data is stored

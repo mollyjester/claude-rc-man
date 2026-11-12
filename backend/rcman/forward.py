@@ -256,7 +256,7 @@ def returned_path(value: str | None) -> str:
         return "/"
     try:
         path = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode("ascii")
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return "/"
     return safe_return(path)
 
@@ -462,7 +462,7 @@ class Exchange:
         if close:
             try:
                 close = await asyncio.wait_for(self.body(MOST_DRAINED), DRAIN_SECONDS) is None
-            except (TimeoutError, h11.RemoteProtocolError):
+            except TimeoutError, h11.RemoteProtocolError:
                 close = True
         sent = [*headers, ("content-length", str(len(body)))]
         if close:
@@ -772,7 +772,7 @@ class Forwarding:
                 await writer.drain()
                 return
             await self._connection(conn, reader, writer)
-        except (ConnectionError, h11.ProtocolError, asyncio.CancelledError):
+        except ConnectionError, h11.ProtocolError, asyncio.CancelledError:
             pass
         except Exception:  # noqa: BLE001 - one connection's failure is that connection's
             log.exception("a connection to the forwarding server failed")
@@ -1158,7 +1158,7 @@ class Forwarding:
                 return True
             try:
                 switched = await self._through(x, relay)
-            except (h11.ProtocolError, ConnectionError, asyncio.IncompleteReadError, OSError):
+            except h11.ProtocolError, ConnectionError, asyncio.IncompleteReadError, OSError:
                 await self._drop(relay)
                 replayable = x.method in REPLAYABLE or not relay.head_written
                 if relay.reused and not relay.heard and not x.body_sent and replayable:

@@ -3,10 +3,11 @@
 #
 #   sudo ./install.sh
 #
-# First it takes the installer's lock, so that one run goes at a time, a rollback too. Then the
-# clone is brought up to date with main, as the account that owns the clone (so its git
-# credentials are used, and git asks nothing); if that changed this script, it starts again with
-# the new version, holding the same lock. Then installer/install.py does the rest.
+# First it checks it runs as root on Ubuntu 26.04, then takes the installer's lock, so that one
+# run goes at a time, a rollback too. Then the clone is brought up to date with main, as the
+# account that owns the clone (so its git credentials are used, and git asks nothing); if that
+# changed this script, it starts again with the new version, holding the same lock. Then
+# installer/install.py does the rest.
 # rcman-upgrade.service runs it the same way, as root with no SUDO_USER (installer/upgrade.py).
 # See docs/installation.md.
 set -euo pipefail
@@ -19,6 +20,14 @@ lock="$root/.install.lock"
 die() { echo "install.sh: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run install.sh with sudo"
+
+# rcman runs on Ubuntu 26.04 only. The file is read, never run: its values are not trusted code.
+os_release=/etc/os-release
+release() { sed -n "s/^$1=//p" "$os_release" 2>/dev/null | tr -d "\"'"; }
+if [ "$(release ID) $(release VERSION_ID)" != "ubuntu 26.04" ]; then
+  name="$(release PRETTY_NAME || true)"
+  die "rcman runs on Ubuntu 26.04 only; this machine is ${name:-one whose $os_release names no release}"
+fi
 
 # The lock is held on fd 9 until the installer ends; install.py checks that it is. A run started
 # again after an update has it already (RCMAN_INSTALL_LOCK_FD), and must not open it again; it

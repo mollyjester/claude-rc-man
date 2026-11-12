@@ -171,7 +171,7 @@ def zombie_status_of(stat: str) -> int | None:
     try:
         fields = stat.rsplit(")", 1)[1].split()
         return int(fields[-1]) if fields[0] == "Z" else None
-    except (IndexError, ValueError):
+    except IndexError, ValueError:
         return None
 
 

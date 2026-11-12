@@ -458,7 +458,7 @@ def _contents(run: Run, layout: Layout, path: str, big: str, unreadable: str) ->
     sized = run([*layout.tool("wc"), "-c", path], READ_SECONDS, cwd=layout.work)
     try:
         size = int(sized.out.split()[0])
-    except (IndexError, ValueError):
+    except IndexError, ValueError:
         raise _unreadable("measuring", sized, unreadable) from None
     if sized.code != 0:
         raise _unreadable("measuring", sized, unreadable)
@@ -825,7 +825,7 @@ def _image(value) -> str:
     ):
         raise _bad(
             "image",
-            "the name of an image in a registry, such as ubuntu:24.04, with no variable, "
+            "the name of an image in a registry, such as ubuntu:26.04, with no variable, "
             "file or transport in it, not the name or the id of an image in rcman's storage, "
             "and not in a registry on the machine rcman runs on or on its network",
         )
@@ -1505,7 +1505,7 @@ def _metadata(label: str | None) -> list[dict]:
         return []
     try:
         found = json.loads(label)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         raise Refused("metadata_invalid") from None
     if isinstance(found, dict):
         found = [found]

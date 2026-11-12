@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-# Podman's own default profile, from containers-common.
+# Podman's own default profile, from golang-github-containers-common.
 PODMAN_DEFAULT = Path("/usr/share/containers/seccomp.json")
 # Its name in the tools (rcman/runtime.py SECCOMP).
 NAME = "seccomp.json"

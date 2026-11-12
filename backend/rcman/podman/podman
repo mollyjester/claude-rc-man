@@ -18,10 +18,11 @@ PODMAN=/usr/bin/podman
 STATE=/run/rcman-podman
 NAME=${0##*/}
 # The global options of podman's, and docker's, that take a value as the next argument.
-VALUED=" --cgroup-manager --config --conmon --connection -c --context --db-backend \
+VALUED=" --cdi-spec-dir --cgroup-manager --config --conmon --connection -c --context --db-backend \
 --events-backend --hooks-dir --host -H --identity --imagestore --log-level -l --module \
 --network-cmd-path --network-config-dir --out --root --runroot --runtime --runtime-flag --ssh \
---storage-driver --storage-opt --tlscacert --tlscert --tlskey --tmpdir --url --volumepath "
+--storage-driver --storage-opt --tls-ca --tls-cert --tls-key --tlscacert --tlscert --tlskey \
+--tmpdir --url --volumepath "
 
 say() { echo "$NAME: $*" >&2; }
 

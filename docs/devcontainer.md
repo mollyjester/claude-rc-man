@@ -286,13 +286,15 @@ with no more than a workspace has. Which CLI and Node the builder image holds is
   workspace uses and which rcman's own identity never maps; the builds of different people
   may run at the same time in that one range, so it does not keep them apart from each
   other. It is not privileged: it has the one capability a Podman inside it needs to
-  mount its own storage, and no device (`run_argv` in `backend/rcman/builder.py`), and a volume of its own for what it
-  builds. Its network reaches everything outbound, as a workspace's does, the local network
-  and the addresses cloud machines serve their metadata on included; only the machine's own
-  loopback is blocked. It counts against the limits on memory, CPU and processes of the person who asked for the
-  build, and has none of its own (see [Limits](users.md#limits)); disk cannot be limited. A
-  hostile build that got out of its nested container would still be in the builder's own
-  range, and the image it made is checked again before it is kept (see Copying out).
+  mount its own storage, and no device (`run_argv` in `backend/rcman/builder.py`), and a
+  volume of its own for what it builds. Its network reaches everything outbound, as a
+  workspace's does, the local network and the addresses cloud machines serve their metadata
+  on included; only the machine's own loopback is blocked, but for DNS, which reaches the
+  machine's resolver. It counts against the limits on memory, CPU and processes of the person
+  who asked for the build, and has none of its own (see [Limits](users.md#limits)); disk cannot
+  be limited. A hostile build that got out of its nested container would still be in the
+  builder's own range, and the image it made is checked again before it is kept (see Copying
+  out).
 - **What it sees.** Only a copy of the workspace's files, streamed to it as a tar archive
   through rcman; nothing of the machine's is mounted. The workspace's own git folder, the
   one in the top folder, is not copied; a git folder deeper in the repository is, as any

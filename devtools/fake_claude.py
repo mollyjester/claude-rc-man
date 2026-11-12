@@ -208,7 +208,7 @@ def sign_in(config_dir: Path, email: str) -> None:
     path = config_dir / CONFIG_FILE
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         config = {}
     path.write_text(json.dumps({**config, "oauthAccount": oauth_account(email)}), "utf-8")
 
@@ -216,7 +216,7 @@ def sign_in(config_dir: Path, email: str) -> None:
 def signed_in(config_dir: Path) -> bool:
     try:
         found = json.loads((config_dir / CREDENTIALS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return isinstance(found, dict) and isinstance(found.get("claudeAiOauth"), dict)
 
@@ -412,7 +412,7 @@ class Fake:
     def config(self) -> dict:
         try:
             found = json.loads((Path(self.state_dir) / CONFIG_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return {}
         return found if isinstance(found, dict) else {}
 

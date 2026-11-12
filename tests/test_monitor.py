@@ -20,7 +20,7 @@ from tests.until import until_async
 RECORDED = Path(__file__).resolve().parent / "fakes" / "podman-monitor"
 # The install label the recordings' containers carry (container-inspect.json).
 RECORDED_INSTALL = "gate-install"
-TMP_1 = "68e71514a7e593fa2feb8c0eb263131212eb9de122d05f037e4764f2251ae01b"
+TMP_1 = "d8857488d56c6813c40d0ba5acc2ca6f31081a14570b77d567b4cddacadd459b"
 
 
 def recorded(name: str) -> str:
@@ -119,7 +119,7 @@ def test_unit_cpu_is_a_percent_of_one_core_over_the_seconds_between_rounds():
 
 def test_the_recorded_disk_read_gives_each_container_and_volume_by_name():
     found = monitor.read_disk(recorded("df-v.txt"))
-    assert found.containers == {"rcman-ws-1": 11_310}
+    assert found.containers == {"rcman-ws-1": 11_230}
     assert found.volumes == {"rcman-ws-1": 1_000_000, TMP_1: 26}
 
 
@@ -128,17 +128,14 @@ def test_the_recorded_disk_read_gives_each_container_and_volume_by_name():
 
 def test_the_recorded_inspect_gives_each_containers_labels_and_tmp_volume():
     found = monitor.read_inspected(recorded("container-inspect.json"))
-    assert found == {
-        "rcman-ws-1": monitor.Inspected(
-            labels={
-                "org.opencontainers.image.version": "24.04",
-                rt.LABEL_INSTALL: RECORDED_INSTALL,
-                rt.LABEL_PERSON: "1",
-                rt.LABEL_WORKSPACE: "1",
-            },
-            tmp_volume=TMP_1,
-        )
+    assert list(found) == ["rcman-ws-1"] and found["rcman-ws-1"].tmp_volume == TMP_1
+    labels = found["rcman-ws-1"].labels
+    assert {key: value for key, value in labels.items() if key.startswith("rcman.")} == {
+        rt.LABEL_INSTALL: RECORDED_INSTALL,
+        rt.LABEL_PERSON: "1",
+        rt.LABEL_WORKSPACE: "1",
     }
+    assert labels["org.opencontainers.image.version"] == "26.04"  # the image's own, kept too
 
 
 # --- the rounds, on the host runtime -----------------------------------------------
@@ -301,7 +298,7 @@ def plant_disk(runtime, settings) -> tuple[int, int, int]:
     two["Name"] = "rcman-ws-2"
     two["Config"]["Labels"][rt.LABEL_WORKSPACE] = "2"
     tmp = next(m for m in two["Mounts"] if m["Destination"] == rt.TMP_MOUNT)
-    tmp["Name"] = "d115a20ba81bd01574fed823df56355d1084177687b8fdcba8ee35bb6ee13b67"
+    tmp["Name"] = "9b688f6eac43887158e6db1a806cb2dc6c9e6c9a7d67b88952ce76c326f2cda4"
     runtime.inspect_report = json.dumps([*inspected, two])
     return 1, first, second
 
@@ -311,10 +308,10 @@ def test_a_disk_round_sums_each_workspaces_volume_tmp_and_container(made, settin
     made.disk_round()
     snap = made.snapshot()
     containers = by(snap["containers"], "id")
-    assert containers[first]["disk_bytes"] == 1_000_000 + 26 + 11_310
+    assert containers[first]["disk_bytes"] == 1_000_000 + 26 + 11_230
     assert containers[second]["disk_bytes"] == 0
     people = by(snap["people"], "email")
-    assert people[ALICE]["disk_bytes"] == 1_000_000 + 26 + 11_310
+    assert people[ALICE]["disk_bytes"] == 1_000_000 + 26 + 11_230
     assert people[BOB]["disk_bytes"] == 0  # no workspace: nothing
     assert snap["disk"]["error"] is None and snap["disk"]["collected_at"] is not None
     calls = [call[0] for call in runtime.monitor_calls]
@@ -339,12 +336,12 @@ def test_a_disk_round_reads_rcmans_own_use_by_part(made, settings, runtime):
     storage = made.snapshot()["storage"]
     versions = storage["claude_versions_bytes"]
     assert storage == {
-        "images_bytes": 88_807_392,  # the summary's Images RawSize
+        "images_bytes": 121_147_017,  # the summary's Images RawSize
         # rcman-ws-1 and rcman-ws-2, and the volumes at their /tmp
         "workspace_volumes_bytes": 1_000_000 + 26 + 0 + 0,
         "other_volumes_bytes": 5_000_000,
         "claude_versions_bytes": versions,
-        "total_bytes": 88_807_392 + 1_000_026 + 5_000_000 + versions,
+        "total_bytes": 121_147_017 + 1_000_026 + 5_000_000 + versions,
     }
     planted = runtime.claude_store / "versions" / "planted"
     planted.parent.mkdir(parents=True, exist_ok=True)
@@ -498,7 +495,7 @@ def test_a_disk_round_runs_one_df_and_one_inspect_and_no_systemctl(
     counted = programs.counted()
     assert counted == DISK_COST  # non-vacuity: each ran
     assert over_cost(counted, DISK_COST) == {}
-    assert made.snapshot()["storage"]["images_bytes"] == 88_807_392  # the summary was read
+    assert made.snapshot()["storage"]["images_bytes"] == 121_147_017  # the summary was read
 
 
 class OnePerUnit(rt.PodmanRuntime):

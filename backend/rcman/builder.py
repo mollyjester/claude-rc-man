@@ -507,7 +507,7 @@ def is_image_id(value) -> bool:
 def _json(raw: bytes, what: str):
     try:
         return json.loads(raw)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         raise ArchiveRefused(f"its {what} is not readable") from None
 
 
@@ -628,7 +628,7 @@ def verify_archive(path, image_id: str) -> Verified:
             raw = _member_bytes(archive, members[config], MAX_CONFIG_BYTES, "configuration")
     except ArchiveRefused:
         raise
-    except (tarfile.TarError, EOFError, OSError, ValueError):
+    except tarfile.TarError, EOFError, OSError, ValueError:
         raise ArchiveRefused("it is not a readable archive") from None
     if hashlib.sha256(raw).hexdigest() != image_id:
         raise ArchiveRefused(
@@ -675,7 +675,7 @@ class _Piecewise:
             return b""
         try:
             data = self._reader.read(min(count, self._left))
-        except (tarfile.TarError, EOFError):
+        except tarfile.TarError, EOFError:
             data = b""
         if not data:
             raise ArchiveRefused("it is cut short")

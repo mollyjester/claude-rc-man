@@ -160,7 +160,7 @@ def credentials_state(raw: bytes) -> str:
         return NOT_SIGNED_IN_EMPTY
     try:
         data = json.loads(raw)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         return NOT_SIGNED_IN_UNREADABLE
     oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
     return SIGNED_IN if isinstance(oauth, dict) else NOT_SIGNED_IN_UNREADABLE
@@ -264,9 +264,13 @@ NAME_TAKEN = "a container named {name} is there already"
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
-# The network of every container a person's programs run in: their own, with no way to the
-# host's loopback.
-NETWORK = "slirp4netns:allow_host_loopback=false"
+# The network of every container a person's programs run in: their own, from pasta, with no way
+# to the host's loopback. --no-map-gw keeps the gateway's address from being mapped to the host;
+# Podman forwards no port either way (-t, -u, -T and -U none). What pasta maps instead is
+# 169.254.1.2 (--map-guest-addr, host.containers.internal) to the host's own global address, so
+# a listener on the host's other addresses answers there, and 169.254.1.1 port 53 to the host's
+# first resolver, the one path to its loopback, which carries DNS alone.
+NETWORK = "pasta:--no-map-gw"
 # What every workspace container is given so that a container nested in it can mount a /proc of
 # its own: the kernel refuses a new /proc where parts of the one there are covered.
 UNMASK_PROC = "--security-opt=unmask=/proc/*"
@@ -313,6 +317,10 @@ USING_LOCAL_IMAGE = "The pull failed; the image already here is used"
 # How long an image with no name is left alone: it may be a layer of a build under way, which an
 # upgrade runs beside the service.
 IMAGE_GRACE_SECONDS = 3600.0
+# How old a layer that nothing refers to must be before the storage check removes it: younger, it
+# may be one a build, a pull or a load under way has made and not yet named. Podman's own
+# default, written out.
+LOOSE_LAYER_AGE = "24h"
 # What is said of an image named ``localhost/...``, which is never pulled.
 IN_STORAGE = "The image is in rcman's storage; nothing is pulled"
 # What podman says, with the exit code UNAVAILABLE, when it cannot reach its service at all.
@@ -1370,7 +1378,7 @@ class PodmanRuntime(Runtime):
         proc = self._podman("info", "--format", "json")
         try:
             return str(json.loads(proc.stdout)["store"]["graphRoot"])
-        except (ValueError, KeyError, TypeError):
+        except ValueError, KeyError, TypeError:
             raise RuntimeFailed("podman info named no storage folder") from None
 
     def wait_ready(self, timeout: float) -> None:
@@ -1434,6 +1442,9 @@ class PodmanRuntime(Runtime):
                 *labels,
                 "--init",
                 f"--network={self.config.network}",
+                # The device pasta needs, so that a container nested in the workspace can have a
+                # network of its own (--network=pasta).
+                "--device=/dev/net/tun",
                 # In the workspace's slice, which holds the limits (limits.py). Podman gives a
                 # container a limit on processes of its own unless it is told there is none; the
                 # slice's TasksMax is the limit, and infinity where nobody set one.
@@ -1594,7 +1605,7 @@ class PodmanRuntime(Runtime):
 
     def _isolated(self, slot: int) -> list[str]:
         """What every container a person's programs run in has: an init, the network
-        with no way to the host's loopback, and the person's uid range."""
+        with no way to the host's loopback but DNS (NETWORK), and the person's uid range."""
         return ["--init", f"--network={self.config.network}", *self._ids(slot)]
 
     def _prepare_folders(self, spec: Spec) -> None:
@@ -1865,7 +1876,26 @@ class PodmanRuntime(Runtime):
                     log.debug("the image %s was gone already", target)
                 else:
                     log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
+        self._check_storage()
         return removed
+
+    def _check_storage(self) -> None:
+        """Podman's quick check of its storage, removing the layers nothing refers to that are
+        older than LOOSE_LAYER_AGE, which a pull, a load or a build that was stopped leaves
+        behind. Never forced, so nothing in use is touched; what it says is logged, and a
+        failure is said and changes nothing else."""
+        try:
+            checked = self._podman(
+                "system", "check", "--quick", "--repair", f"--max={LOOSE_LAYER_AGE}", check=False
+            )
+        except (RuntimeFailed, RuntimeUnavailable) as error:  # not in time, or no Podman
+            log.warning("the storage check failed: %s", error)
+            return
+        for line in checked.stdout.decode("utf-8", "replace").splitlines():
+            if line.strip():
+                log.info("the storage check: %s", line.strip())
+        if checked.returncode != 0:
+            log.warning("the storage check failed: %s", self._said(checked.stderr, "no reason"))
 
     def default_image_id(self) -> str:
         found = self._podman(
@@ -2168,7 +2198,7 @@ class PodmanRuntime(Runtime):
             labels = _labels_of(inspected)
             image_id = str(inspected["Id"]).removeprefix("sha256:")
             size = int(inspected.get("Size") or 0)
-        except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        except ValueError, TypeError, KeyError, AttributeError, RecursionError:
             raise BuildFailed(
                 kind="build_image_refused", reason="its description cannot be read"
             ) from None
@@ -2313,7 +2343,7 @@ class PodmanRuntime(Runtime):
         lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
         try:
             return bool(lines) and json.loads(lines[-1]).get("outcome") == "success"
-        except (ValueError, AttributeError, RecursionError):
+        except ValueError, AttributeError, RecursionError:
             return False
 
     def _stage(
@@ -2702,7 +2732,7 @@ def parsed_canary_report(raw: bytes) -> dict[str, dict]:
     a RuntimeFailed where it is anything else."""
     try:
         report = json.loads(raw)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         raise RuntimeFailed("the canary did not report") from None
     if not isinstance(report, dict) or not all(
         isinstance(name, str) and isinstance(entry, dict) for name, entry in report.items()

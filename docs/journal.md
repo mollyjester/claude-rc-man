@@ -43,6 +43,13 @@ same way, at error level with its traceback; and that rcman cannot tell where Po
 is, at warning level, once while it runs, in which case the host's filesystems leave Podman's
 storage out until it can.
 
+Whenever rcman removes the images nothing uses, it also has Podman check its storage and
+remove the layers that belong to nothing and are older than `LOOSE_LAYER_AGE` in
+`backend/rcman/runtime.py`, such as those a pull, a load or a build that was stopped
+leaves. What that check says comes from the logger `rcman.runtime`, each line of it at info
+level, such as a "Damaged layer" it removed and why; a check that failed or did not end in
+time is written at warning level, and nothing else changes.
+
 Those about the **Terminal** tab come from the logger `rcman.terminals`:
 something that went wrong with a terminal inside rcman, such as a shell that
 did not start or a session that could not be ended (see

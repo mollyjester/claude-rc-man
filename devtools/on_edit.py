@@ -94,7 +94,7 @@ def import_path(root: Path) -> str:
     try:
         with open(root / "pyproject.toml", "rb") as f:
             wheel = tomllib.load(f)["tool"]["hatch"]["build"]["targets"]["wheel"]
-    except (OSError, KeyError, tomllib.TOMLDecodeError):
+    except OSError, KeyError, tomllib.TOMLDecodeError:
         return os.environ.get("PYTHONPATH", "")
     folders = dict.fromkeys(str(root / Path(package).parent) for package in wheel["packages"])
     return os.pathsep.join([*folders, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)

@@ -115,7 +115,7 @@ def running_release(prefix: Path | None = None) -> str | None:
     try:
         release = Path(prefix or PREFIX).resolve().parent
         text = (release / COMPLETE).read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     return text if COMMIT.fullmatch(text) else None
 
@@ -130,7 +130,7 @@ def read_status(path: Path | None = None) -> dict | None:
     longer than ERROR_LENGTH."""
     try:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(found, dict) or set(found) != set(FIELDS) or found["state"] not in STATES:
         return None

@@ -200,7 +200,7 @@ PACKAGES = (
     "crun",
     "uidmap",
     "catatonit",
-    "slirp4netns",
+    "passt",
     "dbus-user-session",
     "busybox-static",
     "ncurses-base",

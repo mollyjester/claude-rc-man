@@ -322,7 +322,9 @@ subordinate ids among the workspace's own ids (`/etc/subuid` and `/etc/subgid`) 
 while rcman builds the image holds in the workspace.
 
 - A container started in a workspace is no boundary inside it: it shares the workspace's
-  network, and the workspace's user can reach whatever it holds.
+  network, and the workspace's user can reach whatever it holds. One started with
+  `--network=pasta`, where the workspace's image has `passt`, as the default image does, has a
+  network of its own inside the workspace's, which reaches what the workspace reaches.
 - Publishing a port, with `-p`, `--publish` or `-P`, publishes nothing: a container that shares
   the workspace's network listens on the workspace's own ports, so one listening on port 8000 is
   at `localhost:8000`, and two cannot listen on the same port. `podman` and `docker` say so when
@@ -386,7 +388,8 @@ What else a session is told depends on the workspace's image:
   registry (see
   [The image](devcontainer.md#the-image)). Sessions are told that `gh` is there with your
   GitHub token, to be used for GitHub work rather than GitHub's tools for Claude (see
-  [gh](git.md#gh)), which tools the image has, and that anything else can be installed with
+  [gh](git.md#gh)), which tools the image has, that a container started with
+  `--network=pasta` has a network of its own, and that anything else can be installed with
   `apt-get`.
 - **An older default image without that label**, which a workspace made from it keeps until it
   is rebuilt: that `gh` is there, but not which tools the image has.

@@ -2,7 +2,7 @@
 name = "claude-rc-man"
 version = "0.0.0"
 description = "Self-hosted web service to control Claude Code Remote Control servers"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE.md"]
 dependencies = [
@@ -53,7 +53,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

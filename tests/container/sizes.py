@@ -10,5 +10,7 @@ TEST_RANGE = 8192
 # The slots people have in the suites, and the builder's after the last of them.
 PEOPLE_SLOTS = range(1, 6)
 BUILDER_SLOT = 6
-# A workspace's network on the engine: the engine's own, as in a workspace no slirp4netns runs.
+# A workspace's network on the engine: the engine's own. The suites need no network of a
+# workspace's own; the one test of the product's network, in test_runtime_in_podman.py, makes
+# its workspace on rt.NETWORK.
 TEST_NETWORK = "host"

@@ -213,7 +213,7 @@ def _npm_script(words: list[str]) -> str | None:
 def _scripts(directory: Path) -> dict:
     try:
         scripts = json.loads((directory / "package.json").read_text(encoding="utf-8"))["scripts"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError, ValueError, KeyError, TypeError:
         return {}
     return scripts if isinstance(scripts, dict) else {}
 

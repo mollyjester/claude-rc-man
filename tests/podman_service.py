@@ -179,7 +179,7 @@ def _with_descendants(pids: list[int]) -> list[int]:
         if entry.isdigit():
             try:
                 parent = int(Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()[1])
-            except (OSError, ValueError, IndexError):
+            except OSError, ValueError, IndexError:
                 continue
             children.setdefault(parent, []).append(int(entry))
     mine = set()
@@ -188,7 +188,7 @@ def _with_descendants(pids: list[int]) -> list[int]:
         mine.add(pid)
         try:
             pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
+        except OSError, ValueError, IndexError:
             break
     found, todo = set(), list(pids)
     while todo:
@@ -205,7 +205,7 @@ def _start_time(pid: int) -> int | None:
     that is gone: with the pid, what names one process, since a pid is given again."""
     try:
         return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
-    except (OSError, ValueError, IndexError):
+    except OSError, ValueError, IndexError:
         return None
 
 

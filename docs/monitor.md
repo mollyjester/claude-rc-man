@@ -26,7 +26,8 @@ rcman, it says so too, and keeps showing what it read before.
 - **Storage**: what of the disk is rcman's own, by part, and their total:
   - **Images**: the images rcman's Podman holds, each layer counted once however
     many images share it. It counts layers that belong to no image too, such as
-    those a build or a load that was killed leaves, which nothing removes.
+    those a build or a load that was killed leaves, until rcman's check of Podman's
+    storage removes them once they are old enough (see [the journal](journal.md)).
   - **Workspace volumes**: each workspace's volume and the volume at its `/tmp`.
   - **Other volumes**: every other volume of rcman's Podman, such as the one that
     holds a person's Claude sign-in and git folder.
