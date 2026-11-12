@@ -27,7 +27,7 @@ Implemented and tested:
   container's own user, one per workspace.
 - **Containers in a workspace**: Podman, as `podman` and `docker`, in workspaces of the
   default image or of an image with Podman of its own, kept inside the workspace, sharing
-  its network.
+  its network, or, with `--network=pasta`, on a network of their own inside it.
 - **git and gh in workspaces**: each person's commit author and GitHub token shared by
   all their workspaces, for git and for `gh`, and the Changes section of a workspace's panel.
 - **A repository's devcontainer.json**, read when a workspace is cloned: an

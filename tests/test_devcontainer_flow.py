@@ -218,7 +218,7 @@ def building(**keys) -> dict:
     """A repository whose devcontainer.json builds its image from a Dockerfile."""
     return {
         FILE: json.dumps({"build": {"dockerfile": "Dockerfile"}, **keys}),
-        ".devcontainer/Dockerfile": "FROM ubuntu:24.04\n",
+        ".devcontainer/Dockerfile": "FROM ubuntu:26.04\n",
     }
 
 

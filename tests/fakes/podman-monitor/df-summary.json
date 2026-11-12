@@ -1,5 +1,5 @@
 [
-    {"Type":"Images","Total":2,"Active":2,"RawSize":88807392,"RawReclaimable":0,"TotalCount":2,"Size":"88.81MB","Reclaimable":"0B (0%)"},
-    {"Type":"Containers","Total":2,"Active":1,"RawSize":11315,"RawReclaimable":0,"TotalCount":2,"Size":"11.31kB","Reclaimable":"0B (0%)"},
+    {"Type":"Images","Total":2,"Active":2,"RawSize":121147017,"RawReclaimable":0,"TotalCount":2,"Size":"121.1MB","Reclaimable":"0B (0%)"},
+    {"Type":"Containers","Total":2,"Active":1,"RawSize":11234,"RawReclaimable":0,"TotalCount":2,"Size":"11.23kB","Reclaimable":"0B (0%)"},
     {"Type":"Local Volumes","Total":4,"Active":4,"RawSize":1000026,"RawReclaimable":0,"TotalCount":4,"Size":"1MB","Reclaimable":"0B (0%)"}
 ]

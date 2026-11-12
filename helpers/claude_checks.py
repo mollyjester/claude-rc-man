@@ -408,7 +408,7 @@ def _auth_status(run: Runner, version: str) -> bool:
     _code, out = run(["auth", "status"], terminal=False)
     try:
         return json.loads(out.strip()).get("loggedIn") is False
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         return False
 
 

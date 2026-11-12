@@ -21,16 +21,18 @@ Options:
       --cpus float                               Number of CPUs. The default is 0.000 which means no limit
       --cpuset-cpus string                       CPUs in which to allow execution (0-3, 0,1)
       --cpuset-mems string                       Memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
-      --device strings                           Add a host device to the container
-      --device-read-bps strings                  Limit read rate (bytes per second) from a device (e.g. --device-read-bps=/dev/sda:1mb)
-      --device-write-bps strings                 Limit write rate (bytes per second) to a device (e.g. --device-write-bps=/dev/sda:1mb)
+      --device stringArray                       Add a host device to the container
+      --device-read-bps stringArray              Limit read rate (bytes per second) from a device (e.g. --device-read-bps=/dev/sda:1mb)
+      --device-write-bps stringArray             Limit write rate (bytes per second) to a device (e.g. --device-write-bps=/dev/sda:1mb)
       --dns strings                              Set custom DNS servers
       --dns-option strings                       Set custom DNS options
       --dns-search strings                       Set custom DNS search domains
       --exit-policy string                       Behaviour when the last container exits (default "continue")
       --gidmap strings                           GID map to use for the user namespace
+      --gpus strings                             GPU devices to add to the container ('all' to pass all GPUs)
       --help                                     
   -h, --hostname string                          Set container hostname
+      --hosts-file string                        Base file to create the /etc/hosts file inside the container, or one of the special values. ("image"|"none")
       --infra                                    Create an infra container associated with the pod to share namespaces with (default true)
       --infra-command string                     Overwrite the default ENTRYPOINT of the image
       --infra-conmon-pidfile string              Path to the file that will receive the PID of conmon
@@ -39,13 +41,14 @@ Options:
       --ip string                                Specify a static IPv4 address for the container
       --ip6 string                               Specify a static IPv6 address for the container
   -l, --label stringArray                        Set metadata on container
-      --label-file strings                       Read in a line delimited file of labels
+      --label-file stringArray                   Read in a line delimited file of labels
       --mac-address string                       Container MAC address (e.g. 92:d0:c6:0a:29:33)
   -m, --memory <number>[<unit>]                  Memory limit (format: <number>[<unit>], where unit = b (bytes), k (kibibytes), m (mebibytes), or g (gibibytes))
       --memory-swap string                       Swap limit equal to memory plus swap: '-1' to enable unlimited swap
   -n, --name string                              Assign a name to the pod
       --network stringArray                      Connect a container to a network
       --network-alias strings                    Add network-scoped alias for the container
+      --no-hostname                              Do not create /etc/hostname within the container, instead use the version from the image
       --no-hosts                                 Do not create /etc/hosts within the container, instead use the version from the image
       --pid string                               PID namespace to use
       --pod-id-file string                       Write the pod ID to the file

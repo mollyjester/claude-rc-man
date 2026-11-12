@@ -793,8 +793,10 @@ so carries the container marker; `tests/test_conftest.py` holds every module to 
 twin.
 
 What a machine needs to run them: rootless Podman for the user, with subordinate ids for every
-slot the suites use (`tests/container/sizes.py`), a `newuidmap` and `newgidmap` that work for the user, and `catatonit`, the init the
-workspaces' shared configuration names; the images come from their registries, so the network;
+slot the suites use (`tests/container/sizes.py`), a `newuidmap` and `newgidmap` that work for
+the user, `catatonit`, the init the workspaces' shared configuration names, and `passt` with
+`/dev/net/tun`, which the test of the product's network and the containers it nests need (a
+workspace of rcman's has both); the images come from their registries, so the network;
 and a `/tmp` that is not overlay, since the engine's storage is native overlay (`driver="overlay"`,
 no mount program) in a folder under `/tmp`, and overlay over overlayfs is refused. A workspace of
 rcman's has its own `/tmp`, a volume off its overlay root ([runtime.md](runtime.md#the-runtime));
@@ -807,11 +809,11 @@ what those take fails them, and its limits are an administrator's
 
 The runtime on the engine is made with the sizes of `tests/container/sizes.py`, given as
 `PodmanConfig`'s keyword-only fields (see [runtime.md](runtime.md#the-runtime)): a smaller range
-per slot, people in the first slots and the builder after them, the engine's own network, and no
-slices, which Podman takes only with cgroups and the systemd manager. The engine's own network is
-the network namespace of the user who runs the suite, so a test workspace on a developer's
-machine shares that machine's network and reaches its loopback, which a workspace of rcman's does
-not; nothing the suites serve listens there on a fixed port: the stand-in GitHub
+per slot, people in the first slots and the builder after them, the engine's own network (but
+for the one test of the product's network, below), and no slices, which Podman takes only with
+cgroups and the systemd manager. The engine's own network is the network namespace of the user
+who runs the suite, so a test workspace on a developer's machine shares that machine's network
+and reaches its loopback, which a workspace of rcman's does not; nothing the suites serve listens there on a fixed port: the stand-in GitHub
 (`tests/container/test_builder_in_podman.py`) listens on a port of its own on the engine's
 loopback, and the workspaces, in a network of their own, reach it as `github.com:443` through
 the relay (`Relay` in `tests/container/network.py`). A range of the
@@ -845,7 +847,10 @@ nothing else (no variants, refusals, edge cases or timing).
 
 - `tests/container/test_runtime_in_podman.py`: three basic cases of the runtime contract
   (`tests/runtime_contract.py`) on Podman: a workspace made, running and removed; an exec
-  answering; and its files outliving a stop and start.
+  answering; and its files outliving a stop and start. And one workspace on the product's own
+  network, `NETWORK`: it has a network namespace of its own; through `169.254.1.2` a listener of
+  the test's on all the machine's addresses answers and one on its loopback refuses at once; and
+  a container nested in it with `--network=pasta` runs.
 - `tests/container/test_restored_in_container.py`: a workspace running again after rcman restarts.
 - `tests/container/test_builder_in_podman.py`: an image built for real from a devcontainer.json
   (a Dockerfile and a local feature) and a workspace running from it.

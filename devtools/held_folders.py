@@ -152,7 +152,7 @@ def _stop_server(sock: Path) -> None:
         program = Path(os.readlink(f"/proc/{pid}/exe").removesuffix(DELETED)).name
         if program != "tmux":
             raise OSError(f"its listener, process {pid}, is {program}, not tmux")
-    except (ConnectionRefusedError, FileNotFoundError):
+    except ConnectionRefusedError, FileNotFoundError:
         return  # nothing listens, or the socket is gone: no server to stop
     except OSError as error:
         print(f"held_folders: left the listener on {sock}: {error}", file=sys.stderr)

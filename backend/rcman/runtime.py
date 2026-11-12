@@ -107,16 +107,15 @@ TERMINAL_PIDFILE = re.compile(r"[0-9a-f]{16}\.pid\Z")
 # in the runtime folder, which goes with the container.
 FORWARD_PIDFILE = re.compile(r"forward-[0-9a-f]{16}\.pid\Z")
 # What a relay to a port runs, as the busybox it is given (the first argument) runs it with
-# ``sh -c``, under busybox's ``setsid``: $1 its pidfile, $2 the port on the workspace's loopback.
-# It writes its own id to the pidfile, then runs ``cat`` of its input into ``nc``; when either
-# ends - its input reaching its end, or the app closing its side - it removes its pidfile and
-# ``kill 0`` ends the relay's process group, the other with it, so a relay never outlives either
-# side, and leaves no pidfile but where it is killed. ``setsid`` makes the
-# shell lead a session and process group of its own, in the workspace, so that the group ``kill
-# 0`` ends holds the relay alone: the process an exec starts belongs to a group whose leader is
-# outside the container. busybox's ``setsid`` runs its program in its own place, without a fork,
-# unless what runs it leads a process group already, which neither an exec's process nor a
-# program rcman starts does. It carries no half-close, and its exit code carries no meaning.
+# ``sh -c``: $1 its pidfile, $2 the port on the workspace's loopback. It writes its own id to the
+# pidfile, then runs ``cat`` of its input into ``nc``; when either ends - its input reaching its
+# end, or the app closing its side - it removes its pidfile and ``kill 0`` ends the relay's
+# process group, the other with it, so a relay never outlives either side, and leaves no pidfile
+# but where it is killed. Its shell leads a session and process group of its own, so that the
+# group ``kill 0`` ends holds the relay alone: in a container, as the process a Podman exec
+# starts, which crun, the OCI runtime, makes lead its own session there; on the host, under
+# busybox's ``setsid`` (``relay_command``). It carries no half-close, and its exit code carries
+# no meaning.
 RELAY_SCRIPT = (
     'echo $$ >"$1"; {{ {busybox} cat; {busybox} rm -f "$1"; kill 0; }} | '
     '{{ {busybox} nc 127.0.0.1 "$2"; {busybox} rm -f "$1"; kill 0; }}'
@@ -161,7 +160,7 @@ def credentials_state(raw: bytes) -> str:
         return NOT_SIGNED_IN_EMPTY
     try:
         data = json.loads(raw)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         return NOT_SIGNED_IN_UNREADABLE
     oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
     return SIGNED_IN if isinstance(oauth, dict) else NOT_SIGNED_IN_UNREADABLE
@@ -265,9 +264,13 @@ NAME_TAKEN = "a container named {name} is there already"
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
-# The network of every container a person's programs run in: their own, with no way to the
-# host's loopback.
-NETWORK = "slirp4netns:allow_host_loopback=false"
+# The network of every container a person's programs run in: their own, from pasta, with no way
+# to the host's loopback. --no-map-gw keeps the gateway's address from being mapped to the host;
+# Podman forwards no port either way (-t, -u, -T and -U none). What pasta maps instead is
+# 169.254.1.2 (--map-guest-addr, host.containers.internal) to the host's own global address, so
+# a listener on the host's other addresses answers there, and 169.254.1.1 port 53 to the host's
+# first resolver, the one path to its loopback, which carries DNS alone.
+NETWORK = "pasta:--no-map-gw"
 # What every workspace container is given so that a container nested in it can mount a /proc of
 # its own: the kernel refuses a new /proc where parts of the one there are covered.
 UNMASK_PROC = "--security-opt=unmask=/proc/*"
@@ -314,6 +317,10 @@ USING_LOCAL_IMAGE = "The pull failed; the image already here is used"
 # How long an image with no name is left alone: it may be a layer of a build under way, which an
 # upgrade runs beside the service.
 IMAGE_GRACE_SECONDS = 3600.0
+# How old a layer that nothing refers to must be before the storage check removes it: younger, it
+# may be one a build, a pull or a load under way has made and not yet named. Podman's own
+# default, written out.
+LOOSE_LAYER_AGE = "24h"
 # What is said of an image named ``localhost/...``, which is never pulled.
 IN_STORAGE = "The image is in rcman's storage; nothing is pulled"
 # What podman says, with the exit code UNAVAILABLE, when it cannot reach its service at all.
@@ -620,8 +627,8 @@ class Layout:
     # The Claude Code store as the programs in the workspace see it: a version is the file
     # ``versions/<version>`` in it.
     claude_root: str = ""
-    # The busybox a relay to a port runs (``relay_command``), by its path; none where there is
-    # none to run.
+    # The busybox a relay to a port runs (``relay_shell``, RELAY_SCRIPT), by its path; none where
+    # there is none to run.
     busybox: str = ""
 
     def tool(self, name: str) -> list[str]:
@@ -729,8 +736,13 @@ def relay_shell(layout: Layout, pidfile: str, port: int) -> list[str]:
 
 
 def relay_command(layout: Layout, pidfile: str, port: int) -> list[str]:
-    """The relay, as the workspace runs it: its shell (``relay_shell``) under busybox's
-    ``setsid``, leading a session and process group of its own."""
+    """The relay, as the host runtime runs it: its shell (``relay_shell``) under busybox's
+    ``setsid``, leading a session and process group of its own. busybox's ``setsid`` runs its
+    program in its own place, without a fork, unless what runs it leads a process group
+    already, which a program rcman starts does not; where it forks, its parent exits at once.
+    A Podman exec's process leads a session of its own already, as crun, the OCI runtime, makes
+    it, so ``setsid`` would fork there, and the exec would end before anything crossed: Podman
+    runs the shell itself."""
     shell = relay_shell(layout, pidfile, port)
     return [layout.busybox, "setsid", *shell]
 
@@ -922,7 +934,7 @@ class Runtime(ABC):
     def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
         """What relays a connection to ``port`` on the workspace's own loopback: its standard
         input is passed to the port and what the port answers is its standard output, and it
-        ends by itself once either side ends (``relay_command``), its pidfile ``pidfile``
+        ends by itself once either side ends (RELAY_SCRIPT), its pidfile ``pidfile``
         naming it while it runs. ValueError for a port that is not one and a pidfile that is not
         a relay's."""
 
@@ -1366,7 +1378,7 @@ class PodmanRuntime(Runtime):
         proc = self._podman("info", "--format", "json")
         try:
             return str(json.loads(proc.stdout)["store"]["graphRoot"])
-        except (ValueError, KeyError, TypeError):
+        except ValueError, KeyError, TypeError:
             raise RuntimeFailed("podman info named no storage folder") from None
 
     def wait_ready(self, timeout: float) -> None:
@@ -1430,6 +1442,9 @@ class PodmanRuntime(Runtime):
                 *labels,
                 "--init",
                 f"--network={self.config.network}",
+                # The device pasta needs, so that a container nested in the workspace can have a
+                # network of its own (--network=pasta).
+                "--device=/dev/net/tun",
                 # In the workspace's slice, which holds the limits (limits.py). Podman gives a
                 # container a limit on processes of its own unless it is told there is none; the
                 # slice's TasksMax is the limit, and infinity where nobody set one.
@@ -1590,7 +1605,7 @@ class PodmanRuntime(Runtime):
 
     def _isolated(self, slot: int) -> list[str]:
         """What every container a person's programs run in has: an init, the network
-        with no way to the host's loopback, and the person's uid range."""
+        with no way to the host's loopback but DNS (NETWORK), and the person's uid range."""
         return ["--init", f"--network={self.config.network}", *self._ids(slot)]
 
     def _prepare_folders(self, spec: Spec) -> None:
@@ -1861,7 +1876,26 @@ class PodmanRuntime(Runtime):
                     log.debug("the image %s was gone already", target)
                 else:
                     log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
+        self._check_storage()
         return removed
+
+    def _check_storage(self) -> None:
+        """Podman's quick check of its storage, removing the layers nothing refers to that are
+        older than LOOSE_LAYER_AGE, which a pull, a load or a build that was stopped leaves
+        behind. Never forced, so nothing in use is touched; what it says is logged, and a
+        failure is said and changes nothing else."""
+        try:
+            checked = self._podman(
+                "system", "check", "--quick", "--repair", f"--max={LOOSE_LAYER_AGE}", check=False
+            )
+        except (RuntimeFailed, RuntimeUnavailable) as error:  # not in time, or no Podman
+            log.warning("the storage check failed: %s", error)
+            return
+        for line in checked.stdout.decode("utf-8", "replace").splitlines():
+            if line.strip():
+                log.info("the storage check: %s", line.strip())
+        if checked.returncode != 0:
+            log.warning("the storage check failed: %s", self._said(checked.stderr, "no reason"))
 
     def default_image_id(self) -> str:
         found = self._podman(
@@ -2164,7 +2198,7 @@ class PodmanRuntime(Runtime):
             labels = _labels_of(inspected)
             image_id = str(inspected["Id"]).removeprefix("sha256:")
             size = int(inspected.get("Size") or 0)
-        except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        except ValueError, TypeError, KeyError, AttributeError, RecursionError:
             raise BuildFailed(
                 kind="build_image_refused", reason="its description cannot be read"
             ) from None
@@ -2309,7 +2343,7 @@ class PodmanRuntime(Runtime):
         lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
         try:
             return bool(lines) and json.loads(lines[-1]).get("outcome") == "success"
-        except (ValueError, AttributeError, RecursionError):
+        except ValueError, AttributeError, RecursionError:
             return False
 
     def _stage(
@@ -2556,9 +2590,10 @@ class PodmanRuntime(Runtime):
         return Launch([*_host_tool("setsid"), "--ctty", *argv], podman_env())
 
     def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
-        """An exec of the relay with no tty, its input the podman client's, as the container's
-        own user."""
-        command = relay_command(self.layout(name), pidfile, port)
+        """An exec of the relay's shell with no tty, its input the podman client's, as the
+        container's own user: the exec's process, which crun makes lead a session and process
+        group of its own in the container, so no ``setsid`` (``relay_command``)."""
+        command = relay_shell(self.layout(name), pidfile, port)
         return Launch(self._argv("exec", "--interactive", name, *command), podman_env())
 
     # --- a person's Claude sign-in ----------------------------------------------------
@@ -2697,7 +2732,7 @@ def parsed_canary_report(raw: bytes) -> dict[str, dict]:
     a RuntimeFailed where it is anything else."""
     try:
         report = json.loads(raw)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         raise RuntimeFailed("the canary did not report") from None
     if not isinstance(report, dict) or not all(
         isinstance(name, str) and isinstance(entry, dict) for name, entry in report.items()

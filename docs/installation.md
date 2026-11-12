@@ -1,6 +1,6 @@
 # Installing rcman
 
-rcman runs on one Ubuntu 24.04 machine. Caddy, already running there, serves it
+rcman runs on one Ubuntu 26.04 machine. Caddy, already running there, serves it
 on a public host name with HTTPS; Google sign-in goes through oauth2-proxy,
 which the installer sets up. People's workspaces are containers of rootless
 Podman, run by rcman's own account; the installer sets that up too. The
@@ -25,8 +25,9 @@ rcman from its web interface (see
   runs as root and imports Python from it, so no one else may be able to write
   in it.
 - **Administrator rights**: your account runs `sudo ./install.sh`.
-- **A clean Ubuntu 24.04 machine** with systemd, on x86-64 or arm64; the
-  installer refuses another processor. Podman and `crun` are in the `universe`
+- **A clean Ubuntu 26.04 machine** with systemd, on x86-64 or arm64; `install.sh`
+  refuses any other release (it reads `/etc/os-release`), and the installer
+  refuses another processor. Podman and `crun` are in the `universe`
   component of Ubuntu's package archive, which must be enabled. Its kernel must
   mount overlay inside a user namespace, which the builder of devcontainer images
   stores its images with; the installer refuses a kernel older than
@@ -40,7 +41,8 @@ rcman from its web interface (see
 
 The installer installs the system packages Podman and the workspaces need
 (`PACKAGES` in `installer/install.py`) when they are missing; among them are
-`podman`, `uidmap`, which rootless Podman needs to map user ids, and `crun`, the
+`podman`, `uidmap`, which rootless Podman needs to map user ids, `passt`, whose
+`pasta` gives a container a network of its own, and `crun`, the
 OCI runtime workspaces and builds are tested with. Workspace containers run with a
 seccomp profile derived from Podman's own, `/usr/share/containers/seccomp.json`, which
 Ubuntu's Podman brings; the installer refuses a machine where it is not there. Everything else — the Node.js
@@ -211,7 +213,7 @@ run and kept.
      `/opt/rcman/tools`. They are root's, outside rcman's home, so that rcman cannot
      replace what every workspace mounts;
    - the default workspace image, Ubuntu with git, `gh`, Podman (with `crun`,
-     `catatonit` and `uidmap`), what Claude Code needs and the tools a repository's
+     `catatonit`, `uidmap` and `passt`), what Claude Code needs and the tools a repository's
      own setup commonly runs (`make`, Python's venv, `tar` with `xz`, `zip` and
      `unzip`), from Ubuntu's packages as
      they are when it is built, from
@@ -269,14 +271,17 @@ internet, and nothing reaches it, since it publishes no port, but the ports its
 devcontainer.json forwards, which only its owner's browser reaches, through rcman, while an
 administrator has turned forwarding on (see [Forwarded ports](#forwarded-ports)). It cannot reach
 another workspace, nor anything on this machine's loopback addresses, such as
-oauth2-proxy. It can reach **anything this machine serves on its other
-addresses**, and anything on the networks this machine is on, as rcman's own
-account could. If that matters, keep such services on loopback, or limit what
-rcman's account (`rcman`) may connect to with the machine's firewall. The
-builder of a repository's devcontainer.json has the same network as a
-workspace, and so the same reach, and it runs the repository's own Dockerfile
-steps and feature scripts. A container started in a workspace shares the
-workspace's network, and so its reach.
+oauth2-proxy, except DNS: port 53 of `169.254.1.1` in the workspace is this machine's
+resolver. It can reach **anything this machine serves on its other
+addresses**, at `host.containers.internal` among others, and anything on the networks
+this machine is on, as rcman's own account could. If that matters, keep such services
+on loopback, or limit what rcman's account (`rcman`) may connect to with the
+machine's firewall. The builder of a repository's devcontainer.json has the same
+network as a workspace, and so the same reach, and it runs the repository's own
+Dockerfile steps and feature scripts. A container started in a workspace shares the
+workspace's network, and so its reach, or, started with
+`podman run --network=pasta`, has a network of its own inside the workspace's,
+with the same reach.
 
 So that a container started in a workspace can have a `/proc` of its own, the
 workspace's `/proc` is not covered where Podman would otherwise cover it. The kernel
@@ -286,6 +291,11 @@ still keeps its own files from a workspace: it cannot read the machine's memory
 those of its own namespaces. It can read what the kernel shows any user there: the
 header of `/proc/latency_stats`, its own keys in `/proc/keys`, and the descriptions
 of the machine's hardware in `/proc/acpi`, `/proc/bus`, `/proc/irq` and `/proc/scsi`.
+
+Every workspace is given `/dev/net/tun`, the device pasta needs for a container
+started in it with `podman run --network=pasta`, so the workspace's user can make
+tun and tap interfaces in network namespaces of their own, which reach nothing the
+workspace cannot.
 
 ## Podman's volumes are rcman's
 
@@ -491,9 +501,10 @@ rollback to the other name, a browser may still hold a sign-in of that name from
 before, which oauth2-proxy reads again, so people who signed out of rcman since
 should sign out again.
 
-Run the installer again after upgrading Podman, or Ubuntu's `containers-common`
-that holds Podman's seccomp profile: the workspaces' profile is derived from it when
-the installer runs, and an upgrade of it leaves the one in the tools as it was.
+Run the installer again after upgrading Podman, or Ubuntu's
+`golang-github-containers-common` that holds Podman's seccomp profile: the workspaces'
+profile is derived from it when the installer runs, and an upgrade of it leaves the one
+in the tools as it was.
 rcman says so in the [system journal](journal.md) each time it starts while the two
 differ; workspaces are made with the profile there until the installer runs again. If
 the profile is missing from the tools, no workspace can be made until the installer
@@ -710,7 +721,7 @@ Cloud console when you have no use for it.
    with the storage of its Podman.
 8. **Leave the packages.** The installer installed the packages Podman and the
    workspaces need, those that were missing: `podman`, `crun`, `uidmap`,
-   `catatonit`, `slirp4netns`, `dbus-user-session`, `busybox-static` and
+   `catatonit`, `passt`, `dbus-user-session`, `busybox-static` and
    `ncurses-base`.
    Other software may use them; remove one with `apt` only when nothing does.
 9. **Check that nothing is left**, with commands that only read:

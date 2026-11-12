@@ -29,9 +29,20 @@ conmon and the network helper with them, live in rcman's user manager, not in
   claude.ai and the Claude app show for the workspace's server, and the one the workspaces list
   shows (`device` in [backend.md](backend.md));
 - `--init`, so orphans are reaped;
-- the network `PodmanConfig.network`, `NETWORK` (slirp4netns with no way to the host's
-  loopback) unless it is given another, and no port published (a forwarded port is reached
-  through an exec, see [Forwarded ports](#forwarded-ports));
+- the network `PodmanConfig.network`, `NETWORK`, unless it is given another, and no port
+  published (a forwarded port is reached through an exec, see
+  [Forwarded ports](#forwarded-ports)). `NETWORK` is pasta with `--no-map-gw`: the gateway's
+  address is not mapped to the host, and Podman forwards no port (`-t`, `-u`, `-T` and `-U`
+  `none`). What pasta maps is `169.254.1.2` (`--map-guest-addr`, `host.containers.internal`)
+  to the host's own global address, so a listener on the host's other addresses answers
+  there, and `169.254.1.1` port 53 to the host's first resolver: DNS is the one way to the
+  host's loopback. On Ubuntu that resolver is systemd-resolved's `127.0.0.53`, which Podman
+  leaves out of the container's `resolv.conf`, so the container asks `169.254.1.1`. On a WSL
+  development machine only, Podman also copies WSL's own resolver, an address on the host's
+  loopback interface with global scope, which answers as the host's global address does;
+- `--device=/dev/net/tun`, which pasta needs, so that a container nested in the workspace can
+  have a network of its own (`--network=pasta`); the builder and the sign-in container do not
+  have it;
 - `--uidmap` and `--gidmap` `0:<slot × range>:range`, the person's range, where `range` is
   `PodmanConfig.range`, `RANGE` unless it is given another (slot 0 is rcman's own ids, so no
   person has it). A workspace
@@ -126,8 +137,9 @@ wrapper sources (`PODMAN_PUBLISH`); the installer writes them
 (`ensure_podman_tools`, see [installer.md](installer.md)); the folder holds `PODMAN_COMMANDS`
 and nothing else, which a test holds it to, since it is `PODMAN_BIN` on every workspace's PATH,
 right after Claude's folder (`PODMAN_LAYOUT.path` and `path_prefix`, so a plan's PATH keeps it
-first too), before the image's own programs, git among them. The default image holds Podman, crun
-and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is said to have none.
+first too), before the image's own programs, git among them. The default image holds Podman,
+crun, catatonit and passt. `compose` is refused, and an image with no `/usr/bin/podman` is said
+to have none.
 
 - **A published port.** Where the image's Podman runs, `publish.sh` reads the arguments of `run`,
   `create`, `container run|create` and `pod create` by the rules of Podman's option parser that
@@ -145,9 +157,10 @@ and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is s
   lists to the recording.
 
 - **The configuration.** A nested container has pid, UTS and IPC namespaces of its own and
-  shares the workspace's network, user and cgroup namespaces; cgroups are disabled (the
-  workspace has none to give), catatonit is the init, events and logs go to files. A short name
-  is looked for on Docker Hub.
+  shares the workspace's network, user and cgroup namespaces, its network unless it is started
+  with `--network=pasta`, which the image's `passt` and the workspace's `/dev/net/tun` serve;
+  cgroups are disabled (the workspace has none to give), catatonit is the init, events and logs
+  go to files. A short name is looked for on Docker Hub.
 - **Root.** Podman runs in a *nest*: a user and mount namespace the workspace's root makes with
   busybox's `unshare`, whose maps mirror the workspace's own `uid_map` and `gid_map` line by
   line, and in whose mount namespace tmpfs is mounted over root's run folders (`/run/libpod`,
@@ -671,25 +684,24 @@ this is the transport, and what cleans up after it.
 
 - **The relay.** `Runtime.port_argv(name, port, pidfile)` is what relays one connection to
   `port` on the workspace's own loopback: its standard input goes to the port and what the port
-  answers is its standard output. Both runtimes run the same argv (`relay_command`): the
-  layout's busybox (`Layout.busybox`, the mounted one in a container, the host's on the host
-  runtime; a path of `BUSYBOX_PATH`'s characters, since it is written into the script) running
-  `setsid` and then `RELAY_SCRIPT` with `sh -c` (`relay_shell`), which writes its shell's id to
-  the pidfile, then runs `cat` of its input into `nc 127.0.0.1 <port>`. When either ends - `cat`
-  once its input has ended, whether its client closed it, was killed or crashed, or `nc` once
-  the app has closed its side - it removes its pidfile and `kill 0` ends the relay's process
-  group, the other with it, so a relay outlives neither side and leaves its pidfile only where
-  it is killed. `setsid` makes the shell lead a session and process group of its own inside the
-  workspace, which holds the relay alone: the process a Podman exec starts belongs to a group
-  whose leader is outside the container, which `kill 0` would otherwise reach. busybox's
-  `setsid` runs its program in its own place, without a fork, unless what runs it leads a
-  process group already, which neither an exec's process nor a program rcman starts does: what
-  starts a relay must never start it as a process group's leader, or `setsid` forks, its parent
-  exits at once, and the client sees the relay end before anything has crossed. On Podman it is
-  `podman --remote exec --interactive <container>`, as the container's own user; the host
-  runtime runs the same argv itself, reaching the host's own `127.0.0.1`. A relay's exit code
-  carries no meaning. A port that is not one, a pidfile that is not a relay's, and a layout
-  without a usable busybox are refused.
+  answers is its standard output. Both runtimes run the layout's busybox (`Layout.busybox`, the
+  mounted one in a container, the host's on the host runtime; a path of `BUSYBOX_PATH`'s
+  characters, since it is written into the script) running `RELAY_SCRIPT` with `sh -c`
+  (`relay_shell`; on the host runtime under busybox's `setsid`, `relay_command`). The script
+  writes its shell's id to the pidfile, then runs `cat` of its input into `nc 127.0.0.1 <port>`.
+  When either ends - `cat` once its input has ended, whether its client closed it, was killed or
+  crashed, or `nc` once the app has closed its side - it removes its pidfile and `kill 0` ends
+  the relay's process group, the other with it, so a relay outlives neither side and leaves its
+  pidfile only where it is killed. The shell leads a session and process group of its own, which
+  holds the relay alone. On Podman it is `podman --remote exec --interactive <container>`, as
+  the container's own user, and the exec's process leads a session of its own in the container
+  already, as crun, the OCI runtime, makes it, so it runs no `setsid`: busybox's `setsid` forks
+  where what runs it leads a process group, its parent exits at once, the exec ends, and the
+  client sees the relay end before anything has crossed. The host runtime runs it itself, under
+  `setsid`, reaching the host's own `127.0.0.1`: there `setsid` runs the shell in its own place,
+  without a fork, since what starts a relay never starts it as a process group's leader. A
+  relay's exit code carries no meaning. A port that is not one, a pidfile that is not a relay's,
+  and a layout without a usable busybox are refused.
 - **What it cannot carry: a half-close.** The relay ends as soon as its input does, so a client
   that ends its sending side and then waits for the answer has the relay ended before the answer
   arrives, and the bytes it sent that are still in the pipe between `cat` and `nc` when the
@@ -1308,7 +1320,17 @@ the prefix it was started with.
   `-a` changes little: the step images under kept images stay, and removing them would free no
   space, since the kept images use their layers; and removing a leaf takes its nameless parents
   that nothing else is built on with it. What frees an old default image is that a workspace's
-  `image_id` keeps it only while the workspace has no stored plan. It
+  `image_id` keeps it only while the workspace has no stored plan. After the removals, at
+  every collection, it runs Podman's own check of its storage,
+  `podman system check --quick --repair --max=<LOOSE_LAYER_AGE>` (`_check_storage`), which
+  removes the layers nothing refers to that are older than `LOOSE_LAYER_AGE`: what a pull, a
+  load or a build that was stopped leaves, which no listing of images shows. It is never forced,
+  so a layer in use is never touched; a younger one, which may be one a build, a pull or a load
+  under way has made, the installer's builds, a sign-in container's or a canary's among them,
+  is protected by its age alone. Each line it prints is logged on `rcman.runtime` at info, a
+  failure or a run that does not end in `PODMAN_TIMEOUT` as a warning, and the collection goes
+  on; nothing of it is audited. A client stopped at `PODMAN_TIMEOUT` does not stop the check the
+  Podman service runs for it. It
   holds `_images_lock`, which `create` holds while it records a workspace, so a workspace is either
   seen by a collection or recorded after it; `rcman-admin` does not collect; removes each person an
   earlier rcman was deleting, once none of their workspaces is left, their

@@ -9,11 +9,11 @@ the installer's.
 
 | File | What it is |
 |---|---|
-| `install.sh` | Checks it runs as root, takes the installer's lock (see [The lock](#the-lock)), then, with `--rollback`, hands over to the Python installer at once, leaving the clone as it is; otherwise it takes the clone's owner from the clone's folder (refusing root, and an owner other than `$SUDO_USER` where that is set), updates the clone as that owner (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over. Git may ask only an administrator at a terminal (standard input a terminal and `$SUDO_USER` set); otherwise, as in the upgrade service, it runs with `upgrade.GIT_ENVIRONMENT`'s values, from `/dev/null`, and asks nothing |
+| `install.sh` | Checks it runs as root and that the machine is Ubuntu 26.04, by `ID` and `VERSION_ID` in `/etc/os-release`, read and never sourced, refusing another before it makes anything; takes the installer's lock (see [The lock](#the-lock)), then, with `--rollback`, hands over to the Python installer at once, leaving the clone as it is; otherwise it takes the clone's owner from the clone's folder (refusing root, and an owner other than `$SUDO_USER` where that is set), updates the clone as that owner (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over. Git may ask only an administrator at a terminal (standard input a terminal and `$SUDO_USER` set); otherwise, as in the upgrade service, it runs with `upgrade.GIT_ENVIRONMENT`'s values, from `/dev/null`, and asks nothing |
 | `installer/upgrade.py` | The wrapper of the upgrade from the web interface, installed as `/opt/rcman/bin/rcman-upgrade` and run by `rcman-upgrade.service` (see [Upgrading from the web interface](#upgrading-from-the-web-interface)); the standard library only. Its checks of the clone and its owner are the installer's too |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/rules.py`, whose rules' sentences explain a refused setting; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
 | `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, the two services, the Caddy site block, and the upgrade's two units. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`), the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) and whether the upgrade from the web interface is on (`WEB_UPGRADE_ENABLED`, `true` or `false`, written as `RCMAN_WEB_UPGRADE`); and the wrapper's environment (`UPGRADE_ENVIRONMENT`, from `upgrade.ENVIRONMENT` by `unit_environment`) |
-| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line, which `tests/test_install.py` holds. Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
+| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit, `passt` and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line, which `tests/test_install.py` holds. Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
 The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION` and
@@ -47,9 +47,11 @@ unpacked.
 older than `USERNS_OVERLAY_KERNEL`, or one whose release it cannot read: the devcontainer
 builder's Podman mounts overlay inside a user namespace, with no FUSE device (see
 [runtime.md](runtime.md#building-an-image)). `ensure_packages` installs `PACKAGES` that are
-missing. `ensure_subordinate_ids` gives `rcman` `SUBORDINATE_COUNT` subordinate uids and gids, a
-range after every range already in `/etc/subuid` and `/etc/subgid` (`subordinate_start`), unless
-it has one that big, so a machine whose range was made for fewer slots gets a second, full one;
+missing: among them `passt`, whose `pasta` is the containers' network, which Ubuntu's
+`podman` only recommends and `--no-install-recommends` leaves out. `ensure_subordinate_ids`
+gives `rcman` `SUBORDINATE_COUNT` subordinate uids and gids, a range after every range
+already in `/etc/subuid` and `/etc/subgid` (`subordinate_start`), unless it has one that big,
+so a machine whose range was made for fewer slots gets a second, full one;
 a test holds the count to `MAX_PEOPLE`, `BUILDER_SLOT` and `RANGE` (see [people.md](people.md)).
 `ensure_podman` enables linger for `rcman`, starts its user manager, enables `podman.socket` in
 it and waits for the socket; when the subordinate ids changed, it tells Podman with a local
@@ -435,8 +437,9 @@ health check through Caddy; the stubbed installation runs no Caddy.
   images pinned by digest, the toolchain's checksums keyed by their version, every template
   used, every rendered setting one of rcman's settings, and the wrappers' folder. It holds the
   lock too: `check_lock` taking it, and `install.sh` itself, run from a scratch clone with
-  stand-ins for `id` and `runuser` and its root rewritten into the test's folder (`Scratch`),
-  handing it to the installer on fd 9 and none of it to git.
+  stand-ins for `id` and `runuser` and its root and os-release rewritten into the test's folder
+  (`Scratch`), handing it to the installer on fd 9 and none of it to git, and refusing a release
+  other than Ubuntu 26.04 before it makes anything.
 - `tests/test_upgrade.py`: the wrapper, `installer/upgrade.py`: that it imports the standard
   library only (with a planted twin) and runs alone in isolated mode, the owner taken from the
   clone, a path anyone can write refused, what git tracks asked as the owner, a run of a

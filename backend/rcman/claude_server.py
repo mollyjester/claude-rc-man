@@ -196,7 +196,7 @@ def _processes(stat_lines: str) -> dict[int, tuple[int, str]]:
         try:
             pid = int(head.split("(", 1)[0])
             found[pid] = (int(fields[1]), fields[19])
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             continue
     return found
 

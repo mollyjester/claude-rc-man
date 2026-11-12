@@ -1,0 +1,8 @@
+Damaged layer e58989146fcec76699871403b9897b5c014af1ccd85f5a9300a215e7975525d7:
+1 error occurred:
+	* layer e58989146fcec76699871403b9897b5c014af1ccd85f5a9300a215e7975525d7: layer not referenced by any images or containers
+
+Damaged layer 58dc4cf22947bb5c3d5294ed2a38ad0546d8bc963a176a0dc80af8a53f066d56:
+1 error occurred:
+	* layer 58dc4cf22947bb5c3d5294ed2a38ad0546d8bc963a176a0dc80af8a53f066d56: layer not referenced by any images or containers
+

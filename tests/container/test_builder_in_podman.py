@@ -311,7 +311,7 @@ REAL_CONFIG = {
     "postCreateCommand": "echo post-create >> .order",
 }
 # Ubuntu with git, from a registry, as a repository's Dockerfile names its base.
-GIT_BASE = "docker.io/library/buildpack-deps:noble-scm"
+GIT_BASE = "docker.io/library/buildpack-deps:resolute-scm"
 REAL_FILES = {
     ".devcontainer/devcontainer.json": json.dumps(REAL_CONFIG, indent=2),
     # A glibc base with git, for the workspace's checks, and a file of the repository. Nothing is

@@ -135,7 +135,7 @@ def processes(listed: bytes) -> dict[int, tuple[int, int]]:
             if fields[0] == b"Z" and int(fields[17]) <= 1:
                 continue
             found[int(pid)] = (int(fields[3]), int(fields[19]))
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             continue
     return found
 

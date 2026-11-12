@@ -130,7 +130,7 @@ def start_time(pid: int) -> int | None:
     that is gone: with the pid, what names one process, since a pid is given again."""
     try:
         return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
-    except (OSError, ValueError, IndexError):
+    except OSError, ValueError, IndexError:
         return None
 
 
@@ -142,7 +142,7 @@ def _stats() -> dict[int, tuple[int, int]]:
             try:
                 fields = Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()
                 found[int(entry)] = (int(fields[1]), int(fields[19]))
-            except (OSError, ValueError, IndexError):
+            except OSError, ValueError, IndexError:
                 continue
     return found
 

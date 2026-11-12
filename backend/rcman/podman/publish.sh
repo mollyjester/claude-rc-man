@@ -14,23 +14,25 @@
 # letters of those taking none; and the letters of Podman's global options, which it takes
 # after the subcommand too, that no subcommand here takes for one of its own, all taking none.
 PUBLISH_VALUED=" --add-host --annotation --arch --attach --authfile --blkio-weight \
---blkio-weight-device --cap-add --cap-drop --cgroup-conf --cgroup-parent --cgroupns --cgroups \
---chrootdirs --cidfile --conmon-pidfile --cpu-period --cpu-quota --cpu-rt-period \
---cpu-rt-runtime --cpu-shares --cpus --cpuset-cpus --cpuset-mems --decryption-key --detach-keys \
---device --device-cgroup-rule --device-read-bps --device-read-iops --device-write-bps \
---device-write-iops --dns --dns-option --dns-search --entrypoint --env --env-file --env-merge \
---exit-policy --expose --gidmap --group-add --group-entry --health-cmd --health-interval \
---health-on-failure --health-retries --health-start-period --health-startup-cmd \
---health-startup-interval --health-startup-retries --health-startup-success \
---health-startup-timeout --health-timeout --hostname --hostuser --image-volume --infra-command \
---infra-conmon-pidfile --infra-image --infra-name --init-ctr --init-path --ip --ip6 --ipc \
---label --label-file --log-driver --log-opt --mac-address --memory --memory-reservation \
---memory-swap --memory-swappiness --mount --name --net --network --network-alias \
---oom-score-adj --os --passwd-entry --personality --pid --pidfile --pids-limit --platform --pod \
---pod-id-file --preserve-fds --publish --pull --rdt-class --requires --restart --sdnotify \
---seccomp-policy --secret --security-opt --share --shm-size --shm-size-systemd --stop-signal \
---stop-timeout --subgidname --subuidname --sysctl --systemd --timeout --tmpfs --tz --uidmap \
---ulimit --umask --unsetenv --user --userns --uts --variant --volume --volumes-from --workdir "
+--blkio-weight-device --cap-add --cap-drop --cert-dir --cgroup-conf --cgroup-parent --cgroupns \
+--cgroups --chrootdirs --cidfile --conmon-pidfile --cpu-period --cpu-quota --cpu-rt-period \
+--cpu-rt-runtime --cpu-shares --cpus --cpuset-cpus --cpuset-mems --creds --decryption-key \
+--detach-keys --device --device-cgroup-rule --device-read-bps --device-read-iops \
+--device-write-bps --device-write-iops --dns --dns-option --dns-search --entrypoint --env \
+--env-file --env-merge --exit-policy --expose --gidmap --gpus --group-add --group-entry \
+--health-cmd --health-interval --health-log-destination --health-max-log-count \
+--health-max-log-size --health-on-failure --health-retries --health-start-period \
+--health-startup-cmd --health-startup-interval --health-startup-retries --health-startup-success \
+--health-startup-timeout --health-timeout --hostname --hosts-file --hostuser --image-volume \
+--infra-command --infra-conmon-pidfile --infra-image --infra-name --init-ctr --init-path --ip \
+--ip6 --ipc --label --label-file --log-driver --log-opt --mac-address --memory \
+--memory-reservation --memory-swap --memory-swappiness --mount --name --net --network \
+--network-alias --oom-score-adj --os --passwd-entry --personality --pid --pidfile --pids-limit \
+--platform --pod --pod-id-file --preserve-fd --preserve-fds --publish --pull --rdt-class \
+--requires --restart --retry --retry-delay --sdnotify --seccomp-policy --secret --security-opt \
+--share --shm-size --shm-size-systemd --stop-signal --stop-timeout --subgidname --subuidname \
+--sysctl --systemd --timeout --tmpfs --tz --uidmap --ulimit --umask --unsetenv --user --userns \
+--uts --variant --volume --volumes-from --workdir "
 PUBLISH_VALUED_LETTERS=acehlmnpuvw
 PUBLISH_LETTERS=Pdiqt
 PUBLISH_GLOBAL_LETTERS=r

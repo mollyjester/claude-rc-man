@@ -222,7 +222,7 @@ def test_the_snippet_passes_every_forwarded_port_to_the_forward_socket_without_i
 
 # --- Caddy's configuration ---------------------------------------------------------------
 
-# Ubuntu's own /etc/caddy/Caddyfile, the conffile of its caddy package (2.6.2-6ubuntu0.24.04.3),
+# Ubuntu's own /etc/caddy/Caddyfile, the conffile of its caddy package (2.6.2-14),
 # recorded from the package's file, whose md5 is the one `dpkg-query -W -f='${Conffiles}' caddy`
 # gives; tests/container/install_checks.py holds the system image's to that md5 as well.
 RECORDED_CADDYFILE = REPO / "tests" / "fakes" / "ubuntu-Caddyfile"
@@ -610,9 +610,9 @@ def test_every_base_image_the_installer_builds_from_is_pinned_by_tag_and_digest(
 
 def test_a_base_image_without_a_tag_and_a_digest_is_found_unpinned(tmp_path):
     planted = tmp_path / "Containerfile"
-    planted.write_text("FROM docker.io/library/ubuntu:24.04\nRUN true\n")
+    planted.write_text("FROM docker.io/library/ubuntu:26.04\nRUN true\n")
     assert unpinned_bases([planted]) != []
-    planted.write_text("FROM docker.io/library/ubuntu:24.04@sha256:" + "a" * 64 + "\n")
+    planted.write_text("FROM docker.io/library/ubuntu:26.04@sha256:" + "a" * 64 + "\n")
     assert unpinned_bases([planted]) == []  # the same file, pinned: the guard can pass
 
 
@@ -1686,6 +1686,25 @@ exec "$@"
 ID_STAND_IN = """#!/bin/bash
 if [ "$*" = -u ]; then echo 0; else exec /usr/bin/id "$@"; fi
 """
+# /etc/os-release of the release rcman runs on, and of the one before it, as Ubuntu writes them.
+UBUNTU_2604 = """PRETTY_NAME="Ubuntu 26.04.1 LTS"
+NAME="Ubuntu"
+VERSION_ID="26.04"
+VERSION="26.04.1 LTS (Resolute Raccoon)"
+VERSION_CODENAME=resolute
+ID=ubuntu
+ID_LIKE=debian
+UBUNTU_CODENAME=resolute
+"""
+UBUNTU_2510 = """PRETTY_NAME="Ubuntu 25.10"
+NAME="Ubuntu"
+VERSION_ID="25.10"
+VERSION="25.10 (Questing Quokka)"
+VERSION_CODENAME=questing
+ID=ubuntu
+ID_LIKE=debian
+UBUNTU_CODENAME=questing
+"""
 INSTALL_PY_STAND_IN = """import json, os, sys
 report = {{"argv": sys.argv[1:], "updated": os.environ.get("RCMAN_INSTALL_UPDATED"),
           "fd": os.environ.get("RCMAN_INSTALL_LOCK_FD")}}
@@ -1702,7 +1721,8 @@ with open({report!r}, "w") as out:
 
 
 class Scratch:
-    """A clone of the test's own with install.sh as it is, but for its root, and a stand-in
+    """A clone of the test's own with install.sh as it is, but for its root and the
+    os-release it reads, which is Ubuntu 26.04's until a test writes another, and a stand-in
     for installer/install.py that reports what it was handed."""
 
     def __init__(self, tmp_path):
@@ -1710,6 +1730,8 @@ class Scratch:
 
         self.git = git_fixtures
         self.root = tmp_path / "opt"
+        self.os_release = tmp_path / "os-release"
+        self.os_release.write_text(UBUNTU_2604)
         self.lock = self.root / ".install.lock"
         self.report = tmp_path / "report.json"
         self.log = tmp_path / "runuser.log"
@@ -1730,9 +1752,14 @@ class Scratch:
 
     def install_sh(self) -> str:
         text = (REPO / "install.sh").read_text()
-        line = f"root={ins.ROOT}\n"
-        assert text.count(line) == 1  # the one place install.sh names the installation
-        return text.replace(line, f"root={self.root}\n")
+        planted = {
+            f"root={ins.ROOT}\n": f"root={self.root}\n",
+            "os_release=/etc/os-release\n": f"os_release={self.os_release}\n",
+        }
+        for line, plant in planted.items():
+            assert text.count(line) == 1  # the one place install.sh names it
+            text = text.replace(line, plant)
+        return text
 
     def run(self) -> subprocess.CompletedProcess:
         full = {**self.git.fixture_env(self.git.FIXTURE_HOME), "PATH": f"{self.bin}:/usr/bin:/bin"}
@@ -1762,3 +1789,13 @@ def test_install_sh_takes_the_lock_and_hands_it_to_the_installer_on_fd_9(scratch
     assert stat.S_IMODE(scratch.root.stat().st_mode) == 0o755
     calls = scratch.runuser_calls()  # git, run as the clone's owner, holds no lock
     assert calls and all(held == "closed" and argv.startswith(f"-u {ME} ") for held, argv in calls)
+
+
+def test_install_sh_refuses_a_machine_that_is_not_ubuntu_26_04(scratch):
+    scratch.os_release.write_text(UBUNTU_2510)
+    proc = scratch.run()
+    assert proc.returncode == 1
+    assert proc.stderr == (
+        "install.sh: rcman runs on Ubuntu 26.04 only; this machine is Ubuntu 25.10\n"
+    )
+    assert not scratch.root.exists() and not scratch.report.exists()  # nothing made, nothing run

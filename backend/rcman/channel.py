@@ -134,7 +134,7 @@ class Channel:
         try:
             self._write(f"printf '%s\\n' {nonce}\n")
             line = self._readline(time.monotonic() + OPEN_TIMEOUT)
-        except (BrokenPipeError, ChannelBroken, ChannelTimeout):
+        except BrokenPipeError, ChannelBroken, ChannelTimeout:
             raise self._broken("the channel did not open") from None
         if line.strip() != nonce.encode():
             raise self._broken(f"the channel answered {line[:80]!r}")

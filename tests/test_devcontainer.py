@@ -44,13 +44,13 @@ def test_comments_and_trailing_commas_are_read():
     {
       /* a block
          over lines */
-      "image": "ubuntu:24.04", // after a value
+      "image": "ubuntu:26.04", // after a value
       "forwardPorts": [1, 2,],
       "containerEnv": {"A": "b",},
     }
     """
     assert dc.parse(text) == {
-        "image": "ubuntu:24.04",
+        "image": "ubuntu:26.04",
         "forwardPorts": [1, 2],
         "containerEnv": {"A": "b"},
     }
@@ -60,13 +60,13 @@ def test_comments_and_trailing_commas_are_read():
 
 
 def with_image(fragment: dict) -> dict:
-    return {"image": "ubuntu:24.04", **fragment}
+    return {"image": "ubuntu:26.04", **fragment}
 
 
 def test_a_key_is_honoured_ignored_or_refused_as_the_policy_says():
     """The policy refuses by design, so the refusal is held here with what is taken."""
     checked = dc.check(with_image({"remoteUser": "root", "name": "A name"}))
-    assert checked.image == "ubuntu:24.04"
+    assert checked.image == "ubuntu:26.04"
     assert checked.ignored == ("name",)  # remoteUser is honoured, name logged as ignored
     with pytest.raises(Refused) as refused:
         dc.check(with_image({"privileged": True}))
@@ -216,7 +216,7 @@ def test_a_plan_survives_being_stored_and_read_back():
     assert found.ports == (dc.Port(1), dc.Port(300, "App"))  # non-vacuity: it has ports
     again = dc.Plan.from_json(found.to_json())
     assert again == found
-    assert json.loads(found.to_json())["image"] == "ubuntu:24.04"  # non-vacuity: it is JSON
+    assert json.loads(found.to_json())["image"] == "ubuntu:26.04"  # non-vacuity: it is JSON
 
 
 # --- reading the file ------------------------------------------------------------------------
@@ -283,7 +283,7 @@ def test_a_dockerfile_is_a_build_and_needs_no_image():
 
 def test_the_build_only_configuration_holds_the_build_keys_and_nothing_else_of_the_file():
     config = {
-        "image": "ubuntu:24.04",
+        "image": "ubuntu:26.04",
         "build": {"dockerfile": "Dockerfile", "context": "..", "args": {"A": "b"}},
         "features": {"./f": {}},
         "overrideFeatureInstallOrder": ["./f"],

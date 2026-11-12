@@ -323,7 +323,7 @@ class Socket:
         try:
             while self.sock.recv(65536):
                 pass
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             return False
         return True
 

@@ -100,7 +100,7 @@ def wait_ready(world):
 def alive(pid: int) -> bool:
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (OSError, IndexError):
+    except OSError, IndexError:
         return False
     return state != "Z"
 

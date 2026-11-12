@@ -189,7 +189,7 @@ def checksum(found: dict, version: str, key: str | None = None) -> str:
     key = key or platform_key()
     try:
         expected = found["platforms"][key]["checksum"]
-    except (KeyError, TypeError):
+    except KeyError, TypeError:
         expected = None
     if not isinstance(expected, str) or not CHECKSUM.fullmatch(expected):
         raise ReleaseError("no_build", f"Claude Code {version} has no build for {key}")

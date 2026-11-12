@@ -1,7 +1,7 @@
 [
      {
-          "Id": "d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2",
-          "Created": "2026-11-10T21:18:10.057021204+01:00",
+          "Id": "fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276",
+          "Created": "2026-11-12T11:09:47.507381204+01:00",
           "Path": "/run/podman-init",
           "Args": [
                "--",
@@ -16,28 +16,28 @@
                "Restarting": false,
                "OOMKilled": false,
                "Dead": false,
-               "Pid": 2130519,
-               "ConmonPid": 2130517,
+               "Pid": 60455,
+               "ConmonPid": 60453,
                "ExitCode": 0,
                "Error": "",
-               "StartedAt": "2026-11-10T21:18:10.102414966+01:00",
+               "StartedAt": "2026-11-12T11:09:47.547790129+01:00",
                "FinishedAt": "0001-01-01T00:00:00Z",
                "CheckpointedAt": "0001-01-01T00:00:00Z",
                "RestoredAt": "0001-01-01T00:00:00Z"
           },
-          "Image": "d9b8c34d61a9b9a3c44cab883d7d2f2619d674966ab520186f799cf32e3e0377",
-          "ImageDigest": "sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852",
-          "ImageName": "docker.io/library/ubuntu:24.04",
+          "Image": "a8acf325a119cb4859b1ceb593341dd917bfdad2114561165e91a607ea2ba0c3",
+          "ImageDigest": "sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96",
+          "ImageName": "docker.io/library/ubuntu:26.04",
           "Rootfs": "",
           "Pod": "",
           "ResolvConfPath": "",
-          "HostnamePath": "/tmp/rcrec-d1ktybg3/r/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata/hostname",
-          "HostsPath": "/tmp/rcrec-d1ktybg3/r/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata/hosts",
-          "StaticDir": "/tmp/rcrec-d1ktybg3/g/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata",
-          "OCIConfigPath": "/tmp/rcrec-d1ktybg3/g/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata/config.json",
+          "HostnamePath": "/tmp/rcm/r/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata/hostname",
+          "HostsPath": "/tmp/rcm/r/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata/hosts",
+          "StaticDir": "/tmp/rcm/s/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata",
+          "OCIConfigPath": "/tmp/rcm/s/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata/config.json",
           "OCIRuntime": "crun",
-          "ConmonPidFile": "/tmp/rcrec-d1ktybg3/r/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata/conmon.pid",
-          "PidFile": "/tmp/rcrec-d1ktybg3/r/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata/pidfile",
+          "ConmonPidFile": "/tmp/rcm/r/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata/conmon.pid",
+          "PidFile": "/tmp/rcm/r/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata/pidfile",
           "Name": "rcman-ws-1",
           "RestartCount": 0,
           "Driver": "overlay",
@@ -74,18 +74,18 @@
           "GraphDriver": {
                "Name": "overlay",
                "Data": {
-                    "LowerDir": "/tmp/rcrec-d1ktybg3/g/overlay/bec87777bc2fb2edcdf9af11df1531469e7df911309c1413082b18fcb8610278/diff",
-                    "MergedDir": "/tmp/rcrec-d1ktybg3/g/overlay/0cc4d6eecc28a578d3720d3cc242f5d612906a1246dc5e95ac3b5334541ebed7/merged",
-                    "UpperDir": "/tmp/rcrec-d1ktybg3/g/overlay/0cc4d6eecc28a578d3720d3cc242f5d612906a1246dc5e95ac3b5334541ebed7/diff",
-                    "WorkDir": "/tmp/rcrec-d1ktybg3/g/overlay/0cc4d6eecc28a578d3720d3cc242f5d612906a1246dc5e95ac3b5334541ebed7/work"
+                    "LowerDir": "/tmp/rcm/s/overlay/157b5b6c25ef1dfdecfb377ae8b6235f39bc06e5b388f52f38270a257c7d7ce1/diff:/tmp/rcm/s/overlay/2a89eb4dbc78f8fe790775a4e807e1355ba2f6b145c8dd7a267a782df1605124/diff",
+                    "MergedDir": "/tmp/rcm/s/overlay/c0d00d17ce9cffd05a01df3f6a0dfb5002d48bf07f411b3277c712808f7db459/merged",
+                    "UpperDir": "/tmp/rcm/s/overlay/c0d00d17ce9cffd05a01df3f6a0dfb5002d48bf07f411b3277c712808f7db459/diff",
+                    "WorkDir": "/tmp/rcm/s/overlay/c0d00d17ce9cffd05a01df3f6a0dfb5002d48bf07f411b3277c712808f7db459/work"
                }
           },
           "Mounts": [
                {
                     "Type": "volume",
-                    "Name": "rcman-ws-1",
-                    "Source": "/tmp/rcrec-d1ktybg3/g/volumes/rcman-ws-1/_data",
-                    "Destination": "/rcman",
+                    "Name": "d8857488d56c6813c40d0ba5acc2ca6f31081a14570b77d567b4cddacadd459b",
+                    "Source": "/tmp/rcm/s/volumes/d8857488d56c6813c40d0ba5acc2ca6f31081a14570b77d567b4cddacadd459b/_data",
+                    "Destination": "/tmp",
                     "Driver": "local",
                     "Mode": "",
                     "Options": [
@@ -98,9 +98,9 @@
                },
                {
                     "Type": "volume",
-                    "Name": "68e71514a7e593fa2feb8c0eb263131212eb9de122d05f037e4764f2251ae01b",
-                    "Source": "/tmp/rcrec-d1ktybg3/g/volumes/68e71514a7e593fa2feb8c0eb263131212eb9de122d05f037e4764f2251ae01b/_data",
-                    "Destination": "/tmp",
+                    "Name": "rcman-ws-1",
+                    "Source": "/tmp/rcm/s/volumes/rcman-ws-1/_data",
+                    "Destination": "/rcman",
                     "Driver": "local",
                     "Mode": "",
                     "Options": [
@@ -128,7 +128,7 @@
                "LinkLocalIPv6Address": "",
                "LinkLocalIPv6PrefixLen": 0,
                "Ports": {},
-               "SandboxKey": "/proc/2130519/ns/net",
+               "SandboxKey": "/proc/60455/ns/net",
                "Networks": {
                     "none": {
                          "EndpointID": "",
@@ -150,9 +150,9 @@
           "IsInfra": false,
           "IsService": false,
           "KubeExitCodePropagation": "invalid",
-          "lockNumber": 0,
+          "lockNumber": 1,
           "Config": {
-               "Hostname": "d79e2b884d83",
+               "Hostname": "fcb97b3ce0f8",
                "Domainname": "",
                "User": "",
                "AttachStdin": false,
@@ -165,19 +165,22 @@
                     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                     "container=podman",
                     "HOME=/root",
-                    "HOSTNAME=d79e2b884d83"
+                    "HOSTNAME=fcb97b3ce0f8"
                ],
                "Cmd": [
                     "sleep",
                     "2147483647"
                ],
-               "Image": "docker.io/library/ubuntu:24.04",
+               "Image": "docker.io/library/ubuntu:26.04",
                "Volumes": null,
                "WorkingDir": "/",
                "Entrypoint": [],
                "OnBuild": null,
                "Labels": {
-                    "org.opencontainers.image.version": "24.04",
+                    "org.opencontainers.image.created": "2026-11-06T10:28:50.132595+00:00",
+                    "org.opencontainers.image.description": "The Ubuntu container image maintained by Canonical\n\nUbuntu is a Debian-based Linux operating system that runs from the desktop to the cloud, to all your internet connected things.\nIt is the world's most popular operating system across public clouds and OpenStack clouds.\nIt is the number one platform for containers; from Docker to Kubernetes to LXD, Ubuntu can run your containers at scale.\nFast, secure and simple, Ubuntu powers millions of PCs worldwide.\n",
+                    "org.opencontainers.image.title": "ubuntu",
+                    "org.opencontainers.image.version": "26.04",
                     "rcman.install": "gate-install",
                     "rcman.person": "1",
                     "rcman.workspace": "1"
@@ -198,18 +201,24 @@
                     "podman",
                     "--remote",
                     "--url",
-                    "unix:///tmp/rcrec-d1ktybg3/s.sock",
+                    "unix:///tmp/rcm/p.sock",
                     "run",
                     "-d",
+                    "--name",
+                    "rcman-ws-1",
+                    "--label",
+                    "rcman.workspace=1",
+                    "--label",
+                    "rcman.person=1",
+                    "--label",
+                    "rcman.install=gate-install",
                     "--init",
-                    "--name=rcman-ws-1",
-                    "--label=rcman.install=gate-install",
-                    "--label=rcman.person=1",
-                    "--label=rcman.workspace=1",
-                    "--volume=rcman-ws-1:/rcman",
-                    "--volume=/tmp",
                     "--network=none",
-                    "docker.io/library/ubuntu:24.04",
+                    "--volume",
+                    "rcman-ws-1:/rcman",
+                    "--volume",
+                    "/tmp",
+                    "docker.io/library/ubuntu:26.04",
                     "sleep",
                     "2147483647"
                ],
@@ -221,8 +230,8 @@
           },
           "HostConfig": {
                "Binds": [
-                    "rcman-ws-1:/rcman:rprivate,nosuid,nodev,rbind",
-                    "68e71514a7e593fa2feb8c0eb263131212eb9de122d05f037e4764f2251ae01b:/tmp:rprivate,nosuid,nodev,rbind"
+                    "d8857488d56c6813c40d0ba5acc2ca6f31081a14570b77d567b4cddacadd459b:/tmp:rprivate,nosuid,nodev,rbind",
+                    "rcman-ws-1:/rcman:rprivate,nosuid,nodev,rbind"
                ],
                "CgroupManager": "cgroupfs",
                "CgroupMode": "host",
@@ -230,7 +239,7 @@
                "LogConfig": {
                     "Type": "k8s-file",
                     "Config": null,
-                    "Path": "/tmp/rcrec-d1ktybg3/g/overlay-containers/d79e2b884d8313c3ddbafe99b51bca770ab59bd323b474e50464afe8579b71b2/userdata/ctr.log",
+                    "Path": "/tmp/rcm/s/overlay-containers/fcb97b3ce0f831367e3286321a79f2b0f9e46c4f4ed8f23e2a9542d70b81c276/userdata/ctr.log",
                     "Tag": "",
                     "Size": "-1B"
                },

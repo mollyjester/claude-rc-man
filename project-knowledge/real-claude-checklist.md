@@ -63,10 +63,11 @@ version is approved.
 
 ## After a fresh install or a reinstall
 
-On a real machine, as root, after `./install.sh` has ended, having put rcman in
-`/etc/caddy/Caddyfile` and restarted Caddy. Write down, before the install, `/etc/subuid`,
-`/etc/subgid`, `getent group` and what the machine's other services answer. Podman is
-run as `rcman` the way the installer runs it (see
+On a real Ubuntu 26.04 machine, a fresh one for a fresh install, as root, after
+`./install.sh` has ended, having put rcman in `/etc/caddy/Caddyfile` and restarted Caddy.
+Write down, before the install, `/etc/subuid`, `/etc/subgid`, `getent group` and what
+the machine's other services answer. Podman is run as `rcman` the way the installer runs
+it (see
 [Podman's volumes are rcman's](../docs/installation.md#podmans-volumes-are-rcmans)):
 
 ```
@@ -86,9 +87,11 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
    open: their next request is refused at once, and they cannot sign in again.
 5. **No way to the machine's loopback.** From a shell in a workspace, a connection to
    oauth2-proxy's port (`PROXY_PORT` in `/etc/rcman/install.env`), and to Caddy's ask
-   site (`ASK_PORT` there), on `127.0.0.1` and on the gateway
-   address the workspace's network shows, fails. rcman has
-   no port to try, only its two sockets, which no workspace can reach.
+   site (`ASK_PORT` there), on `127.0.0.1`, `[::1]`, the IPv4 and IPv6 gateway addresses
+   the workspace's network shows, `169.254.1.1`, `169.254.1.2` and
+   `host.containers.internal`, fails. `dig @169.254.1.1 github.com` answers: DNS on port 53
+   is the one way there. rcman has no port to try, only its two sockets, which no workspace
+   can reach.
 6. **Nothing of the operator's disturbed.** Compared with what was written down: the
    machine's other sites answer through Caddy, Docker (where it is there) lists the same
    containers, `/etc/subuid` and `/etc/subgid` have gained rcman's lines and no other
@@ -168,10 +171,14 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
     certificate viewer names the host and the issuer), passes through the hand-off without a
     question, and the app works, its WebSocket included. The same address opened by another
     person, an administrator among them, is refused at the hand-off.
-21. **Removal, on a spare machine.** Follow
-   [Removing rcman](../docs/installation.md#removing-rcman): the commands that check that
-   nothing is left print nothing, Caddy restarts and still serves its other sites, and
-   the packages and the operator's accounts are as they were.
+21. **AppArmor lets the workspaces be.** After a workspace has started, a devcontainer image
+    has been built and a nested `--network=pasta` run has worked in a workspace,
+    `journalctl -k | grep 'apparmor="DENIED"'` prints nothing. Only a real machine shows
+    this: a throwaway in a container of Docker Desktop has no AppArmor of Ubuntu's.
+22. **Removal, on a spare machine.** Follow
+    [Removing rcman](../docs/installation.md#removing-rcman): the commands that check that
+    nothing is left print nothing, Caddy restarts and still serves its other sites, and
+    the packages and the operator's accounts are as they were.
 
 ## After the host restarts
 
@@ -218,17 +225,15 @@ and a workspace's **Terminal** tab open with `sleep` running in its shell:
    message, and the approved version is the one written down.
 4. The Terminal tab says rcman is restarting and offers **Reconnect**, and neither the
    shell nor its `sleep` is left in the workspace (`podman top` as `rcman`).
-5. On the host's own Podman (the container tests ran on another version): as `rcman`,
-   `podman images -a --format json` gives each image `ParentId` and `Containers`; after the
-   upgrade's collection, the nameless images under images that are kept are still there, and
-   the old nameless images that nothing is built on are gone. So is the old default image a
-   workspace was first made from, once that workspace has a stored plan and nothing else keeps
-   the image: on the live host, `localhost/rcman-workspace:d3e200d4cd43`, which workspace 9's
-   stale `image_id` kept.
+5. On the host's own Podman: as `rcman`, `podman images -a --format json` gives each image
+   `ParentId` and `Containers`; after the upgrade's collection, the nameless images under
+   images that are kept are still there, and the old nameless images that nothing is built on
+   are gone. So is the old default image a workspace was first made from, once that workspace
+   has a stored plan and nothing else keeps the image.
 
 ## Upgrading from the web interface
 
-On a throwaway Ubuntu 24.04 machine, before a change to the upgrade from the web interface is
+On a throwaway Ubuntu 26.04 machine, before a change to the upgrade from the web interface is
 merged, with it turned on (`sudo ./install.sh --web-upgrade yes`) from a clone of a private
 repository whose owner has credentials that ask nothing, and a second release on `main` to
 upgrade to. What the tests stand in for here is checked against the real thing:

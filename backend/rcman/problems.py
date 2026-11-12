@@ -729,7 +729,7 @@ def _message(error) -> str:
         kind = FIELD_INVALID
     try:
         return FIELD_MESSAGES[kind].format(**context)
-    except (KeyError, IndexError):
+    except KeyError, IndexError:
         log.warning("validation error type %s lacks the context its message needs", kind)
         return FIELD_MESSAGES[FIELD_INVALID]
 

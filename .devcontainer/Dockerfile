@@ -5,7 +5,7 @@
 # (installer/install.py), the Playwright whose Chromium's packages are installed is
 # frontend/package-lock.json's, and the base is the default workspace image's;
 # tests/test_repository_devcontainer.py holds them to those.
-FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 ARG UV_VERSION=0.12.21
 ARG UV_SHA256_AMD64=23f02075b652bb1df64178cfae41b5caf160822e720e2663568f3f5d63bc52c0
 ARG UV_SHA256_ARM64=030b69227b40af8c1981b7301793dc66e71ed3c796ea8688209dd268bd91ec51
@@ -16,7 +16,7 @@ ARG PLAYWRIGHT_VERSION=1.63.0
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
       podman crun catatonit uidmap make git gh tmux busybox-static curl xz-utils python3 \
-      ca-certificates libcap2-bin \
+      ca-certificates libcap2-bin passt \
  && rm -rf /var/lib/apt/lists/*
 # uv and Node.js, each checked against its pinned sha256 before it is unpacked.
 RUN case "$(dpkg --print-architecture)" in \

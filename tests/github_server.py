@@ -141,7 +141,7 @@ class GitHubServer:
             return None
         try:
             username, _, password = base64.b64decode(header[6:]).decode().partition(":")
-        except (binascii.Error, UnicodeDecodeError):
+        except binascii.Error, UnicodeDecodeError:
             return None
         accepted = bool(username) and password == self.token
         self.attempts.append((username, accepted))

@@ -174,7 +174,7 @@ def _limits(args, service, person: people.Person) -> int:
 def _in_use(service, person: people.Person, workspace) -> str:
     try:
         used = service.runtime.usage(person.id, workspace and workspace.id)
-    except (RuntimeFailed, RuntimeUnavailable):
+    except RuntimeFailed, RuntimeUnavailable:
         return "In use: not known"
     return f"In use: memory={used.memory_text()} tasks={used.tasks}"
 
