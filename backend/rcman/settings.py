@@ -5,17 +5,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from helpers import claude_release
+from helpers import claude_release, rules
 
 APP_ROOT = Path(__file__).resolve().parent.parent.parent
 ORIGIN = re.compile(r"https?://[A-Za-z0-9.-]+(:\d+)?")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="RCMAN_")
+    # A refused value is never repeated in the error, which reaches the journal: the secret key's
+    # among them.
+    model_config = SettingsConfigDict(env_prefix="RCMAN_", hide_input_in_errors=True)
 
     public_origin: str = Field(
         description="The scheme, host and port browsers use to reach rcman, such as "
@@ -81,6 +83,13 @@ class Settings(BaseSettings):
         "the requests for workspaces' forwarded ports to, and its questions whether it may get "
         "a certificate for one; the installer sets it. Unset, no port is forwarded.",
     )
+    secret_key: SecretStr | None = Field(
+        None,
+        description="The key rcman seals the cookies of Microsoft sign-in and its stored client "
+        "secret with (sealing.py); the installer generates it and writes it in secret.env. "
+        "In the form helpers/rules.py's SECRET_KEY holds it to. Unset or empty, Microsoft "
+        "sign-in is not available.",
+    )
     audit_max_rows: int = Field(
         100_000, ge=1, description="At most this many audit events are kept; the oldest go first."
     )
@@ -91,6 +100,16 @@ class Settings(BaseSettings):
         if not claude_release.DOWNLOAD_ADDRESS.fullmatch(value):
             raise ValueError("must be an http or https address with no slash at its end")
         return value
+
+    @field_validator("secret_key", mode="before")
+    @classmethod
+    def _secret_key(cls, value):
+        text = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if text is None or text == "":
+            return None
+        if not isinstance(text, str) or not rules.SECRET_KEY.fullmatch(text):
+            raise ValueError(rules.SECRET_KEY.sentence)
+        return text
 
     @field_validator("public_origin")
     @classmethod

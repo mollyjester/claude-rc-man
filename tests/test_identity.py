@@ -42,6 +42,8 @@ KNOWN_ADMIN_ROUTES = {
     ("PUT", "/api/monitor/settings"),
     ("GET", "/api/forwarding/settings"),
     ("PUT", "/api/forwarding/settings"),
+    ("GET", "/api/microsoft/settings"),
+    ("PUT", "/api/microsoft/settings"),
 }
 
 

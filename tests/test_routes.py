@@ -19,9 +19,11 @@ def outside_api(app) -> set[str]:
 
 def test_every_route_is_under_api_except_the_frontend(app):
     from rcman import spa
+    from rcman.routers import auth
 
     assert routes.websocket_routes(app)  # non-vacuity
-    assert outside_api(app) == {spa.CATCH_ALL}
+    # and the sign-in page, which Caddy sends a browser that is not signed in to
+    assert outside_api(app) == {spa.CATCH_ALL, auth.START_PATH}
 
 
 def test_a_route_outside_api_is_found():

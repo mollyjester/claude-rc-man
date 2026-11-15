@@ -537,6 +537,11 @@ CALLS = {
     ("GET", "/api/forwarding/settings"): {},
     # the forwarding defaults, from its settings model
     ("PUT", "/api/forwarding/settings"): {"json": forwarding_defaults.model_dump()},
+    ("GET", "/api/microsoft/settings"): {},
+    # Microsoft sign-in left off, with nothing configured
+    ("PUT", "/api/microsoft/settings"): {
+        "json": {"enabled": False, "client_id": "", "tenant_id": ""}
+    },
     ("GET", "/api/forward/hand-off"): {"params": {"host": "6080-1.ws.rcman.example.com"}},
     ("POST", "/api/client-errors"): {
         "json": {

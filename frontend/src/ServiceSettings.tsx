@@ -1,6 +1,8 @@
 import { type FormEvent, Fragment, type ReactNode, useEffect, useId, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { type ApiError, api } from "./api";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 
@@ -22,6 +24,20 @@ type Scope = "host" | "people" | "containers" | "storage";
 // (backend/rcman/forwarding_settings.py).
 type Forwarding = { enabled: boolean; idle_minutes: number; absolute_hours: number };
 type Timeout = "idle_minutes" | "absolute_hours";
+
+// Microsoft sign-in's settings, as GET /api/microsoft/settings has them: never the client
+// secret, only whether one is stored, and whether rcman has the key it needs to keep one
+// (backend/rcman/microsoft_settings.py, backend/rcman/routers/microsoft_settings.py).
+type Microsoft = {
+  enabled: boolean;
+  client_id: string;
+  tenant_id: string;
+  secret_set: boolean;
+  redirect_uri: string;
+  available: boolean;
+};
+// Where the guide says how to set up the app registration.
+const MICROSOFT_GUIDE = "/help/service-settings#microsoft-sign-in";
 
 const INTERVALS: [Interval, string, string][] = [
   ["usage_interval_seconds", m.monitorUsageInterval, m.monitorUsageIntervalHelp],
@@ -46,13 +62,21 @@ const FORWARDING_LABELS: Record<string, string> = {
   enabled: m.forwardingEnabled,
   ...Object.fromEntries(TIMEOUTS.map(([name, label]) => [name, label])),
 };
+const MICROSOFT_LABELS: Record<string, string> = {
+  client_id: m.microsoftClientId,
+  tenant_id: m.microsoftTenantId,
+  client_secret: m.microsoftSecret,
+  enabled: m.microsoftEnabled,
+};
 
 // A number as it is sent: a whole number as a number, anything else as typed, for the server
 // to judge.
 const WHOLE = /^\s*-?\d+\s*$/;
 const asSent = (text: string): number | string => (WHOLE.test(text) ? Number(text) : text);
 
-type Status = "idle" | "busy" | "saved";
+// A card's state, which its status line says: a save out, a save done, or, on the Microsoft
+// sign-in card, the redirect URI copied.
+type Status = "idle" | "busy" | "saved" | "copied";
 
 // The administrators' page of rcman's own settings, which hold for everyone: a card for each
 // part, each read as the page opens and saved on its own.
@@ -65,6 +89,7 @@ export function ServiceSettings() {
       <p className="page-intro muted">{m.serviceSettingsIntro}</p>
       <MonitoringCard />
       <ForwardingCard />
+      <MicrosoftCard />
     </section>
   );
 }
@@ -164,9 +189,19 @@ function SaveRow({ name, status }: { name: string; status: Status }) {
 }
 
 // A card's live region, after its form, as a Settings page part's is: Saving… while its save is
-// out, then that it is saved, until a field of it changes.
-function SaveStatus({ status, saved }: { status: Status; saved: string }) {
-  return <p role="status">{status === "busy" ? m.saving : status === "saved" ? saved : ""}</p>;
+// out, then that it is saved, or what else the card did (``copied``), until a field of it
+// changes.
+function SaveStatus({
+  status,
+  saved,
+  copied = "",
+}: {
+  status: Status;
+  saved: string;
+  copied?: string;
+}) {
+  const said = { idle: "", busy: m.saving, saved, copied };
+  return <p role="status">{said[status]}</p>;
 }
 
 function MonitoringCard() {
@@ -343,6 +378,223 @@ function ForwardingForm({ initial }: { initial: Forwarding }) {
       </form>
       <SaveStatus status={status} saved={m.forwardingSaved} />
       <ProblemView error={error} labels={FORWARDING_LABELS} inline />
+    </>
+  );
+}
+
+function MicrosoftCard() {
+  const [read, error] = useRead<Microsoft>("/api/microsoft/settings");
+  return (
+    <SettingsCard title={m.microsoftTitle} line={m.microsoftLine} error={error}>
+      {read &&
+        (read.available ? (
+          <MicrosoftForm initial={read} />
+        ) : (
+          // Without rcman's secret key nothing can be set up here: no form is offered.
+          <MessageBar kind="warning">
+            <p>{m.microsoftUnavailable}</p>
+          </MessageBar>
+        ))}
+    </SettingsCard>
+  );
+}
+
+// An address with a place to wrap after each slash that ends a part of it, so a narrow card
+// breaks it between its parts rather than inside one.
+const breakable = (address: string): ReactNode[] => {
+  let start = 0;
+  return address.split(/(?<=\/)(?!\/)/).map((part) => {
+    const at = start;
+    start += part.length;
+    return (
+      <Fragment key={at}>
+        {at > 0 && <wbr />}
+        {part}
+      </Fragment>
+    );
+  });
+};
+
+// What the Microsoft sign-in form holds: the IDs as typed, a new client secret, empty to keep
+// the one stored, and the switch.
+type MicrosoftTyped = { enabled: boolean; client_id: string; tenant_id: string; secret: string };
+const microsoftTyped = (settings: Microsoft): MicrosoftTyped => ({
+  enabled: settings.enabled,
+  client_id: settings.client_id,
+  tenant_id: settings.tenant_id,
+  secret: "",
+});
+
+// The settings in the order of setting up the app registration in Microsoft Entra: the
+// redirect URI to give it, first, then its IDs and secret, and last the switch, which the
+// server refuses until they are there.
+function MicrosoftForm({ initial }: { initial: Microsoft }) {
+  const [shown, setShown] = useState(initial);
+  const [values, setValues] = useState(() => microsoftTyped(initial));
+  const [status, setStatus] = useState<Status>("idle");
+  const [copyFailed, setCopyFailed] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const ids = { client: useId(), tenant: useId(), claim: useId(), secret: useId() };
+  const secretState = useId();
+  const enabledHelp = useId();
+  const redirectHelp = useId();
+  const fields = useFieldErrors(error);
+
+  const change = (next: Partial<MicrosoftTyped>) => {
+    setValues((current) => ({ ...current, ...next }));
+    setStatus("idle");
+    setCopyFailed(false);
+  };
+
+  async function copy() {
+    setCopyFailed(false);
+    try {
+      await navigator.clipboard.writeText(shown.redirect_uri);
+      if (status !== "busy") setStatus("copied");
+    } catch {
+      setCopyFailed(true);
+    }
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setStatus("busy");
+    setCopyFailed(false);
+    setError(null);
+    try {
+      const answer = await api.put<{ settings: Microsoft }>("/api/microsoft/settings", {
+        enabled: values.enabled,
+        client_id: values.client_id,
+        tenant_id: values.tenant_id,
+        // Sent only to replace the one stored.
+        ...(values.secret === "" ? {} : { client_secret: values.secret }),
+      });
+      setShown(answer.settings);
+      setValues(microsoftTyped(answer.settings));
+      setStatus("saved");
+    } catch (e) {
+      setError(asApiError(e));
+      setStatus("idle");
+    }
+  }
+
+  const idField = (
+    name: "client_id" | "tenant_id",
+    label: string,
+    help: ReactNode,
+    helpId: string,
+  ) => (
+    <div className="field">
+      <label>
+        {label}
+        <input
+          type="text"
+          name={name}
+          autoComplete="off"
+          spellCheck={false}
+          autoCapitalize="off"
+          translate="no"
+          value={values[name]}
+          onChange={(e) => change({ [name]: e.target.value })}
+          {...fields.input(name, helpId)}
+        />
+      </label>
+      {fields.message(name)}
+      {help}
+    </div>
+  );
+
+  return (
+    <>
+      <dl className="facts redirect-uri">
+        <dt>{m.microsoftRedirect}</dt>
+        <dd className="redirect-uri-row">
+          <code className="redirect-uri-address" translate="no">
+            {breakable(shown.redirect_uri)}
+          </code>
+          <button
+            type="button"
+            className="secondary redirect-uri-copy"
+            aria-label={m.microsoftCopyName}
+            aria-describedby={redirectHelp}
+            onClick={copy}
+          >
+            {m.microsoftCopy}
+          </button>
+        </dd>
+      </dl>
+      {copyFailed && (
+        <MessageBar kind="problem">
+          <p>{m.microsoftCopyFailed}</p>
+        </MessageBar>
+      )}
+      <p id={redirectHelp} className="help muted">
+        {m.microsoftRedirectHelp}
+      </p>
+      <form noValidate onSubmit={save} ref={fields.form} aria-busy={status === "busy"}>
+        {idField(
+          "client_id",
+          m.microsoftClientId,
+          <p id={ids.client} className="help muted">
+            {m.microsoftClientIdHelp}
+          </p>,
+          ids.client,
+        )}
+        {idField(
+          "tenant_id",
+          m.microsoftTenantId,
+          <>
+            <p id={ids.tenant} className="help muted">
+              {m.microsoftTenantIdHelp}
+            </p>
+            <p id={ids.claim} className="help muted">
+              {m.microsoftClaimHelp} <Link to={MICROSOFT_GUIDE}>{m.microsoftClaimGuide}</Link>.
+            </p>
+          </>,
+          `${ids.tenant} ${ids.claim}`,
+        )}
+        <div className="field">
+          <label>
+            {m.microsoftSecret}
+            <input
+              type="password"
+              name="client_secret"
+              autoComplete="new-password"
+              spellCheck={false}
+              autoCapitalize="off"
+              value={values.secret}
+              onChange={(e) => change({ secret: e.target.value })}
+              {...fields.input("client_secret", `${secretState} ${ids.secret}`)}
+            />
+          </label>
+          {fields.message("client_secret")}
+          <p id={secretState} className="help">
+            {shown.secret_set ? m.microsoftSecretStored : m.microsoftSecretNotStored}
+          </p>
+          <p id={ids.secret} className="help muted">
+            {m.microsoftSecretHelp}
+          </p>
+        </div>
+        <div className="field">
+          <label>
+            <input
+              type="checkbox"
+              name="enabled"
+              checked={values.enabled}
+              onChange={(e) => change({ enabled: e.target.checked })}
+              {...fields.input("enabled", enabledHelp)}
+            />
+            {m.microsoftEnabled}
+          </label>
+          {fields.message("enabled")}
+          <p id={enabledHelp} className="help muted">
+            {m.microsoftEnabledHelp}
+          </p>
+        </div>
+        <SaveRow name={m.microsoftSave} status={status} />
+      </form>
+      <SaveStatus status={status} saved={m.microsoftSaved} copied={m.microsoftCopied} />
+      <ProblemView error={error} labels={MICROSOFT_LABELS} inline />
     </>
   );
 }

@@ -1,9 +1,13 @@
 # Adding and removing people
 
-Each person who uses rcman signs in with their Google address, and works in
-workspaces of their own (see [Workspaces](workspaces.md)). rcman keeps the list
-of people itself; only the addresses on it may sign in, and the list of
-addresses oauth2-proxy lets through is written from it on every change.
+Each person who uses rcman signs in with their Google address or, where an administrator has
+set up [Microsoft sign-in](service-settings.md#microsoft-sign-in), with their Microsoft work
+account, and works in workspaces of their own (see [Workspaces](workspaces.md)). rcman keeps
+the list of people itself, by the address each signs in with: a Google address, or a Microsoft
+account's user principal name (UPN). Only the addresses on it may sign in, whichever way; the
+list of addresses oauth2-proxy lets through to Google sign-in is written from it on every
+change, and rcman checks a Microsoft sign-in against it itself. A guest account of the
+Microsoft tenant is refused, whatever its address.
 
 Administrators add and remove people on the **People** page in rcman, in the
 **Administration** group of the sidebar, or with `rcman-admin` as root over
@@ -13,11 +17,11 @@ starts it.
 ## Adding someone
 
 On the **People** page, **Add person**, beside the page's title, opens a dialog:
-give their Google address, tick **Administrator** to make them one, and press
+give the address they sign in with, tick **Administrator** to make them one, and press
 **Add**. Or:
 
 ```
-sudo rcman-admin add <google-email> [--admin]
+sudo rcman-admin add <email> [--admin]
 ```
 
 They can sign in at once. Each person gets a range of user ids of their own,
@@ -30,7 +34,7 @@ someone is refused.
 On the **People** page, **Remove** asks first, in a dialog, then removes them. Or:
 
 ```
-sudo rcman-admin delete <google-email>
+sudo rcman-admin delete <email>
 ```
 
 From the moment the removal starts, they cannot sign in, and no request of theirs reaches one
@@ -89,8 +93,8 @@ section says, folded away. **Close**, the cross at its top, or Escape closes
 the dialog, except while a form is being saved. Or, as root over SSH:
 
 ```
-sudo rcman-admin limits <google-email>
-sudo rcman-admin limits <google-email> [--workspace NAME] [--memory 4G] [--cpu 1.5] [--pids 500]
+sudo rcman-admin limits <email>
+sudo rcman-admin limits <email> [--workspace NAME] [--memory 4G] [--cpu 1.5] [--pids 500]
 ```
 
 With no option it prints the limits and what is in use. Each option takes a

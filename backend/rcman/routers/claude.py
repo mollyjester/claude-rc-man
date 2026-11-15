@@ -46,7 +46,9 @@ Reason = Annotated[ruled(rules.FAILURE_REASON.or_empty()), BeforeValidator(_trim
 
 class LoginBody(BaseModel):
     email: Email | None = Field(
-        None, description="The Claude account's email address; the Google address when omitted."
+        None,
+        description="The Claude account's email address; when omitted, the address they sign "
+        "in with.",
     )
 
 

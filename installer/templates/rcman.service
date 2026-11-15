@@ -9,6 +9,8 @@ User=rcman
 Group=rcman
 WorkingDirectory=@CURRENT@
 EnvironmentFile=@ETC@/rcman.env
+# Without a "-": a missing secret.env keeps rcman from starting.
+EnvironmentFile=@ETC@/secret.env
 # rcman drives its workspaces through its own user manager's Podman socket, whose
 # containers run outside this service, so they outlive a restart of it.
 Environment=XDG_RUNTIME_DIR=/run/user/@APP_UID@

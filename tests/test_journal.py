@@ -46,6 +46,7 @@ def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
         claude_versions,
         forward,
         forwards,
+        microsoft,
         monitor,
         terminals,
         unrecognised,
@@ -64,6 +65,7 @@ def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
         monitor.log,
         forward.log,
         forwards.log,
+        microsoft.log,
     )
     # An app made earlier in this process installed them with the standard error of
     # its time; they are taken off here, so that this app installs them afresh.

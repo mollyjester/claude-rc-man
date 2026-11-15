@@ -10,6 +10,8 @@ import { PROTOCOL } from "./terminalSocket";
 // answered in a way the page does not understand.
 export const UNREACHABLE = "unreachable";
 export const SIGNED_OUT = "signed_out";
+// The problem rcman answers a request with no identity with (backend/rcman/identity.py).
+const NOT_AUTHENTICATED = "not_authenticated";
 export const UNEXPECTED_RESPONSE = "unexpected_response";
 // How long a report may take to send before it is given up, to be sent later.
 export const REPORT_TIMEOUT_MS = 10_000;
@@ -130,6 +132,12 @@ async function request<T>(
     }
     const problem = problemFrom(data, status);
     if (problem.code === UNEXPECTED_RESPONSE) note(UNEXPECTED_RESPONSE, unreadable, response);
+    // An ended or refused Microsoft session reaches rcman itself, which answers that no one is
+    // signed in: the same ended sign-in as the proxy's redirect above.
+    if (problem.code === NOT_AUTHENTICATED) {
+      note(SIGNED_OUT, undefined, response);
+      throw new ApiError(status, SIGNED_OUT, m.signedOut);
+    }
     throw problem;
   }
   if (unreadable !== undefined) {

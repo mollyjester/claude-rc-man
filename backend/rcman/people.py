@@ -2,10 +2,11 @@
 
 A person is an address, whether they are an administrator, and a slot: the uid
 range their workspaces run in (runtime.RANGE ids from slot × RANGE, runtime.py), their own
-and never anyone else's. oauth2-proxy lets in only the addresses in the
+and never anyone else's. The address is the one they sign in with: a Google address, or a
+Microsoft account's UPN. oauth2-proxy lets in only the addresses in the
 allowed list, which is written from the table, whole and by rename, on every
-change and whenever rcman starts; rcman itself checks every request against
-the table (identity.py).
+change and whenever rcman starts; rcman itself checks every request, a Microsoft
+session's among them, against the table (identity.py).
 """
 
 from __future__ import annotations

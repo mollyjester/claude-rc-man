@@ -2262,6 +2262,32 @@ form.limits + form.limits {
 .setting-body > form[aria-busy="true"] + [role="status"] {
   color: var(--muted);
 }
+/* The Microsoft sign-in card's redirect URI: one fact, its name over it at every width, named
+   as the card's fields are, then the address to copy on its own line, wrapping within its room
+   after a slash where it can, and its Copy beside it; on a phone, Copy goes under it. */
+dl.redirect-uri {
+  grid-template-columns: minmax(0, 1fr);
+}
+dl.redirect-uri dt {
+  padding: 0 0 var(--space-1);
+  font-weight: 600;
+  color: var(--fg);
+}
+dl.redirect-uri dd {
+  padding: 0;
+}
+dd.redirect-uri-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.redirect-uri-copy {
+  flex: none;
+}
+code.redirect-uri-address {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 /* Everyone's workspaces: a card for each person, a row for each workspace, its name, its device
    name, its state's pill, its session and its version, which the row's words wrap under on a
    phone. */
@@ -2573,6 +2599,11 @@ td.result-failed {
   .topbar {
     height: var(--topbar-phone);
     padding: 0 var(--space-2);
+  }
+  /* A top bar with no menu button, the sign-in page's (backend/rcman/routers/auth.py), starts
+     at the page's gutter, where its card does. */
+  .topbar:not(:has(> .menu-button)) {
+    padding-left: var(--space-4);
   }
   .menu-button {
     display: inline-flex;
@@ -2897,6 +2928,17 @@ td.result-failed {
   }
   .docs-article {
     padding: var(--space-4);
+  }
+  /* The redirect URI's Copy under it, across the card. */
+  dd.redirect-uri-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  /* The sign-in page's two choices (backend/rcman/routers/auth.py), one over the other, each
+     across the card. */
+  .sign-in-choices {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

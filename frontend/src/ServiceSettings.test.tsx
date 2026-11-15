@@ -19,6 +19,15 @@ const MONITORING = {
   storage: true,
 };
 const FORWARDING = { enabled: false, idle_minutes: 5, absolute_hours: 12 };
+// What GET /api/microsoft/settings answers with nothing set up (backend/rcman/microsoft_settings.py).
+const MICROSOFT = {
+  enabled: false,
+  client_id: "",
+  tenant_id: "",
+  secret_set: false,
+  redirect_uri: "https://rcman.test/api/auth/microsoft/callback",
+  available: true,
+};
 
 // A reply held until the test releases it.
 function held(reply: Reply) {
@@ -41,6 +50,7 @@ function api(extra: Routes = {}) {
     "GET /api/attention": NOTHING_TO_ATTEND,
     "GET /api/monitor/settings": { settings: MONITORING },
     "GET /api/forwarding/settings": { settings: FORWARDING },
+    "GET /api/microsoft/settings": { settings: MICROSOFT },
     "PUT /api/monitor/settings": (call) => ({ settings: call.body }),
     "PUT /api/forwarding/settings": (call) => ({ settings: call.body }),
     ...extra,

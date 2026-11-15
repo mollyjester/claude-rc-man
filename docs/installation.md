@@ -2,7 +2,8 @@
 
 rcman runs on one Ubuntu 26.04 machine. Caddy, already running there, serves it
 on a public host name with HTTPS; Google sign-in goes through oauth2-proxy,
-which the installer sets up. People's workspaces are containers of rootless
+which the installer sets up, and Microsoft sign-in, where an administrator sets it up (see
+[Microsoft sign-in](service-settings.md#microsoft-sign-in)), through rcman itself. People's workspaces are containers of rootless
 Podman, run by rcman's own account; the installer sets that up too. The
 installer is `install.sh` in a clone of this repository, and the same command
 upgrades an installation; where you turn it on, administrators can also upgrade
@@ -123,8 +124,19 @@ rcman rolls out versions from (see [Configuration](configuration.md));
 Caddy's account must exist. Anything else saved in
 `/etc/rcman/install.env` is dropped from it.
 Without a terminal the installer does not ask; it names what is missing and
-stops. The secret oauth2-proxy signs its cookies with is generated on the first
-run and kept.
+stops. The secret oauth2-proxy signs its cookies with, and rcman's secret key (see
+[Configuration](configuration.md)), are generated on the first run that has none and kept with
+the answers. To use one of your own in place of one generated, give it as
+`RCMAN_INSTALL_COOKIE_SECRET` or `RCMAN_INSTALL_SECRET_KEY`, or as the `COOKIE_SECRET=` or
+`SECRET_KEY=` line of `/etc/rcman/install.env`; the variable wins over the saved line. A secret
+key must have the form `helpers/rules.py` holds it to (`SECRET_KEY`), and the installer refuses
+any other. The installer does not check a cookie secret: oauth2-proxy holds it to rules of its
+own, the length of an AES key, either as it is or decoded from URL-safe base64, as
+oauth2-proxy's configuration guide says under "Generating a Cookie Secret" (the version the
+installer installs is `OAUTH2_PROXY_VERSION` in `installer/install.py`). With any other,
+oauth2-proxy does not start: the installer's check at the end stops the run with oauth2-proxy
+not answering, and `journalctl -u rcman-oauth2-proxy` says why. Until it starts, Google sign-in
+does not work.
 
 ## What the installer does
 
@@ -241,8 +253,9 @@ run and kept.
      the checked file in and set the links. It sets the
      version `current` names only when there is none, so running it again never
      changes the approved version.
-9. **Writes the configuration** in `/etc/rcman` and the two systemd services,
-   `rcman` and `rcman-oauth2-proxy`; and, when upgrading from the web interface
+9. **Writes the configuration** in `/etc/rcman`, rcman's secret key among it in
+   `/etc/rcman/secret.env`, which only root may read and without which `rcman.service` does not
+   start, and the two systemd services, `rcman` and `rcman-oauth2-proxy`; and, when upgrading from the web interface
    is on, what it needs (see
    [Upgrading from the web interface](#upgrading-from-the-web-interface)), or,
    when it is off, removes them.
@@ -338,8 +351,15 @@ passing one. The health check at the end of every run asks both.
 The installer keeps rcman's site block for Caddy in `/etc/rcman/Caddyfile.snippet`, and has
 your Caddyfile, `/etc/caddy/Caddyfile`, import it. It sends oauth2-proxy's own pages to
 oauth2-proxy, asks oauth2-proxy whether each other request is signed in, sends people who are
-not to the Google sign-in, which brings them back to the page they asked for, and passes the
-signed-in address to rcman through the socket. The files a browser fetches to
+not to `/oauth2/start`, rcman's way in, which brings them back to the page they asked for, and
+passes the signed-in address to rcman through the socket. `/oauth2/start` and the routes of
+Microsoft sign-in, `/api/auth/*`, go to rcman without a sign-in: while
+[Microsoft sign-in](service-settings.md#microsoft-sign-in) is off, `/oauth2/start` sends the
+browser straight on to the Google sign-in; while it is on, it offers Google and Microsoft. A
+request that carries rcman's own session cookie, `__Host-rcman-session`, which a Microsoft
+sign-in ends in, goes straight to rcman, which checks the session itself; every other one goes
+through oauth2-proxy. These routes are in the site block whether Microsoft sign-in is on or
+not, and Google sign-in starts in rcman, so it needs rcman to be running. The files a browser fetches to
 [install rcman as an app](app.md), its manifest and its icons, reach rcman without a sign-in,
 and with no address: they hold nothing private, and only their exact paths are let through. It
 also removes any address a browser sends itself, so only oauth2-proxy can tell rcman who
@@ -397,6 +417,8 @@ sets are not seen in the check.
 oauth2-proxy's sign-in cookie is `__Host-rcman-auth`, and the cookies it names
 after it, its CSRF cookie and the parts of a long session, begin with that name
 too ([`installer/templates/oauth2-proxy.cfg`](../installer/templates/oauth2-proxy.cfg)).
+rcman's own cookies of a Microsoft sign-in, the session's and the one that lasts while Microsoft
+is asked, begin with `__Host-rcman-` too.
 A browser keeps a cookie with the `__Host-` prefix only when it is Secure, for
 the whole site and for this host name alone, and lets no other host set or
 replace it, so a page served on a name under your host name cannot sign a
@@ -468,8 +490,8 @@ port's own pages.
 - **The ask** listens on `127.0.0.1` alone and passes only its exact path on, but any local user
   of this machine can query it, and so learn which ports' hosts are wanted now.
 - **The sign-in cookie stays rcman's.** A forwarded port's host is under your host name, so its
-  app can set ordinary cookies for your domain, but not rcman's sign-in cookie, a `__Host-`
-  cookie (see [Caddy](#caddy)), nor the forwarding server's own. It can still set so many
+  app can set ordinary cookies for your domain, but not rcman's sign-in cookies, which are
+  `__Host-` cookies (see [Caddy](#caddy)), nor the forwarding server's own. It can still set so many
   cookies of its own that the browser drops older ones, rcman's sign-in among them, which
   signs its owner out of rcman.
 - **A GET that changes something.** The forwarding server lets in a top-level navigation from
@@ -493,9 +515,9 @@ refuses it while a container runs, with the commands to stop them (see step 4
 under [What the installer does](#what-the-installer-does)).
 
 An upgrade or a rollback that changes the name of oauth2-proxy's cookie (see
-[Caddy](#caddy)) signs everyone out of rcman once: oauth2-proxy reads only the
-cookie named in its configuration, so the one their browsers hold under the
-other name is ignored, and each person is sent to the Google sign-in again at
+[Caddy](#caddy)) signs everyone signed in with Google out of rcman once: oauth2-proxy reads
+only the cookie named in its configuration, so the one their browsers hold under the
+other name is ignored, and each person is sent to the sign-in again at
 their next request. Their workspaces and servers are not affected. After a
 rollback to the other name, a browser may still hold a sign-in of that name from
 before, which oauth2-proxy reads again, so people who signed out of rcman since
@@ -714,7 +736,9 @@ Cloud console when you have no use for it.
    and the folder `/opt/rcman/upgrade` with its `/opt/rcman/upgrade/status.json`),
    `/etc/rcman` and `/var/lib/rcman`.
    `/etc/rcman/install.env` holds the Google OAuth client and the other answers
-   the installer saved: keep it aside to install again with the same answers.
+   the installer saved, rcman's secret key among them, which `/etc/rcman/secret.env` is
+   written from: keep it aside to install again with the same answers, and the same secret
+   key, without which the client secret of Microsoft sign-in must be entered again.
    `/var/lib/rcman` holds the database, the list of allowed addresses, the
    Claude Code store `/var/lib/rcman/claude`, the request file of upgrading
    from the web interface `/var/lib/rcman/upgrade.request`, and rcman's home

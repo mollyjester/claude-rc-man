@@ -49,6 +49,7 @@ address, and its refusal of a request for what is no port's.
 | `workspace.limits` | sets the limits on one workspace (administrators) | the person's address, a slash and the workspace's name, then the limits set as above |
 | `monitor.settings` | saves the monitoring settings on the **Service settings** page (administrators; see [Monitoring](service-settings.md#monitoring)) | the settings saved, as JSON; none when they were refused |
 | `monitor.refresh` | presses **Refresh** on the **Monitor** page, to collect every reading again at once (administrators; see [Refresh](monitor.md#refresh)) | none |
+| `microsoft.settings` | saves the Microsoft sign-in settings on the **Service settings** page (administrators; see [Microsoft sign-in](service-settings.md#microsoft-sign-in)) | what was sent, as JSON: whether sign-in is allowed, the two IDs, and whether a client secret was sent (`secret_changed`), never the secret; none when what was sent was not valid |
 | `forwarding.settings` | saves the port forwarding settings on the **Service settings** page (administrators; see [Port forwarding](service-settings.md#port-forwarding)) | the settings saved, as JSON; none when they were refused |
 | `git.stage` | stages files in a workspace's repository | the workspace's name |
 | `git.unstage` | unstages files | the workspace's name |

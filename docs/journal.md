@@ -64,6 +64,20 @@ forwarded ports leave behind come from the logger `rcman.forwards`: that a relay
 a workspace was ended, at info level, and that what a workspace's relays left could not be read,
 at warning level.
 
+Those about [Microsoft sign-in](service-settings.md#microsoft-sign-in) come from the logger
+`rcman.microsoft`, at warning level, one line for each sign-in:
+
+- one that did not start, with the class of what failed;
+- one refused while Microsoft's code was redeemed, with the code of the refusal and the class
+  of what failed, or with `code=exchange_failed` and the token endpoint's own error code;
+- one refused with `code=idp_unreachable reason=busy`, and no class: it waited too long behind
+  other sign-ins that were still waiting on Microsoft, which is slow to answer or cannot be
+  reached.
+
+They never hold a token, a claim or an address. Any other refusal, such as an account of
+another tenant, a guest account or an address rcman does not list, is not written: the person
+is told why on the sign-in page.
+
 Only the audit events are also in the audit trail. The journal keeps what it
 is given only within its own size limits; see
 [how long events are kept](audit.md#how-long-events-are-kept).

@@ -51,9 +51,13 @@ to a file beside it, and renames that over it, so oauth2-proxy, which watches
 the file, never reads half of one; it is rcman's, readable by its group, which
 oauth2-proxy's account belongs to. rcman writes it as it starts, and again on
 every change. rcman's database is its own alone (`db.MODE`, and `UMask=0077` in
-`rcman.service`), though oauth2-proxy shares its group. rcman itself checks every
-request against the table, so a
-removal takes effect at once in rcman whatever oauth2-proxy has read.
+`rcman.service`), though oauth2-proxy shares its group; its secret key is in `secret.env`, root's alone,
+which systemd reads as root for `rcman.service`, out of that group's reach. The allowed list is oauth2-proxy's, for
+Google sign-in; a Microsoft sign-in never reaches oauth2-proxy, and rcman checks it against the
+table itself, at the callback and on every request after it
+([backend.md](backend.md#microsoft-sign-in)). rcman itself checks every request against the
+table, so a removal takes effect at once in rcman whatever oauth2-proxy has read, a Microsoft
+session's among them.
 
 ## Deleting a person
 
