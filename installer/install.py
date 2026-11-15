@@ -48,16 +48,16 @@ from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parent.parent
 # install.sh runs this in isolated mode, which puts nothing of the clone on the
-# path; the rule for addresses is the clone's helpers/rules.py. It runs as root, so
-# it writes no bytecode into the clone, which is someone else's, and takes the
-# clone off the path again once it has it.
+# path; the rules for addresses and for the secret key are the clone's
+# helpers/rules.py. It runs as root, so it writes no bytecode into the clone,
+# which is someone else's, and takes the clone off the path again once it has it.
 _on_path = str(REPO) in sys.path
 if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
     from helpers import claude_release, instructions, seccomp
-    from helpers.rules import EMAIL, Rule
+    from helpers.rules import EMAIL, SECRET_KEY, SECRET_KEY_BYTES, Rule
     from installer import upgrade
 finally:
     sys.dont_write_bytecode = _write_bytecode
@@ -77,6 +77,9 @@ TOOLCHAIN = ROOT / "toolchain"
 ETC = Path("/etc/rcman")
 STATE = Path("/var/lib/rcman")
 SETTINGS_FILE = ETC / "install.env"
+# rcman's secret key (RCMAN_SECRET_KEY), root's alone: systemd reads it as root for rcman.service,
+# and rcman.env, which rcman-proxy's group may read, is no place for it.
+SECRET_ENV = ETC / "secret.env"
 SYSTEMD = Path("/etc/systemd/system")
 # The static tools mounted into every workspace: root's, so out of rcman's reach. The Claude
 # Code store is rcman's, which writes it at run time; the database is rcman's too.
@@ -142,6 +145,7 @@ COMPLETE = ".complete"  # marks a release that was fully built
 UNITS = ("rcman.service", "rcman-oauth2-proxy.service")
 TEMPLATES = (
     "rcman.env",
+    "secret.env",
     "oauth2-proxy.cfg",
     "rcman.service",
     "rcman-oauth2-proxy.service",
@@ -291,15 +295,27 @@ def save_settings(path: Path, values: dict[str, str]) -> bool:
     return write_if_changed(path, text, 0o600)
 
 
+# The secrets the installer generates on the first run that lacks them, and keeps with the
+# answers: oauth2-proxy's cookie secret, and rcman's secret key, which seals what Microsoft
+# sign-in keeps (backend/rcman/sealing.py).
+GENERATED = {
+    "COOKIE_SECRET": lambda: secrets.token_urlsafe(24),
+    "SECRET_KEY": lambda: secrets.token_hex(SECRET_KEY_BYTES),
+}
+# What a generated secret given or saved must be, where rcman holds it to a rule: the secret
+# key's (RCMAN_SECRET_KEY), which backend/rcman/settings.py holds it to as well.
+GENERATED_PATTERNS = {"SECRET_KEY": SECRET_KEY}
+
+
 def gather(
     saved: Path, environ: dict[str, str], flags: dict[str, str | None], ask
 ) -> dict[str, str]:
     """Settings from flags, then RCMAN_INSTALL_* variables, then the saved file, then questions.
 
-    Only the fields and the cookie secret are kept, so a saved setting the
-    installer no longer has is dropped when the settings are saved again.
+    Only the fields and the secrets the installer generates (GENERATED) are kept, so a saved
+    setting the installer no longer has is dropped when the settings are saved again.
     """
-    keep = (*FIELDS, "COOKIE_SECRET")
+    keep = (*FIELDS, *GENERATED)
     values = {k: v for k, v in load_settings(saved).items() if k in keep}
     for key in keep:
         if environ.get(f"RCMAN_INSTALL_{key}"):
@@ -321,7 +337,11 @@ def gather(
             "missing settings (give them as --options or RCMAN_INSTALL_* variables, "
             "or run from a terminal to be asked): " + ", ".join(missing)
         )
-    values.setdefault("COOKIE_SECRET", secrets.token_urlsafe(24))
+    for key, generate in GENERATED.items():
+        values.setdefault(key, generate())
+    for key, pattern in GENERATED_PATTERNS.items():
+        if not pattern.fullmatch(values[key]):
+            raise InstallError(f"invalid {key}: {pattern.sentence}")
     for key, (_question, _secret, _default, pattern) in FIELDS.items():
         if not values[key] or (pattern and not pattern.fullmatch(values[key])):
             why = f" {pattern.sentence}" if isinstance(pattern, Rule) else ""
@@ -1575,9 +1595,11 @@ def _gid(group: str) -> int:
 def configure(settings: dict[str, str]) -> list[str]:
     """Every file the installer renders; ``settings`` with what ``found_out`` returns."""
     changes = []
-    app_gid, proxy_gid = _gid(APP_USER), _gid(PROXY_USER)
+    app_gid, proxy_gid, root_gid = _gid(APP_USER), _gid(PROXY_USER), _gid("root")
     files = [
         (ETC / "rcman.env", render("rcman.env", settings), 0o640, app_gid),
+        # In ETC as it is when configure runs: SECRET_ENV is where an installation keeps it.
+        (ETC / SECRET_ENV.name, render("secret.env", settings), 0o600, root_gid),
         (ETC / "oauth2-proxy.cfg", render("oauth2-proxy.cfg", settings), 0o640, proxy_gid),
     ]
     for unit in UNITS:

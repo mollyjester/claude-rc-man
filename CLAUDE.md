@@ -30,12 +30,12 @@ the on-demand run, `make test-container`, and what each does:
 | People, their uid-range slots, the allowed list, `rcman-admin`, their limits | [project-knowledge/people.md](project-knowledge/people.md) |
 | Adding and removing people, limiting what they use and stopping their workspaces, for administrators | [docs/users.md](docs/users.md) |
 | What the Monitor page shows of the host, rcman's own storage, each person and each workspace container, and how it is collected, Refresh among it, for administrators | [docs/monitor.md](docs/monitor.md) |
-| rcman's own settings, on the Service settings page: monitoring and port forwarding, for administrators | [docs/service-settings.md](docs/service-settings.md) |
+| rcman's own settings, on the Service settings page: monitoring, port forwarding and Microsoft sign-in, for administrators | [docs/service-settings.md](docs/service-settings.md) |
 | What a repository's devcontainer.json may ask of a workspace, how an image of it is built, what is refused, and how a workspace is rebuilt from it, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |
-| The backend: layout, requests, each area's routes (Claude Code versions and the terminal's WebSocket among them), audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
+| The backend: layout, requests, each area's routes (Claude Code versions, Microsoft sign-in and the terminal's WebSocket among them), audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: formatting and lint, the rules it keeps, the design system, layout, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | The installer: how it is built and tested | [project-knowledge/installer.md](project-knowledge/installer.md) |
-| Checks that need a real Claude account or a real machine: a fresh install or reinstall, a restart of the host, an upgrade | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
+| Checks that need a real Claude account, a real machine or a real Microsoft Entra tenant: a fresh install or reinstall, a restart of the host, an upgrade, Microsoft sign-in | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
 | Installing, upgrading, rolling back and removing rcman, for administrators | [docs/installation.md](docs/installation.md) |
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |

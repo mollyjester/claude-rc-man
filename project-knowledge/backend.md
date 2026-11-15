@@ -30,11 +30,14 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
 | `monitor.py`, `routers/monitor.py` | What the host, rcman's own storage, each person and each workspace container use now, collected in two rounds, on their intervals or at once on a refresh, and the monitor's settings, for administrators (see [Monitor](#monitor)) |
 | `forwarding_settings.py`, `routers/forwarding_settings.py` | The settings of port forwarding, for administrators, and the hook that hears of forwarding being turned off (see [Port forwarding's settings](#port-forwardings-settings)) |
+| `sealing.py` | Sealing with `RCMAN_SECRET_KEY`: AES-256-GCM under a key HKDF derives for each use, the stored client secret's and the cookies', and payloads that name their `kind` and expiry (see [Microsoft sign-in](#microsoft-sign-in)) |
+| `microsoft_settings.py`, `routers/microsoft_settings.py` | The settings of Microsoft sign-in, for administrators: the store, the generation, the sealed client secret, and `GET` and `PUT /api/microsoft/settings` (see [Microsoft sign-in](#microsoft-sign-in)) |
+| `microsoft.py`, `routers/auth.py` | Microsoft sign-in through MSAL, its refusals, its two cookies and the session; and the public routes of signing in, `GET /oauth2/start` (the sign-in page), `GET /api/auth/microsoft/login` and `GET /api/auth/microsoft/callback` (see [Microsoft sign-in](#microsoft-sign-in)) |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
-| `ratelimit.py`, `filelock.py` | A token bucket for each name, refilled by the clock it is given (the limits on a page's reports, see [Errors from the page](#errors-from-the-page), on requests for an upgrade of rcman, see [Upgrading rcman](#upgrading-rcman), and on the forwarding server's new hosts and ways in, see [Port forwarding](#port-forwarding)), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
+| `ratelimit.py`, `filelock.py` | A token bucket for each name, refilled by the clock it is given (the limits on a page's reports, see [Errors from the page](#errors-from-the-page), on requests for an upgrade of rcman, see [Upgrading rcman](#upgrading-rcman), on Microsoft sign-in's starts and callbacks, see [Microsoft sign-in](#microsoft-sign-in), and on the forwarding server's new hosts and ways in, see [Port forwarding](#port-forwarding)), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `forwarding_settings`, `forward`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `forwarding_settings`, `microsoft_settings`, `auth`, `forward`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
 | `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one, telling whether one's devcontainer.json changed, rebuilding, stopping and starting one (see [Workspaces and servers](#workspaces-and-servers)); the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)), and `forwarding`, whether ports are forwarded now; every entry of the person's own, the listing's and those its other routes answer, has its forwarded ports (`ports`, see [Port forwarding](#port-forwarding)) |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
@@ -51,15 +54,22 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 ## Requests
 
-- **Identity.** oauth2-proxy, behind Caddy's `forward_auth`, signs people in
-  with Google, and Caddy passes the address on as `X-Forwarded-Email`,
+- **Identity** (`identity.current_user`). oauth2-proxy, behind Caddy's `forward_auth`, signs
+  people in with Google, and Caddy passes the address on as `X-Forwarded-Email`,
   removing any the browser sent. rcman trusts the
   header because, installed, it listens only on a unix socket in a directory
   that only Caddy's group may enter — see
-  [the installer](installer.md#the-socket). The address must be an active
-  person's in the people table, which is read on every request, so a removal
-  takes effect at once (see [people.md](people.md)). The routes that need no identity are `problems.PUBLIC_PATHS`:
-  `/api/health` and the frontend's files.
+  [the installer](installer.md#the-socket). The header is read first. Without it, the
+  Microsoft session cookie, `__Host-rcman-session`, which Caddy passes to rcman without asking
+  oauth2-proxy, is opened, and its generation must be the settings' now, with Microsoft sign-in
+  on and the secret key there (see [Microsoft sign-in](#microsoft-sign-in)). Either way the
+  address must be an active person's in the people table, which is read on every request, so a
+  removal takes effect at once (see [people.md](people.md)). Where the address came from the
+  cookie, `not_authenticated` (a cookie that is no valid session) and `not_allowed` also delete
+  the cookie, so a stale Microsoft session never keeps anyone from signing in with Google; the
+  page reads `not_authenticated` as an ended sign-in ([frontend.md](frontend.md#reporting-failures)).
+  The routes that need no identity are `problems.PUBLIC_PATHS`: `/api/health`, the frontend's
+  files, and the routes of signing in.
 - **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE`, and every upgrade to a WebSocket, must carry
   an `Origin` header equal to `RCMAN_PUBLIC_ORIGIN` (`identity.changing`): a page of any site
   may open a WebSocket, and the browser sends rcman's cookies with it. A route that changes
@@ -292,8 +302,10 @@ credentials file every workspace of theirs shares (see
   container ends itself.
 - **Signing out of rcman** (`POST /api/me/sign-out`, `me.sign_out`) ends the
   person's terminals (see [The terminal](#the-terminal)), stops the person's
-  running servers unless `keep_sessions`, the default, and answers
-  oauth2-proxy's sign-out address, which the page goes to.
+  running servers unless `keep_sessions`, the default, deletes a Microsoft session's cookie in
+  its answer, and answers oauth2-proxy's sign-out address, which the page goes to: oauth2-proxy
+  clears its own cookie and sends the browser to `/`, whose `forward_auth` leads to
+  `/oauth2/start`. So it signs out of both.
 
 ## git in workspaces
 
@@ -887,6 +899,98 @@ owner's browser at `https://<port>-<workspace id>.ws.<DOMAIN>/`, DOMAIN the host
 host, what passes to the app and back, a WebSocket spliced through, a session ended when idle
 and at its lifetime, the end of every way in when forwarding is turned off and no way in in any
 address, log or audit row, on the host runtime.
+
+## Microsoft sign-in
+
+Microsoft (Entra ID) sign-in is an optional addition to Google's, which is always on through
+oauth2-proxy. Administrators set it up and turn it on and off on the Service settings page
+([docs/service-settings.md](../docs/service-settings.md#microsoft-sign-in)); the installer asks
+nothing about it.
+
+- **The settings** (`microsoft_settings.py`, `routers/microsoft_settings.py`): one row of
+  `microsoft_sign_in`, read once into a `Store` and taken up at once by a save, as port
+  forwarding's are. The IDs are held to `helpers.rules.GUID`, either empty, and kept in
+  lowercase; the client secret, without the spaces around it, is sealed with the secret key
+  (`sealing.STORED_SECRET`) and never given back: `GET /api/microsoft/settings` says
+  `secret_set`, the `redirect_uri` (`RCMAN_PUBLIC_ORIGIN` and `microsoft.CALLBACK_PATH`) and
+  whether the key is there (`available`). `PUT` sends `enabled`, both IDs and, to replace the
+  stored one, `client_secret`. Turning sign-in on without both IDs and a secret, stored or sent,
+  is refused at `enabled` (`problems.MICROSOFT_INCOMPLETE`). Without the key, a save that turns
+  sign-in on or sends a secret is refused with `microsoft_unavailable` (409), since nothing can
+  be sealed; one that leaves it off and sends no secret is taken. A save is audited as
+  `microsoft.settings`, its target the IDs, `enabled` and `secret_changed`, never the secret.
+- **The generation.** Every save that changes `enabled` or either ID increases `generation`. A
+  session carries the generation it was issued under, and one that differs is refused. So a
+  session is revoked only by removing the person or by such a save; a copied cookie lasts until
+  it expires, as oauth2-proxy's does.
+- **The secret key** (`RCMAN_SECRET_KEY`, in the form `helpers.rules.SECRET_KEY` holds it to,
+  which `settings.py` checks without repeating a refused value in its error), which the
+  installer generates and writes in `secret.env`. `sealing.py` derives a key for
+  each use with HKDF-SHA256 from its bytes, under the use's label (`sealing.STORED_SECRET` for
+  the stored client secret, `sealing.COOKIES` for both cookies), and seals with AES-256-GCM, a
+  fresh nonce each time and the label as associated data. A key that is missing, or that cannot open the
+  stored secret (replaced, or a database restored elsewhere), refuses every sign-in with
+  `secret_unreadable` until the secret is entered again; with no key, the sign-in page offers
+  Google alone.
+- **The flow** (`microsoft.py`, `routers/auth.py`). MSAL's `ConfidentialClientApplication`, a
+  fresh one for each request from the settings as they are then, every one sharing
+  `HTTP_CACHE`, so the tenant's discovery is fetched once and MSAL's token cache keeps no one's
+  tokens past the request; `MSAL_LOCK` is held while one is made and used, since MSAL locks
+  that cache per application only. Each of MSAL's requests to Microsoft waits at most
+  `MSAL_TIMEOUT_SECONDS`, and a sign-in waits for the lock at most `LOCK_SECONDS`, no longer,
+  past which it is refused `idp_unreachable`: an outage at Microsoft cannot hold the server's
+  shared threads. `GET /api/auth/microsoft/login?rd=` asks for `User.Read`
+  with `prompt=select_account`, keeps MSAL's flow and the page to return to sealed in
+  `__Host-rcman-ms-flow` (`kind` `flow`, `FLOW_SECONDS`, SameSite=Lax, which holds only because
+  Microsoft comes back by a top-level `GET` with the code in the query), and answers 303 to
+  Microsoft. The callback has MSAL check the state and the ID token's audience and nonce and
+  redeem the code, then checks the claims; it issues `__Host-rcman-session` (`kind` `session`,
+  the address and the generation, `SESSION_SECONDS`, Secure, HttpOnly, Path=/, SameSite=Lax) and
+  answers 303 to the page, held to `forward.safe_return` again. Both routes answer
+  `not_found` while sign-in is off. They share one `ratelimit.TokenBuckets` for everyone
+  (`auth.new_limit`); past it, they answer 303 to the sign-in page with `too_many_requests` and
+  a `Retry-After`. The sign-in page itself is not limited: it asks Microsoft nothing, and a
+  limit there would keep people from Google's sign-in. A sign-in is not audited, as a Google
+  one is not.
+- **The refusals.** Each is a code the sign-in page words (`problems.SIGN_IN_REFUSALS`, and
+  `SIGN_IN_UNFINISHED` for any other), sent back to `/oauth2/start?error=<code>` with the flow
+  cookie deleted. In order, and with no person looked up before the tenant is checked:
+  `wrong_tenant` (`tid` is not the configured tenant, compared in lowercase), `acct_missing`
+  (no `acct` claim, which the app registration must send), `guest_account` (`acct` is not
+  exactly the integer 0), `no_address` (`preferred_username`, lowercased, is not an address by
+  `helpers.rules.EMAIL`; the `email` claim, an attribute any tenant's administrator may set,
+  is never read), and `not_allowed` (no active person has the address). The other
+  failures are fixed codes too: a flow cookie missing, forged or expired is `bad_state` or
+  `expired_state` (`read_state_cookie`); an exception of MSAL's while redeeming is
+  `bad_state`, `nonce_mismatch`, `token_invalid` or `idp_unreachable` (`_failure_code`,
+  `token_invalid` for one it does not know); the token endpoint's own error is
+  `exchange_failed`; a wait for `MSAL_LOCK` that runs out is `idp_unreachable`; Microsoft's own
+  `error` is `access_denied` or `idp_error` (`callback_error_code`); a secret that cannot be
+  opened is `secret_unreadable`; and any other failure is `sso_failed`. What is logged, and
+  what is not, is in [docs/journal.md](../docs/journal.md): a code with an exception's class,
+  the token endpoint's error code, or `reason=busy`, never MSAL's text, since MSAL writes the ID
+  token's claims into its exceptions and its loggers, which are set above `CRITICAL`. The callback's code and state
+  are in Caddy's access log and uvicorn's lines, as Google's callback's are.
+- **The sign-in page**, `GET /oauth2/start?rd=`, public and outside the published API. Caddy
+  sends a browser without a sign-in there, with the identity header taken off. While sign-in is
+  off, or the key is missing, it answers 303 to oauth2-proxy's `/oauth2/sign_in?rd=`, whose
+  `skip_provider_button` starts Google's sign-in at once. Otherwise it is a page without a
+  script: rcman's top bar, its mark and the page's name, with no menu button, so on a phone it
+  starts at the page's gutter, an `h1`, and a card with the refusal
+  named by `?error=` (looked up, never echoed) as a `role="alert"` message bar, with the app's
+  problem icon drawn inline (`auth.PROBLEM_ICON`, the frontend's `ProblemIcon`), and
+  **Sign in with Google** and **Sign in with Microsoft** as two plain links. `rd` passes
+  `forward.safe_return` first, and each address is built as
+  `html.escape(base + "?rd=" + urllib.parse.quote(rd, safe="/"), quote=True)`, the 303's
+  `Location` encoded the same way. Its own `Content-Security-Policy` (`auth.POLICY`: nothing
+  but inline styles and images of its own, no form, no base, no framing) and
+  `Cache-Control: no-store`; `headers.SecurityHeaders` keeps a header an answer sets itself, so
+  the policy repeats `frame-ancestors 'none'`. Its words are the backend's (`SIGN_IN_PAGE`). It
+  inlines the built stylesheet `index.html` names and copies its `theme-color` metas, read
+  again only when `index.html` changes; without a build, it is unstyled.
+- **Trust.** An administrator who points rcman at a tenant they control, with a verified domain,
+  can sign in as anyone rcman lists at that domain's addresses; the change is audited, and
+  administrators can already add and remove people. A reused UPN inherits its address's place.
 
 ## Attention
 

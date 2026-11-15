@@ -1191,7 +1191,8 @@ shuts down and removes its world. Its exit code is the capture's.
 
 `PAGE` is a path the frontend routes (`src/Pages.tsx` and `src/AdminPages.tsx`, from which the
 capture reads them), a `:name` segment standing for any one, as `/help/:slug` does for every
-help page. Without `STATE` the page is shot as the world draws it; a state is one of the views a
+help page, or `/oauth2/start`, rcman's sign-in page, which is the backend's
+([frontend.md](frontend.md#the-screenshots)). Without `STATE` the page is shot as the world draws it; a state is one of the views a
 page shows only when asked, such as an open dialog or pop-up, or a planted answer, each named in
 the capture's table of states with the pages it is a state of. A page or state the capture does
 not know, or a state the page does not have, ends it before it starts the browser, with a

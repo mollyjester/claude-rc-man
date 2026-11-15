@@ -70,6 +70,7 @@ SETTINGS = {
     "GOOGLE_CLIENT_ID": "client-id",
     "GOOGLE_CLIENT_SECRET": "client-secret",
     "COOKIE_SECRET": "c" * 32,
+    "SECRET_KEY": "k" * 64,
     "ADMIN_EMAIL": "admin@example.com",
     "PROXY_PORT": "444",
     "ASK_PORT": "445",
@@ -150,8 +151,21 @@ def test_caddy_snippet_strips_the_identity_header_before_authenticating():
     assert strip < auth and "route {" in snippet[signed_in:strip]
     assert "copy_headers X-Auth-Request-Email>X-Forwarded-Email" in snippet
     assert "reverse_proxy unix//run/rcman/rcman.sock\n" in snippet
-    # oauth2-proxy's pages, the installed app's files, rcman, the forwarded ports and the ask
-    assert snippet.count("reverse_proxy") == 5
+    # oauth2-proxy's pages, the sign-in page, Microsoft sign-in, the installed app's files, a
+    # Microsoft session, rcman, the forwarded ports and the ask
+    assert snippet.count("reverse_proxy") == 8
+    # rcman's own sign-in routes, each with the identity stripped
+    for handle in ("\thandle /oauth2/start {\n", "\thandle /api/auth/* {\n"):
+        block = snippet[snippet.index(handle) : snippet.index("\n\t}\n", snippet.index(handle))]
+        assert "request_header -X-Forwarded-Email\n" in block, handle
+        assert "reverse_proxy unix//run/rcman/rcman.sock" in block, handle
+        assert "forward_auth" not in block, handle
+    # a request with rcman's session cookie goes to rcman after the strip, ahead of forward_auth
+    session = snippet.index(
+        "@session header_regexp Cookie (^|;\\s*)__Host-rcman-session=[^;\\s]\n", signed_in
+    )
+    passed = snippet.index("reverse_proxy @session unix//run/rcman/rcman.sock\n", signed_in)
+    assert strip < session < passed < auth
     # Back to the page asked for, as a path: oauth2-proxy refuses an absolute rd it is not told
     # to trust, and sends the browser to / instead.
     assert "redir * /oauth2/start?rd={uri}\n" in snippet
@@ -347,9 +361,10 @@ def test_rollback_swaps_current_and_previous(tmp_path):
 
 
 def guide_mismatch(guide: str) -> set[str]:
-    """The options and variables the guide names that the installer has not, and the reverse."""
+    """The options and variables the guide names that the installer has not, and the reverse:
+    a variable for each setting and each secret it generates, as gather reads them."""
     options = {f"--{key.lower().replace('_', '-')}" for key in ins.FIELDS} | {"--rollback"}
-    variables = {f"RCMAN_INSTALL_{key}" for key in ins.FIELDS}
+    variables = {f"RCMAN_INSTALL_{key}" for key in (*ins.FIELDS, *ins.GENERATED)}
     named = set(re.findall(r"`(--[a-z-]+)", guide))
     named |= set(re.findall(r"`(RCMAN_INSTALL_[A-Z_]+)`", guide))
     return named ^ (options | variables)

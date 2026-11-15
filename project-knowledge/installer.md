@@ -12,7 +12,7 @@ the installer's.
 | `install.sh` | Checks it runs as root and that the machine is Ubuntu 26.04, by `ID` and `VERSION_ID` in `/etc/os-release`, read and never sourced, refusing another before it makes anything; takes the installer's lock (see [The lock](#the-lock)), then, with `--rollback`, hands over to the Python installer at once, leaving the clone as it is; otherwise it takes the clone's owner from the clone's folder (refusing root, and an owner other than `$SUDO_USER` where that is set), updates the clone as that owner (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over. Git may ask only an administrator at a terminal (standard input a terminal and `$SUDO_USER` set); otherwise, as in the upgrade service, it runs with `upgrade.GIT_ENVIRONMENT`'s values, from `/dev/null`, and asks nothing |
 | `installer/upgrade.py` | The wrapper of the upgrade from the web interface, installed as `/opt/rcman/bin/rcman-upgrade` and run by `rcman-upgrade.service` (see [Upgrading from the web interface](#upgrading-from-the-web-interface)); the standard library only. Its checks of the clone and its owner are the installer's too |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/rules.py`, whose rules' sentences explain a refused setting; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
-| `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, the two services, the Caddy site block, and the upgrade's two units. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`), the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) and whether the upgrade from the web interface is on (`WEB_UPGRADE_ENABLED`, `true` or `false`, written as `RCMAN_WEB_UPGRADE`); and the wrapper's environment (`UPGRADE_ENVIRONMENT`, from `upgrade.ENVIRONMENT` by `unit_environment`) |
+| `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, rcman's secret key (`secret.env`, `SECRET_ENV`, 0600 root:root, rendered in `ETC` as `configure` finds it, and loaded by `rcman.service` with an `EnvironmentFile=` without `-`, so a missing file keeps rcman from starting; `rcman.env`, which `rcman-proxy`'s group reads, is no place for it), oauth2-proxy's configuration, the two services, the Caddy site block, and the upgrade's two units. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`), the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) and whether the upgrade from the web interface is on (`WEB_UPGRADE_ENABLED`, `true` or `false`, written as `RCMAN_WEB_UPGRADE`); and the wrapper's environment (`UPGRADE_ENVIRONMENT`, from `upgrade.ENVIRONMENT` by `unit_environment`) |
 | `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit, `passt` and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line, which `tests/test_install.py` holds. Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
@@ -394,9 +394,29 @@ account of uid 0. Each
 edit is in the summary line as `<CADDYFILE>: <what>`, the snippet's path where it changed, and
 `caddy.service restarted`.
 
-The main site sends every request outside `/oauth2/*` through `forward_auth`, but for the
-installed app's files: browsers fetch a manifest without cookies, and a system may fetch the
-icons so, which a redirect to Google would leave uninstallable. `@app_files`, a handle ahead of
+`gather` keeps the secrets it generates (`GENERATED`: oauth2-proxy's `COOKIE_SECRET`, and
+`SECRET_KEY`, rcman's secret key, `secrets.token_hex(helpers.rules.SECRET_KEY_BYTES)`) with
+the answers in `install.env`, generating one only where none is saved or given, and refuses a
+`SECRET_KEY` given or saved that breaks its rule in `GENERATED_PATTERNS`,
+`helpers.rules.SECRET_KEY`, which `backend/rcman/settings.py` holds `RCMAN_SECRET_KEY` to as
+well. A web upgrade runs the
+installer's full `main` with the saved answers, so it writes `secret.env` as a run from a
+terminal does.
+
+The main site sends `/oauth2/start` and `/api/auth/*` to rcman, each in an exact `handle` with
+`X-Forwarded-Email` taken off: rcman's sign-in page and Microsoft sign-in
+([backend.md](backend.md#microsoft-sign-in)). `handle /oauth2/start` comes before
+`handle /oauth2/*` because Caddy sorts the handles of single path matchers, an exact path before
+a prefix, whatever their order in the file. Inside the signed-in `route`, after the header is
+taken off, `@session header_regexp Cookie (^|;\s*)__Host-rcman-session=[^;\s]` and
+`reverse_proxy @session` send a request with rcman's own session cookie straight to rcman,
+ahead of `forward_auth`. An `expression` matcher on `{http.request.cookie.__Host-rcman-session}`
+does not do: Ubuntu's Caddy leaves the placeholder of a cookie that is not there unreplaced,
+so it matches every request without the cookie. The regular expression reads the `Cookie`
+header's values, over HTTP/1.1 and HTTP/2 alike, the cookie in a second `Cookie` field among
+them. Every other request goes through `forward_auth`,
+but for the installed app's files: browsers fetch a manifest without cookies, and a system may fetch the
+icons so, which a redirect to the sign-in would leave uninstallable. `@app_files`, a handle ahead of
 the signed-in one, sends exactly the manifest, each icon it names, the `apple-touch-icon` and
 `/favicon.svg` to rcman, with `X-Forwarded-Email` taken off, so rcman sees no identity on them;
 they hold nothing private. It matches `{http.request.orig_uri.path}` with `==`, the path as it
@@ -408,11 +428,12 @@ list to what `frontend/public/manifest.webmanifest` and `frontend/index.html` na
 [frontend.md](frontend.md#layout)).
 
 A request without a sign-in is redirected to `/oauth2/start?rd={uri}`, the page asked for as a
-path: oauth2-proxy refuses an absolute `rd` unless its domain is in `whitelist_domains`, and then
-sends the browser to `/`. Caddy cannot escape `{uri}` into the query, so oauth2-proxy reads `rd`
-only up to the first `&` of the page's query: a deep link keeps its first query parameter
-(`docs/app.md` tells colleagues). A `+` in it comes back as a space, and a `;` loses the page
-altogether, oauth2-proxy falling back to the start page. The page's own
+path, which rcman holds to `forward.safe_return` and passes on, encoded, to oauth2-proxy's
+`/oauth2/sign_in` or to Microsoft sign-in: oauth2-proxy refuses an absolute `rd` unless its
+domain is in `whitelist_domains`, and then sends the browser to `/`. Caddy cannot escape `{uri}`
+into the query, so rcman reads `rd` only up to the first `&` of the page's query: a deep link
+keeps its first query parameter (`docs/app.md` tells colleagues). A `+` in it comes back as a
+space, which `safe_return` refuses, so the page falls back to the start page. The page's own
 **Sign in again** escapes the whole of it ([frontend.md](frontend.md#reporting-failures)).
 
 Not covered: `caddy validate` does not see variables a drop-in of the unit sets, and there is no

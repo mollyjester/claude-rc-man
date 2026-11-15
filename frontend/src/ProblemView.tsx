@@ -139,8 +139,9 @@ export function useFieldErrors(error: ApiError | null): {
   };
 }
 
-// oauth2-proxy's sign-in, which comes back to this page: the installed app has no address bar to
-// reload it from.
+// rcman's sign-in (backend/rcman/routers/auth.py): Google's, or a choice of Google and Microsoft
+// while Microsoft sign-in is on, which comes back to this page: the installed app has no address
+// bar to reload it from.
 const signInAgain = () =>
   `/oauth2/start?rd=${encodeURIComponent(window.location.pathname + window.location.search)}`;
 

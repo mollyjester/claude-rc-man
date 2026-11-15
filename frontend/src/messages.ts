@@ -7,7 +7,8 @@ export const m = {
   unexpectedResponse: "rcman answered in a way the page does not understand.",
   unreachable: "The page could not reach rcman. Check the connection, then try again.",
   signedOut: "Your sign-in has ended.",
-  // The link an ended sign-in offers, back through Google's sign-in to the page.
+  // The link an ended sign-in offers, back through rcman's sign-in (Google's, or a choice of
+  // Google and Microsoft while Microsoft sign-in is on) to the page.
   signInAgain: "Sign in again",
   loading: "Loading…",
   cancel: "Cancel",
@@ -360,7 +361,7 @@ export const m = {
   githubTokenRemoveConfirm: "Remove",
 
   usersTitle: "People",
-  usersEmail: "Google email",
+  usersEmail: "Email address",
   usersRole: "Role",
   usersWorkspaces: "Workspaces",
   usersAdmin: "Administrator",
@@ -460,6 +461,7 @@ export const m = {
     "monitor.settings": "Changed the monitoring settings",
     "monitor.refresh": "Refreshed the monitor's figures",
     "forwarding.settings": "Changed the port forwarding settings",
+    "microsoft.settings": "Changed the Microsoft sign-in settings",
     "terminal.open": "Opened a terminal",
     "terminal.close": "A terminal closed",
     "forward.hand_off": "Opened a forwarded port",
@@ -830,6 +832,36 @@ export const m = {
   forwardingAbsoluteHelp: "How long such a session is to last in all, busy or not.",
   forwardingSave: "Save port forwarding settings",
   forwardingSaved: "Port forwarding settings saved.",
+  microsoftTitle: "Microsoft sign-in",
+  microsoftLine:
+    "Let people sign in with their Microsoft work account as well as with Google. Only accounts of one Microsoft Entra tenant get in.",
+  microsoftRedirect: "Redirect URI",
+  microsoftRedirectHelp: "Add it as a Web redirect URI of the app registration in Microsoft Entra.",
+  microsoftCopy: "Copy",
+  microsoftCopyName: "Copy redirect URI",
+  microsoftCopied: "Redirect URI copied.",
+  microsoftCopyFailed: "The redirect URI could not be copied. Select it and copy it yourself.",
+  microsoftClientId: "Application (client) ID",
+  microsoftClientIdHelp: "From the app registration's Overview in Microsoft Entra.",
+  microsoftTenantId: "Directory (tenant) ID",
+  microsoftTenantIdHelp: "Only members of this tenant get in; guest accounts are refused.",
+  // Before a link to docs/service-settings.md#microsoft-sign-in, whose words are
+  // microsoftClaimGuide.
+  microsoftClaimHelp:
+    "The app registration must send the acct optional claim in its ID token, and have User.Read consented: see",
+  microsoftClaimGuide: "the guide",
+  microsoftSecret: "Client secret",
+  microsoftSecretStored: "A client secret is stored.",
+  microsoftSecretNotStored: "No client secret is stored.",
+  microsoftSecretHelp:
+    "Paste the secret's Value, not its Secret ID. Leave it empty to keep the stored one; it is never shown again.",
+  microsoftEnabled: "Allow Microsoft sign-in",
+  microsoftEnabledHelp:
+    "Turning it off, or changing either ID, signs out everyone signed in with Microsoft.",
+  microsoftSave: "Save Microsoft sign-in",
+  microsoftSaved: "Microsoft sign-in settings saved.",
+  microsoftUnavailable:
+    "Microsoft sign-in needs rcman's secret key, which this installation does not have. Run the installer again, then reload this page.",
   // Units, after a non-breaking space (src/format.ts): sizes in decimal SI, as Podman gives
   // them, and intervals.
   byteUnits: ["B", "kB", "MB", "GB", "TB", "PB", "EB"],

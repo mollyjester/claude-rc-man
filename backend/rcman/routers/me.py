@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
 from helpers import rules
-from rcman import db
+from rcman import db, microsoft
 from rcman.audit import Record, Recorder
 from rcman.gitaccount import Author, author_in
 from rcman.identity import Identity, current_user
@@ -122,8 +122,8 @@ def patch_settings(
     return _settings(request, record.identity)
 
 
-# Where oauth2-proxy ends the web session (installer/templates/Caddyfile sends /oauth2/*
-# to it).
+# Where oauth2-proxy ends its web session, Google's (installer/templates/Caddyfile sends
+# /oauth2/* to it); a Microsoft session's cookie is deleted by the sign-out's own answer.
 SIGN_OUT_URL = "/oauth2/sign_out"
 
 
@@ -135,11 +135,16 @@ class SignOutBody(BaseModel):
 
 @router.post("/sign-out")
 def sign_out(
-    body: SignOutBody, request: Request, record: Record = Depends(Recorder("me.sign_out"))
+    body: SignOutBody,
+    request: Request,
+    response: Response,
+    record: Record = Depends(Recorder("me.sign_out")),
 ) -> dict:
     """Signing out of rcman: running servers never depend on the web session, so they
-    keep running unless asked otherwise; the person's terminals end. The page then goes to
-    ``sign_out_url``."""
+    keep running unless asked otherwise; the person's terminals end. The answer deletes a
+    Microsoft session's cookie, and the page then goes to ``sign_out_url``, which ends
+    oauth2-proxy's."""
+    microsoft.delete(response, microsoft.SESSION_COOKIE)
     request.app.state.terminals.signed_out(record.identity.person)
     if not body.keep_sessions:
         request.app.state.workspaces.stop_running(record.identity.person)

@@ -243,3 +243,17 @@ PIDS = Rule(
     f"{MAX_LIMIT_DIGITS} digits, in which threads count as processes, and be at least "
     f"{MIN_PIDS}.",
 )
+# An ID of Microsoft Entra's (an application's or a directory's), as its portal shows it: 32
+# hexadecimal digits in five groups, in either case. ASCII only, as every engine reads it alike.
+GUID = Rule(
+    re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"),
+    "Enter the ID as Microsoft Entra shows it: 32 hexadecimal digits in groups, such as "
+    "0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e.",
+)
+# rcman's secret key (RCMAN_SECRET_KEY), as the installer generates it and the backend holds it
+# to: SECRET_KEY_BYTES random bytes, in lowercase hexadecimal.
+SECRET_KEY_BYTES = 32
+SECRET_KEY = Rule(
+    re.compile(rf"[0-9a-f]{{{2 * SECRET_KEY_BYTES}}}"),
+    f"rcman's secret key must be {2 * SECRET_KEY_BYTES} hexadecimal digits in lowercase.",
+)

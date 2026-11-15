@@ -25,7 +25,8 @@ claude.ai/code list; archive them afterwards.
 
 With a person added for the test (`sudo rcman-admin add`):
 
-1. Sign in to rcman with their Google address.
+1. Sign in to rcman with their Google address, or their Microsoft account where Microsoft
+   sign-in is set up.
 2. **New workspace**: it is listed as being made, then ready. The first of a
    person's takes longest, while Podman copies the image for their range.
 3. **Start**: rcman says to connect the Claude account on the Claude page.
@@ -76,7 +77,8 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
 ```
 
 1. **The services.** `systemctl --failed` lists nothing, and `rcman`,
-   `rcman-oauth2-proxy` and Caddy are active.
+   `rcman-oauth2-proxy` and Caddy are active; `/etc/rcman/secret.env` is there, root's and
+   readable by root alone.
 2. **The runtime.** `podman info --format '{{.Host.OCIRuntime.Name}}'` run as `rcman` prints
    `crun`.
 3. **A first workspace.** The first administrator signs in with the address given to the
@@ -419,17 +421,80 @@ connected on the **Claude** page.
 10. **Another person.** A second person's workspace uses their own account:
     their sessions appear under theirs, and nothing of the first person's.
 
+## Microsoft sign-in, with a real tenant
+
+No test signs in with Microsoft: nothing automated checks the refusals, the session, its
+deletion or the sign-in page. Before starting, have:
+
+- an installed server, and an administrator of it signed in with Google;
+- a Microsoft Entra tenant set aside for the test, in which you may register an application;
+- in that tenant, a member account whose user principal name (UPN) is added to rcman
+  (`sudo rcman-admin add <upn>`), a second member account that is not added, and a guest
+  account invited into it;
+- an account of another tenant, any personal or work Microsoft account outside the test's;
+- a second browser, or a private window, for a second session.
+
+1. **The app registration.** In Microsoft Entra, make it as
+   [docs/service-settings.md](../docs/service-settings.md#microsoft-sign-in) says, step by step,
+   copying the redirect URI from the card (step 2 below) and leaving out, for now, the `acct`
+   optional claim.
+2. **The card.** On **Service settings**, the **Microsoft sign-in** card shows the redirect
+   URI; **Copy** copies it, and the card says so. Tick **Allow Microsoft sign-in** with the
+   fields empty and save: the save is refused at the checkbox. Fill in both IDs and the client
+   secret, tick it and save: the card says the settings are saved and that a client secret is
+   stored, and the field is empty again. On the **Audit trail**, `microsoft.settings` shows the
+   IDs and that a secret was sent, never the secret.
+3. **No `acct` claim.** Signed out, in the second browser, open rcman: the sign-in page offers
+   **Sign in with Google** and **Sign in with Microsoft**. Sign in with Microsoft as the listed
+   member: rcman sends you back to the sign-in page saying Microsoft sign-in is not fully set
+   up. Add the `acct` optional claim to the ID token in Microsoft Entra.
+4. **A member signs in.** Open a page of rcman other than the start page, a help page, say,
+   while signed out, and sign in with Microsoft as the listed member: Microsoft asks which
+   account to use, then rcman shows the page asked for, signed in as the member's address.
+5. **Refusals.** In the second browser, signed out, sign in with Microsoft in turn as the member
+   who is not added, the guest and the account of another tenant, and press Cancel once on
+   Microsoft's account picker: each comes back to the sign-in page with the words of its
+   refusal (`problems.SIGN_IN_REFUSALS`), and none gets further. `journalctl -u rcman` holds no
+   line for any of them.
+6. **Removing a person.** With the member signed in with Microsoft in the second browser,
+   remove them on the **People** page, then act in that browser: rcman refuses them as not
+   allowed, and reloading the page shows the sign-in page, since the refusal deleted the
+   session's cookie. Once the removal has ended, add them back.
+7. **Signing out.** Signed in with Microsoft, **Sign out of rcman** ends the session: opening
+   rcman again shows the sign-in page. Sign in with Google there as the administrator, then
+   sign out: opening rcman again shows the sign-in page, not a session of either.
+8. **A stale cookie.** With the member signed in with Microsoft in the second browser, change
+   the Application (client) ID to any other GUID and save, then put it back and save: the next
+   action in the second browser says the sign-in has ended, and
+   **Sign in again** shows the sign-in page, where Google's sign-in works at once.
+9. **The client secret replaced.** Add a second client secret in Microsoft Entra, enter it in
+   the card and save, delete the first in Microsoft Entra, and sign in with Microsoft again: it
+   works. Enter a client secret that is wrong and save: a Microsoft sign-in comes back to the
+   sign-in page unfinished, and `journalctl -u rcman` has a `rcman.microsoft` line with
+   `code=exchange_failed` and the token endpoint's error, and no secret, token or address.
+   Enter the right one again.
+10. **Turning it off.** With the member signed in with Microsoft in the second browser, untick
+    **Allow Microsoft sign-in** and save: the next action there says the sign-in has ended, and
+    **Sign in again** goes straight on to the Google sign-in, with no sign-in page between.
+11. **The installed app.** Turn Microsoft sign-in on again. In the installed app (see
+    [rcman as an app](#rcman-as-an-app)), signed out, sign in with Microsoft: the sign-in stays
+    in the app's own window and comes back into it signed in.
+12. **A web upgrade.** On an installation that has no `/etc/rcman/secret.env`, upgrade from the
+    web interface to a release that writes it: afterwards the
+    file is there, root's and readable by root alone, and the card offers its form.
+
 ## rcman as an app
 
 On real devices, against an installed server: no test drives a browser's install, the
-systems' fetches of the icons, or Google's sign-in from an installed app.
+systems' fetches of the icons, or Google's or Microsoft's sign-in from an installed app.
 
 1. **Installing.** Install rcman from Chrome on a desktop, from Chrome on Android and from
    Safari on iOS (**Add to Home Screen**), as [docs/app.md](../docs/app.md) says. Each shows
    rcman's name and icon, the maskable icon uncropped on Android, and opens on the Workspaces
    page in a window without the browser's bar.
-2. **Signing in.** Signed out, open the installed app and sign in through Google: the sign-in
-   comes back into the app's window, not a browser tab, signed in.
+2. **Signing in.** Signed out, open the installed app and sign in through Google, and again,
+   where Microsoft sign-in is on, through Microsoft: each sign-in comes back into the app's
+   window, not a browser tab, signed in.
 3. **Signing in again.** Let the session end, or sign out of rcman in a browser, then act in
    the app: the page says the sign-in has ended and offers **Sign in again**, which signs in
    and comes back to the page it was on.

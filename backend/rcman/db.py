@@ -251,6 +251,21 @@ MIGRATIONS = [
     drop table workspaces;
     alter table workspaces_new rename to workspaces;
     """,
+    """
+    -- The settings of Microsoft sign-in (microsoft_settings.py): whether it is on, the app
+    -- registration's application (client) ID and directory (tenant) ID, each empty or in
+    -- lowercase, its client secret sealed with rcman's secret key (sealing.py), null where none
+    -- is stored, and the generation the sessions it issues carry. One row, made by the first
+    -- save; none means sign-in off and nothing stored.
+    create table microsoft_sign_in (
+        id integer primary key check (id = 1),
+        enabled integer not null check (enabled in (0, 1)),
+        client_id text not null,
+        tenant_id text not null,
+        secret text,
+        generation integer not null check (generation >= 0)
+    );
+    """,
 ]
 
 

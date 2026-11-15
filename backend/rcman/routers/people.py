@@ -44,7 +44,9 @@ Pids = Annotated[ruled(rules.PIDS), _atleast_minimum(limits.parse_pids)]
 
 
 class NewPerson(BaseModel):
-    email: Email = Field(description="Their Google address.")
+    email: Email = Field(
+        description="The address they sign in with: a Google address, or a Microsoft UPN."
+    )
     admin: bool = Field(False, description="Make them an administrator.")
 
 

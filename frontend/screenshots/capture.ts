@@ -64,15 +64,20 @@ const REBUILD_STEPS = [
 ].join("\n");
 
 // The pages: the paths the app routes (src/Pages.tsx and src/AdminPages.tsx), a `:name` segment
-// standing for any one segment, as `/help/:slug` stands for every help page.
-const PAGES = ["Pages.tsx", "AdminPages.tsx"].flatMap((file) =>
-  [
-    ...readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8").matchAll(
-      /\bpath: "(\/[^"]*)"/g,
-    ),
-  ].map((found) => found[1]),
-);
-if (PAGES.length === 0) throw new Error("no page's path found in src/Pages.tsx");
+// standing for any one segment, as `/help/:slug` stands for every help page; and rcman's
+// sign-in page, which is not the app's but the backend's (backend/rcman/routers/auth.py).
+const SIGN_IN = "/oauth2/start";
+const PAGES = [
+  ...["Pages.tsx", "AdminPages.tsx"].flatMap((file) =>
+    [
+      ...readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8").matchAll(
+        /\bpath: "(\/[^"]*)"/g,
+      ),
+    ].map((found) => found[1]),
+  ),
+  SIGN_IN,
+];
+if (PAGES.length === 1) throw new Error("no page's path found in src/Pages.tsx");
 
 const routes = (pattern: string, path: string) => {
   const [want, got] = [pattern.split("/"), path.split("/")];
@@ -149,6 +154,51 @@ const popUp =
     await then(page, path, id);
     await page.getByRole("button", { name: button, exact: true }).click();
     await page.getByRole("button", { name: button, exact: true, expanded: true }).waitFor();
+  };
+
+// Microsoft sign-in as an administrator turns it on, on the Service settings page: IDs and a
+// client secret of no real app registration, which reach no Microsoft.
+const MICROSOFT_ON = {
+  enabled: true,
+  client_id: "0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e",
+  tenant_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+};
+// The refusals the sign-in page words (backend/rcman/problems.py SIGN_IN_REFUSALS), each a
+// state of its own, and one it words as an unfinished sign-in.
+const SIGN_IN_ERRORS = [
+  "wrong_tenant",
+  "guest_account",
+  "acct_missing",
+  "no_address",
+  "not_allowed",
+  "token_invalid",
+];
+
+// The Service settings page, Microsoft sign-in's settings as the server gives them with `extra`
+// laid over them.
+const microsoftWith =
+  (extra: Record<string, unknown>): Opens =>
+  async (page, path, id) => {
+    await page.route("**/api/microsoft/settings", async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      const { settings } = await answered(route, {});
+      await route.fulfill({ json: { settings: { ...settings, ...extra } } });
+    });
+    await plain(page, path, id);
+  };
+
+// The sign-in page, with Microsoft sign-in turned on in the world first, as alice saves it, and
+// the refusal `error` names, if any.
+const signIn =
+  (error?: string): Opens =>
+  async (page) => {
+    const saved = await page.request.put("/api/microsoft/settings", {
+      data: { ...MICROSOFT_ON, client_secret: "planted" },
+      headers: { origin },
+    });
+    if (!saved.ok()) throw new Error(`Microsoft sign-in was not turned on: ${saved.status()}`);
+    await page.goto(`${SIGN_IN}?rd=%2F${error === undefined ? "" : `&error=${error}`}`);
+    await page.getByRole("main").waitFor();
   };
 
 // The screenshot workspace stopped, as the listing gives it: no server read, no ports.
@@ -418,6 +468,38 @@ const STATES: Record<string, State> = {
       await page.locator('.page-head button[aria-disabled="false"]').waitFor();
     },
   },
+  // the Microsoft sign-in card, as the world has it: off, and nothing stored
+  "microsoft-off": { pages: ["/admin/settings"], opens: plain },
+  // the Microsoft sign-in card on, with both IDs and a client secret stored
+  "microsoft-on": {
+    pages: ["/admin/settings"],
+    opens: microsoftWith({ ...MICROSOFT_ON, secret_set: true }),
+  },
+  // a save of the Microsoft sign-in card that the server refused, at the tenant ID
+  "microsoft-refused": {
+    pages: ["/admin/settings"],
+    opens: async (page, path, id) => {
+      await plain(page, path, id);
+      const card = page.getByRole("region", { name: m.microsoftTitle });
+      await card.getByLabel(m.microsoftTenantId).fill("contoso.onmicrosoft.com");
+      await card.getByRole("button", { name: m.microsoftSave }).click();
+      await card.locator('[aria-invalid="true"]').waitFor();
+      // Back to the top, which the move of focus to the refused field scrolled from: a whole
+      // page's screenshot draws the bar that stays on top where the window is.
+      await page.evaluate(() => window.scrollTo(0, 0));
+    },
+  },
+  // the Microsoft sign-in card where rcman has no secret key
+  "microsoft-unavailable": {
+    pages: ["/admin/settings"],
+    opens: microsoftWith({ available: false }),
+  },
+  // the sign-in page, its two choices
+  choice: { pages: [SIGN_IN], opens: signIn() },
+  // the sign-in page, with each refusal it words
+  ...Object.fromEntries(
+    SIGN_IN_ERRORS.map((code) => [`error-${code}`, { pages: [SIGN_IN], opens: signIn(code) }]),
+  ),
   // a help page's contents, unfolded
   contents: { pages: ["/help/:slug"], phone: true, window: true, opens: popUp(m.docsContents) },
 };
@@ -461,7 +543,8 @@ const DEVICES: Device[] = [
 const SCHEMES = ["light", "dark"] as const;
 
 // A context of its own for each combination of scheme, size and person, signed in as
-// oauth2-proxy would sign them in, with no time limit.
+// oauth2-proxy signs in a Google account, by the identity header, with no time limit; the
+// sign-in page, which reads no identity, looks the same to everyone.
 async function opened(
   browser: Browser,
   who: string,

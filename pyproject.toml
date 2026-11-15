@@ -6,8 +6,10 @@ requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE.md"]
 dependencies = [
+    "cryptography>=50.0.2",
     "fastapi>=0.142.2",
     "h11>=0.16.0",
+    "msal>=1.39.0",
     "pydantic-settings>=2.15.0",
     "uvicorn>=0.54.0",
     "websockets>=17.2",

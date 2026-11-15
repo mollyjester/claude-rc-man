@@ -67,6 +67,8 @@ def helpers_rules() -> dict[str, Rule]:
         "CPU",
         "PIDS",
         "FAILURE_REASON",
+        "GUID",
+        "SECRET_KEY",
     }
     assert names <= set(found), names - set(found)
     return found
@@ -79,15 +81,34 @@ def test_no_helpers_rule_sentence_is_in_a_librarys_words():
         assert not library_text(rule.sentence), name
 
 
+# rcman's secret key, as long as helpers.rules.SECRET_KEY asks.
+KEY = ("0123456789abcdef" * 8)[: 2 * rules.SECRET_KEY_BYTES]
 # A short value each rule accepts, to put every code point into; the first one a
 # rule accepts is its example.
-EXAMPLES = ("a", "a@b.c", "1.2.3", "https://github.com/o/r", "1G", "1.5", "10")
+EXAMPLES = (
+    "a",
+    "a@b.c",
+    "1.2.3",
+    "https://github.com/o/r",
+    "1G",
+    "1.5",
+    "10",
+    "0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e",
+    KEY,
+)
 CODE_POINTS = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
 # Examples too long to put a code point in place of each of their characters in the
-# time a test should take, each with the places used instead: where an address's
-# owner and repository name begin, and inside the owner; the ends are every
-# example's.
+# time a test should take, each with the places used instead: in place of an ID's first
+# digit, of a hyphen and of its last digit; in place of a key's first, a middle and its
+# last digit; where an address's owner and repository name begin, and inside the owner;
+# the ends are every example's.
 LIMITED_CONTEXTS = {
+    KEY: ["{}" + KEY[1:], KEY[:32] + "{}" + KEY[33:], KEY[:-1] + "{}"],
+    "0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e": [
+        "{}b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e",
+        "0b1c2d3e{}4f5a-6b7c-8d9e-0f1a2b3c4d5e",
+        "0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5{}",
+    ],
     "https://github.com/o/r": [
         "https://github.com/{}/r",
         "https://github.com/o{}/r",

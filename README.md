@@ -2,10 +2,10 @@
 
 A self-hosted web service for controlling Claude Code
 [Remote Control](https://code.claude.com/docs/en/remote-control) servers on one
-machine. Colleagues sign in with Google, make workspaces of their own — each a
-container, with a person's own range of user ids — and start, stop or resume a
-`claude remote-control` server in any of them. The conversations themselves
-happen in claude.ai/code or the Claude app.
+machine. Colleagues sign in with Google, or with Microsoft where it is set up,
+make workspaces of their own — each a container, with a person's own range of
+user ids — and start, stop or resume a `claude remote-control` server in any of
+them. The conversations themselves happen in claude.ai/code or the Claude app.
 
 ## Status
 

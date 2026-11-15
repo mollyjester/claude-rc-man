@@ -6,7 +6,9 @@ the tmux servers in it, when the app shuts down; one a killed run left is cleare
 next. The world holds rcman's database with alice (administrator) and bob, the host
 runtime's workspaces (backend/rcman/runtime.py) with their tmux sockets, and the fake
 claude's store. alice's Claude account is signed in, as a sign-in leaves it, and bob's is
-not. ``RCMAN_PUBLIC_ORIGIN`` names the origin rcman is served at.
+not. ``RCMAN_PUBLIC_ORIGIN`` names the origin rcman is served at. rcman's secret key is one
+made for the run, so the world's Microsoft sign-in settings can be saved, and sign-in is off
+until a screenshot's state turns it on.
 
 Run as ``python -m devtools.world`` (``serve``), it serves the app on a port of
 127.0.0.1 the system gives, prints its origin, and stops when its standard input closes
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -91,6 +94,7 @@ def create_app():
             allowed_emails=root / "allowed-emails",
             claude_store=root / "claude",
             frontend_dir=REPO / "frontend" / "dist",
+            secret_key=secrets.token_hex(32),
         )
         app = rcman_app(settings, runtime=_world(root, settings))
     except BaseException:

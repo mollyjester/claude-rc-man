@@ -20,19 +20,23 @@ from rcman import (
     forwards,
     headers,
     journal,
+    microsoft,
     monitor,
     people,
     problems,
     rcman_upgrade,
+    sealing,
     spa,
     unrecognised,
 )
 from rcman.accounts import Accounts
 from rcman.forwarding_settings import Store as ForwardingSettingsStore
 from rcman.gitaccount import GitAccount
+from rcman.microsoft_settings import Store as MicrosoftSettingsStore
 from rcman.routers import (
     attention,
     audit_log,
+    auth,
     claude,
     client_errors,
     docs,
@@ -45,6 +49,7 @@ from rcman.routers import (
 )
 from rcman.routers import forward as forward_router
 from rcman.routers import forwarding_settings as forwarding_router
+from rcman.routers import microsoft_settings as microsoft_router
 from rcman.routers import monitor as monitor_router
 from rcman.routers import people as people_router
 from rcman.routers import rcman_upgrade as rcman_upgrade_router
@@ -142,6 +147,7 @@ def create_app(
         monitor.log,
         forward.log,
         forwards.log,
+        microsoft.log,
     ):
         journal.install(log)
     if runtime is None:  # rcman's own Podman, whose workspaces take the profile
@@ -211,6 +217,12 @@ def create_app(
     app.state.monitor = collector
     app.state.forwarding_settings = forwarding_store
     app.state.forward = forwarding
+    # Microsoft sign-in (microsoft.py): its settings, the key that seals what it keeps, and the
+    # one limit its start and callback share.
+    app.state.microsoft_settings = MicrosoftSettingsStore(settings.database)
+    secret_key = settings.secret_key.get_secret_value() if settings.secret_key else None
+    app.state.sealer = sealing.Sealer(secret_key)
+    app.state.microsoft_limit = auth.new_limit()
     app.state.git_account = GitAccount(service)
     service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
     app.state.watch = unrecognised.Watch()
@@ -239,6 +251,8 @@ def create_app(
         attention,
         monitor_router,
         forwarding_router,
+        microsoft_router,
+        auth,
         forward_router,
         docs,
         client_errors,

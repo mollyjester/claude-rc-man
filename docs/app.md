@@ -23,7 +23,9 @@ app, remove it as you would any other app on that device.
 ## Signing in again
 
 When your sign-in ends, the page says so and offers **Sign in again**. It takes you through the
-Google sign-in and back to the page you were on.
+sign-in and back to the page you were on: Google's at once or, while
+[Microsoft sign-in](service-settings.md#microsoft-sign-in) is on, a page where you choose
+Google or Microsoft. It happens in the app's own window, whichever you choose.
 
 A link to a page of rcman that you open while signed out takes you to that page after the
 sign-in, but keeps only the first of the settings after its `?`: the workspace it named, say,

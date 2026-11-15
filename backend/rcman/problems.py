@@ -25,7 +25,14 @@ RULE_REFUSED = "rule_refused"  # a helpers' rule refused the value
 SETTINGS_NONE_SENT = "settings_none_sent"
 STRING_EMPTY = "string_empty"  # string_too_short, where the shortest allowed is one
 FIELD_INVALID = "field_invalid"  # any type FIELD_MESSAGES has no message for
-PUBLIC_PATHS = {"/api/health", "/{path:path}"}  # the frontend's files need no identity
+# The frontend's files need no identity, nor does signing in (routers/auth.py).
+PUBLIC_PATHS = {
+    "/api/health",
+    "/{path:path}",
+    "/oauth2/start",
+    "/api/auth/microsoft/login",
+    "/api/auth/microsoft/callback",
+}
 
 # Every problem rcman answers with: its words, and its HTTP status.
 MESSAGES = {
@@ -41,6 +48,11 @@ MESSAGES = {
     "internal_error": "Something went wrong in rcman.",
     "too_many_reports": "Too many reports of failures just now. They are dropped.",
     "too_many_requests": "Too many requests just now. Try again in a moment.",
+    # Microsoft sign-in's settings (microsoft_settings.py)
+    "microsoft_unavailable": (
+        "Microsoft sign-in needs rcman's secret key, which this installation does not have. Run "
+        "the installer again, then reload this page."
+    ),
     # people
     "email_invalid": rules.EMAIL.sentence,
     "email_taken": "Someone with that address is there already.",
@@ -524,6 +536,44 @@ HAND_OFF_PAGE = {
     "lead": "Taking you to port {port} of the workspace {name}.",
     "button": "Continue to port {port}",
 }
+# What turning Microsoft sign-in on is refused with, at ``enabled``, while either ID or a client
+# secret is missing (routers/microsoft_settings.py).
+MICROSOFT_INCOMPLETE = (
+    "Fill in both IDs and store a client secret before allowing Microsoft sign-in."
+)
+# The words of the sign-in page, /oauth2/start while Microsoft sign-in is on (routers/auth.py).
+SIGN_IN_PAGE = {
+    "title": "Sign in",
+    "lead": "Choose the account you use for rcman.",
+    "google": "Sign in with Google",
+    "microsoft": "Sign in with Microsoft",
+}
+# What the sign-in page says of a refused Microsoft sign-in, by the code it was sent back with
+# (microsoft.py, routers/auth.py); any other code, and one rcman does not know, is
+# SIGN_IN_UNFINISHED. A code is never shown as it came.
+SIGN_IN_UNFINISHED = "The sign-in with Microsoft did not finish. Sign in again."
+SIGN_IN_REFUSALS = {
+    "wrong_tenant": (
+        "That Microsoft account belongs to another organisation. Sign in with your account at "
+        "the organisation rcman is set up for."
+    ),
+    "guest_account": (
+        "That Microsoft account is a guest account. Sign in with an account of your own "
+        "organisation."
+    ),
+    "acct_missing": "Microsoft sign-in is not fully set up for rcman. Ask an administrator.",
+    "no_address": (
+        "Microsoft gave no email address for that account. Sign in with an account that has "
+        "one, or ask an administrator."
+    ),
+    "not_allowed": "This account may not use rcman. Ask an administrator to add your address.",
+    "access_denied": "The sign-in was cancelled at Microsoft. Sign in again when you are ready.",
+    "idp_error": "Microsoft refused the sign-in. Sign in again, or ask an administrator.",
+    "secret_unreadable": "Microsoft sign-in is not fully set up for rcman. Ask an administrator.",
+    "too_many_requests": (
+        "Too many sign-ins were started just now. Wait a moment, then sign in again."
+    ),
+}
 STATUS = {
     "not_authenticated": 401,
     "not_allowed": 403,
@@ -537,6 +587,7 @@ STATUS = {
     "internal_error": 500,
     "too_many_reports": 429,
     "too_many_requests": 429,
+    "microsoft_unavailable": 409,
     "rcman_upgrade_refused": 409,
     "rcman_upgrading": 409,
     "email_invalid": 400,

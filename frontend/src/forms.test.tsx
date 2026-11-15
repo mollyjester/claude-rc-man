@@ -154,6 +154,16 @@ function api() {
     "GET /api/forwarding/settings": {
       settings: { enabled: false, idle_minutes: 5, absolute_hours: 12 },
     },
+    "GET /api/microsoft/settings": {
+      settings: {
+        enabled: false,
+        client_id: "",
+        tenant_id: "",
+        secret_set: false,
+        redirect_uri: "https://rcman.test/api/auth/microsoft/callback",
+        available: true,
+      },
+    },
   });
 }
 
@@ -344,18 +354,25 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
 ];
 
 // What is wrong with the inputs under root: a validation rule of an input's own, an input of a
-// kind other than text, a checkbox or a radio but for the one secret a page takes, the GitHub
-// token, typed where it is not shown, and a form that is not noValidate.
+// kind other than text, a checkbox or a radio but for the secrets the pages take, typed where
+// they are not shown: a person's GitHub token, and the client secret of Microsoft sign-in on
+// Service settings (SECRET_CARDS, each card by its title, with the page it is on, where the test
+// below holds the exemption to its subject: a password field in that card); and a form that is
+// not noValidate.
+const SECRET_CARDS = new Map([
+  [m.settingsGithubTitle, "/settings"],
+  [m.microsoftTitle, "/admin/settings"],
+]);
 function validationFaults(root: ParentNode): string[] {
   const found: string[] = [];
   for (const input of root.querySelectorAll("input, textarea, select")) {
     for (const attribute of RULE_ATTRIBUTES)
       if (input.hasAttribute(attribute)) found.push(`${input.outerHTML} has ${attribute}`);
     if (!(input instanceof HTMLInputElement)) continue;
-    const token =
+    const secret =
       input.type === "password" &&
-      input.closest("section")?.querySelector("h2")?.textContent === m.settingsGithubTitle;
-    if (!token && !["text", "checkbox", "radio"].includes(input.type))
+      SECRET_CARDS.has(input.closest("section")?.querySelector("h2")?.textContent ?? "");
+    if (!secret && !["text", "checkbox", "radio"].includes(input.type))
       found.push(`${input.outerHTML} is a ${input.type}`);
   }
   for (const form of root.querySelectorAll("form:not([novalidate])"))
@@ -370,6 +387,16 @@ test.each([...PAGES, ...OUTSIDE_FORMS])(
     show(where);
     await open();
     expect((await inputs()).length).toBeGreaterThan(0); // non-vacuity
+    // Stale check of SECRET_CARDS: each card's page is among those checked, and each card
+    // exempted on this page is there, with its secret.
+    expect(PAGES.map(([, page]) => page)).toEqual(
+      expect.arrayContaining([...SECRET_CARDS.values()]),
+    );
+    for (const [title, page] of SECRET_CARDS) {
+      if (page !== where) continue;
+      const card = await screen.findByRole("region", { name: title });
+      await waitFor(() => expect(card.querySelector('input[type="password"]')).not.toBeNull());
+    }
     expect(validationFaults(document)).toEqual([]);
   },
 );

@@ -1,8 +1,8 @@
 # Configuration
 
 rcman reads its settings from environment variables. The installer writes
-them to the service's environment file; change them there and restart the
-service.
+them to the service's environment file, `/etc/rcman/rcman.env`, and rcman's secret key to a
+file of root's alone, `/etc/rcman/secret.env`; change them there and restart the service.
 
 Each variable's default and allowed values are defined in the settings model,
 `backend/rcman/settings.py`, which is the reference. rcman refuses to start
@@ -10,16 +10,17 @@ when a value is invalid.
 
 The limits on what a person's workspaces may use are not settings of this kind:
 administrators set them per person and per workspace, and rcman keeps them in
-its database (see [Limits](users.md#limits)). Nor are the settings of monitoring and of
-port forwarding, which administrators change on the **Service settings** page and rcman
-keeps in its database (see [Monitoring](service-settings.md#monitoring) and
-[Port forwarding](service-settings.md#port-forwarding)).
+its database (see [Limits](users.md#limits)). Nor are the settings of monitoring, of
+port forwarding and of Microsoft sign-in, which administrators change on the **Service
+settings** page and rcman keeps in its database (see [Monitoring](service-settings.md#monitoring),
+[Port forwarding](service-settings.md#port-forwarding) and
+[Microsoft sign-in](service-settings.md#microsoft-sign-in)).
 
 | Variable | What it sets |
 |---|---|
 | `RCMAN_PUBLIC_ORIGIN` | The address browsers use to reach rcman — scheme, host and port, with no path, such as `https://rcman.example.com`. Required. Requests that change something are accepted only when they come from this origin |
 | `RCMAN_DATABASE` | The SQLite database: the people who may use rcman, their workspaces and settings, and the audit trail |
-| `RCMAN_ALLOWED_EMAILS` | The list of addresses oauth2-proxy lets sign in, which rcman writes from its people (see [Adding and removing people](users.md)) |
+| `RCMAN_ALLOWED_EMAILS` | The list of addresses oauth2-proxy lets sign in with Google, which rcman writes from its people (see [Adding and removing people](users.md)) |
 | `RCMAN_PODMAN_SOCKET` | The socket of the Podman service workspaces run in: rcman's own user manager's, under `XDG_RUNTIME_DIR`, when unset |
 | `RCMAN_WORKSPACE_IMAGE` | The image new workspaces are made from; the installer names its default image here. It must hold a git new enough for rcman, or a workspace made from it fails (see [Git](git.md#images)). `gh` works in its workspaces only if it holds `gh` too, and containers only if it holds Podman (see [Containers](workspaces.md#containers)). What Claude is told in its workspaces depends on it (see [What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)). A workspace cloned from a repository whose `devcontainer.json` names an image is made from that image instead (see [devcontainer.json support](devcontainer.md)) |
 | `RCMAN_BUILDER_IMAGE` | The image a build of a repository's `devcontainer.json` runs in, started for one build and removed after it; the installer builds it and names it here (see [devcontainer.json support](devcontainer.md#building-an-image)) |
@@ -27,6 +28,7 @@ keeps in its database (see [Monitoring](service-settings.md#monitoring) and
 | `RCMAN_CLAUDE_STORE` | The Claude Code store every workspace has, read-only, which the installer makes and rcman then writes (see [Claude Code versions](claude-version.md)) |
 | `RCMAN_CLAUDE_DOWNLOAD` | The address Claude Code's releases are downloaded from, as the installer downloads them and as rcman does when an administrator rolls out another version (see [Claude Code versions](claude-version.md)) |
 | `RCMAN_FORWARD_SOCKET` | The unix socket rcman's forwarding server listens on, which Caddy passes the requests for workspaces' forwarded ports to, and asks whether it may get a certificate for one; the installer sets it (see [Forwarded ports](installation.md#forwarded-ports)). Unset, no port is forwarded |
+| `RCMAN_SECRET_KEY` | rcman's secret key, which it encrypts the client secret of Microsoft sign-in with, and seals the cookies of a Microsoft sign-in with. The installer generates it on its first run that has none, keeps it with its answers, and writes it in `/etc/rcman/secret.env`, which only root may read and systemd reads for rcman's service; it is not in `rcman.env`. Replaced, every Microsoft session ends and the stored client secret is refused until it is entered again (see [Microsoft sign-in](service-settings.md#microsoft-sign-in)). Unset or empty, Microsoft sign-in is not available, and Google sign-in is unchanged |
 | `RCMAN_DOCS_DIR` | Where the documentation pages shown in rcman are |
 | `RCMAN_FRONTEND_DIR` | Where the built web interface is |
 | `RCMAN_AUDIT_RETENTION_DAYS` | How long audit events are kept (see [Audit trail](audit.md)) |

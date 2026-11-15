@@ -44,7 +44,7 @@ def _parser() -> argparse.ArgumentParser:
         help=f"the settings rcman runs with (default: {ENV_FILE})",
     )
     verbs = parser.add_subparsers(dest="verb", required=True)
-    add = verbs.add_parser("add", help="let someone in, by their Google address")
+    add = verbs.add_parser("add", help="let someone in, by the address they sign in with")
     add.add_argument("email")
     add.add_argument("--admin", action="store_true", help="make them an administrator")
     verbs.add_parser("list", help="everyone, with their workspaces")
