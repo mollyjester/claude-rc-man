@@ -37,7 +37,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `ratelimit.py`, `filelock.py` | A token bucket for each name, refilled by the clock it is given (the limits on a page's reports, see [Errors from the page](#errors-from-the-page), on requests for an upgrade of rcman, see [Upgrading rcman](#upgrading-rcman), on Microsoft sign-in's starts and callbacks, see [Microsoft sign-in](#microsoft-sign-in), and on the forwarding server's new hosts and ways in, see [Port forwarding](#port-forwarding)), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `forwarding_settings`, `microsoft_settings`, `auth`, `forward`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `forwarding_settings`, `files_settings`, `microsoft_settings`, `auth`, `forward`, `docs`, `client_errors`, `terminal`, `files`, `rcman_upgrade` |
 | `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one, telling whether one's devcontainer.json changed, rebuilding, stopping and starting one (see [Workspaces and servers](#workspaces-and-servers)); the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)), and `forwarding`, whether ports are forwarded now; every entry of the person's own, the listing's and those its other routes answer, has its forwarded ports (`ports`, see [Port forwarding](#port-forwarding)) |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
@@ -48,6 +48,8 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `forwards.py` | What relays to a workspace's forwarded ports leave behind, ended by the sweep (see [runtime.md](runtime.md#forwarded-ports)) |
 | `forward.py`, `routers/forward.py` | The forwarding server on `RCMAN_FORWARD_SOCKET`, its sessions, the ways in the hand-off hands out, the hosts marked as wanted, Caddy's ask and the caps on relays; and the hand-off, `GET /api/forward/hand-off` (see [Port forwarding](#port-forwarding)) |
+| `files.py`, `transfers.py`, `routers/files.py` | The Files tab: a workspace's files listed, a download checked, a file or a folder (as a zip) downloaded and a file uploaded, each path resolved in the workspace first; the transfers under way, their admission and their end (see [A workspace's files](#a-workspaces-files)) |
+| `files_settings.py`, `routers/files_settings.py` | The settings of a workspace's files, for administrators: the folder download limit (see [The files settings](#the-files-settings)) |
 | `terminals.py`, `routers/terminal.py` | The Terminal tab: a shell in a workspace, carried over a WebSocket (see [The terminal](#the-terminal)) |
 | `rcman_upgrade.py`, `routers/rcman_upgrade.py` | Upgrading rcman from its web interface, rcman's side: the release it runs, the report, the request and its admission, and the freeze while one is under way (see [Upgrading rcman](#upgrading-rcman)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
@@ -76,9 +78,11 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   something although it is a `GET`, which carries no Origin, is named in `identity.NAVIGATIONS`
   with what stands for the Origin there; `tests/test_identity.py` finds every route that records
   an audit row with a method that is not one of `CHANGING` in the route table, and fails on one
-  not named, and on a name of no such route. The one there is the hand-off to a forwarded port,
-  whose reason the test finds here verbatim, on one line:
+  not named, and on a name of no such route. Each one's reason the test finds here verbatim, on
+  one line. The hand-off to a forwarded port:
   a navigation from a forwarded port's host, which sends no Origin: refused unless the browser says it loads a document, and it hands out a way in only to the person's own port.
+  A workspace's download (`routers/files.py`):
+  a navigation that saves a workspace's file or folder, which sends no Origin: refused unless the browser says it comes from rcman's own pages (Sec-Fetch-Site: same-origin), and only for the person's own workspace.
 - **Forward hosts.** Requests to a forwarded port's host never reach the app's routes: Caddy
   passes them to the forwarding server (see [Port forwarding](#port-forwarding)), which trusts no
   identity header, judges each request by its own session cookie, and holds every request that
@@ -521,6 +525,79 @@ shells, one per workspace (`Terminals`, `app.state.terminals`).
 
 Binary frames are what is typed and what the shell prints, as bytes, both ways.
 
+## A workspace's files
+
+The routes of `routers/files.py`, under `/api/workspaces/{workspace}/files`, each for the
+workspace's owner only and while it is ready (`Workspaces.ready`, whose refusals say why it is
+not):
+
+- `GET ?path=` lists a folder: `{path, entries, more, now}`, and at the top `reserved` too, the
+  names `Layout.hidden` gives, which are never listed and which an upload there is refused. Each
+  entry is `{name, kind, size, changed, target}`: `kind` is `folder`, `file`, `link` or `other`;
+  `size` is a file's only; `changed` and `now` are seconds since the epoch by the workspace's
+  clock; `target` is a link's, `folder`, `file` or `other`, and null where it cannot be reached
+  or is not there. Folders, and links to folders, come first, then the rest, each by name; at
+  most `files.LISTING_CAP`, folders first, and `more` says how many were left out.
+- `GET /download/check?path=` answers whether a download may go now, before the page starts
+  one: `{kind, name, size}`, the name it is saved as (a folder's `<name>.zip`, the top's
+  `rcman.zip`) and its size, a folder's only where there is a limit; or its refusal, among them
+  `transfers_busy` where no transfer would be admitted now. It is not audited.
+- `GET /download?path=` streams a file as it is, or a folder as a zip, audited as
+  `workspace.files.download`. It is a navigation (see [Requests](#requests)), so it is refused
+  unless `Sec-Fetch-Site: same-origin`.
+- `PUT ?path=&name=&overwrite=` streams the request's body into the file `name` of the folder,
+  audited as `workspace.files.upload`, and answers `{name}`.
+
+**Paths.** `path` is relative to the volume, empty for the top, held to `rules.FILES_PATH`, and
+`name` to `rules.FILE_NAME`, as fields. Every script `files.py` holds begins with the one
+resolver, `files.RESOLVE`, run by the workspace's shell in the same process as what reads or
+writes: `realpath` resolves the path, and the script refuses it (`files.REFUSED`,
+`file_path_refused`) unless it stays in the volume and out of the hidden folders at its top, and
+tests itself that it is there (`files.NOT_FOUND`, `file_not_found`), since `realpath` passes a
+missing last part. The scripts' other refusals are `files.REFUSALS`' codes in
+`routers/files.py`. Each script is one line (`files.one_line`), as the channel carries only
+that; a listing, a path's kind (`files.KIND`) and an upload's early check run through the
+channel, which is why a path holds no line break.
+
+**Downloads.** A file is a stream of `files.CAT`; a folder of `files.ZIP`, the workspace's own
+bsdtar (see [runtime.md](runtime.md#streams)). A folder is looked through first, in the check and
+again in the download, by `files.SCAN`, an exec of its own that holds a transfer's place and a
+thread of `transfers.TRANSFER_THREADS` while it runs, and whose `find` and `du` are each killed
+in the workspace at `SCAN_SECONDS` (`folder_scan_timeout`): stats only, the first path the
+workspace cannot read (`folder_unreadable`, with that `path`), and with a limit set, its size by
+`du` (`folder_too_big`, with `size` and `limit_mb`); a `du` that did not measure every entry is
+`files_unreachable`, never a size of 0. The answer is a `TransferResponse` whose body takes the
+transfer's place and starts its stream only as it starts, so an answer dropped before its body
+(a browser gone during the scan, a row that could not be written) holds nothing; its reads run on
+`transfers.TRANSFER_THREADS`, and at the end of the program's output its exit code is waited for.
+One that is not 0, a stream ended by a Stop, a rebuild or a deletion, and a read that waited too
+long each cut the answer (`TransferCut`): it is left unfinished, which the browser takes for a
+failed download, so a zip with something missing never ends as whole. The body is always
+closed, which ends the stream in the workspace, also when the browser goes away.
+
+**Uploads.** The early check, `files.UPLOAD` with nothing written, gives the refusals before the
+body is read: `file_exists` without `overwrite`, `file_name_taken_by_folder` for a folder, a link
+or anything but a file of that name, and `file_path_refused` for a hidden name at the top. The
+stream then checks again, writes its input to a temporary file beside the target
+(`files.TEMPORARY_PREFIX`), and links it to its name, which fails where the name is taken, or with
+`overwrite` renames it over the file; a link of that name is never followed (`ln -n`, `mv -T`).
+A refusal as the stream checks again answers its own code, and an upload ended by a Stop, a
+rebuild or a deletion that workspace's (`Transfers.ended_code`). A body that moves nothing for
+`transfers.TRANSFER_IDLE_SECONDS`, either way, is `transfer_idle`.
+
+**Transfers.** `transfers.Transfers` (`app.state.transfers`) admits at most
+`TRANSFERS_PER_PERSON` of a person's and `TRANSFERS_IN_ALL` in all (`transfers_busy`), starts each
+stream under the workspace's lock once it is still ready, and lets the lock go once the stream's
+pidfile is written. A Stop, a rebuild and a deletion end every transfer of the workspace first
+(`end_all`, chained to `on_stopping`, `on_rebuilding` and `on_removing`), with the temporary file
+of an upload, which then answers that workspace's code. Each row is written before the first
+byte: a download's when the endpoint returns (`Depends(Recorder(...), scope="function")`), an
+upload's once its stream has started (`Record.let_through`). It says the transfer was let
+through, not that it completed.
+
+`tests/test_files.py` holds the routes on the host runtime; the resolver and the zip are contract
+cases (`tests/runtime_contract.py`), run on Podman among the basic ones.
+
 ## Claude Code versions
 
 `claude_versions.ClaudeVersions` (`Workspaces.versions`, also `app.state.versions`) owns
@@ -800,6 +877,18 @@ off.
 `tests/test_forwarding_settings.py` holds a save and its audit; `tests/test_forward.py` what a
 save that leaves forwarding off ends.
 
+## The files settings
+
+The administrators' account is [Files](../docs/service-settings.md#files). `files_settings.py`
+holds them: `FilesSettings.folder_download_limit_mb`, a `StrictInt` within `Field(ge, le)`, in
+decimal megabytes (`MEGABYTE`), 0 for no limit, with `DEFAULTS`; the table `files_settings` keeps
+one row (`id = 1`) the first save makes, and no row is `DEFAULTS`. `Store`
+(`app.state.files_settings`) reads them once and then answers from memory; a save takes them up
+at once, for the next download's check. The routes, for administrators
+(`routers/files_settings.py`): `GET /api/files/settings` answers `{"settings": ...}`; `PUT
+/api/files/settings` saves the whole set and answers the same, audited as `files.settings` with
+the settings as JSON. `tests/test_files.py` holds a save, its audit, and the limit's refusal.
+
 ## Port forwarding
 
 A workspace's forwarded ports (`Workspaces.ports_of`, its plan's `ports`) are reached by their
@@ -1011,7 +1100,7 @@ that opened closes; whatever the route has not recorded by the time it ends is r
 uvicorn configures only its own loggers, so `create_app` calls `journal.install` on each logger
 whose events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`,
 `rcman.workspaces`, `rcman.claude_versions`, `rcman.terminals`, `rcman.monitor`,
-`rcman.forward` and `rcman.forwards` — which gives it one handler writing the bare line to
+`rcman.forward`, `rcman.forwards`, `rcman.microsoft` and `rcman.transfers` — which gives it one handler writing the bare line to
 standard error; systemd sends it to the journal. `tests/test_journal.py` checks that the app installs each of them.
 `tests/test_audit.py` starts the app with the unit's own `ExecStart` and reads the line from its
 output. It also finds every changing route in the route table and fails on any that neither

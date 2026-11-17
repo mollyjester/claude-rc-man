@@ -46,10 +46,10 @@ class Settings(BaseSettings):
     )
     tools_dir: Path = Field(
         Path("/opt/rcman/tools"),
-        description="The static tools mounted read-only into every workspace: tmux, busybox, "
-        "terminfo, the podman and docker wrappers with their configuration, the workspaces' "
-        "seccomp profile, and the instructions for Claude bound at Claude Code's managed "
-        "CLAUDE.md.",
+        description="The static tools mounted read-only into every workspace: tmux, bsdtar, "
+        "busybox, terminfo, the podman and docker wrappers with their configuration, the "
+        "workspaces' seccomp profile, and the instructions for Claude bound at Claude Code's "
+        "managed CLAUDE.md.",
     )
     claude_store: Path = Field(
         Path("/var/lib/rcman/claude"),

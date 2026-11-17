@@ -52,11 +52,17 @@ def nothing_left(podman):
         podman.remove_account(spec(n).person + 100)  # the contract's other person of a slot
 
 
-# The core: a workspace is made, runs and is removed, an exec answers, and its files outlive a stop.
+# The core: a workspace is made, runs and is removed, an exec answers, its files outlive a stop,
+# a stream passes bytes as they come and ends in the workspace when it is ended or stopped, a
+# folder streams out as a zip through the tools' bsdtar, and a path is resolved on its busybox.
 BASIC = [
     runtime_contract.a_workspace_that_is_made_exists_runs_and_is_labelled,
     runtime_contract.an_exec_gets_its_input_and_answers_its_streams_and_code,
     runtime_contract.a_workspaces_files_outlive_a_stop,
+    runtime_contract.a_stream_passes_bytes_both_ways_as_they_come_and_its_process_ends_with_it,
+    runtime_contract.a_stop_ends_a_live_stream,
+    runtime_contract.a_folder_streams_out_as_a_zip_with_links_kept_and_the_top_without_its_hidden_folders,
+    runtime_contract.the_resolver_refuses_what_leaves_the_volume_or_enters_a_hidden_folder,
 ]
 
 

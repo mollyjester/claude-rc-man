@@ -1,9 +1,10 @@
 # Audit trail
 
 rcman records every request that changes something: who made it, what they did,
-to what, and whether it worked; when a **Terminal** tab opens and closes; and, for a
+to what, and whether it worked; when a **Terminal** tab opens and closes; each download of a
+workspace's files; and, for a
 workspace's [forwarded ports](installation.md#forwarded-ports), each way in handed out, each
-session begun and each WebSocket opened and closed. Requests that only read are not
+session begun and each WebSocket opened and closed. Other requests that only read are not
 recorded. Administrators read the trail on the
 **Audit trail** page in rcman, in the **Administration** group of the sidebar,
 newest first. The page says each action in plain words, with its code as the
@@ -36,6 +37,8 @@ address, and its refusal of a request for what is no port's.
 | `workspace.rebuild` | asks for a workspace to be rebuilt on its volume from its devcontainer.json (see [Workspaces](workspaces.md)) | the workspace's name |
 | `workspace.stop` | stops a workspace's container, keeping its files; an administrator stopping another person's workspace is recorded as themselves | the workspace's name; for an administrator's Stop of another person's, its owner's address and its name (`owner@example.com/name`) |
 | `workspace.start` | starts a stopped workspace | the workspace's name |
+| `workspace.files.download` | downloads a file of a workspace's as it is, or a folder of a workspace's as a zip (see [Files](workspaces.md#files)); recorded once, as the download is let through or refused, so the row does not say every byte arrived | the workspace's name, a slash and the path |
+| `workspace.files.upload` | uploads a file into a folder of a workspace's, or replaces a file there (see [Files](workspaces.md#files)); recorded once, as the upload is let through or refused, so the row does not say every byte arrived | the workspace's name, a slash and the file's path |
 | `server.start` | starts a workspace's server | the workspace's name |
 | `server.resume` | resumes a server that stopped | the workspace's name |
 | `server.stop` | stops a server | the workspace's name |
@@ -50,6 +53,7 @@ address, and its refusal of a request for what is no port's.
 | `monitor.settings` | saves the monitoring settings on the **Service settings** page (administrators; see [Monitoring](service-settings.md#monitoring)) | the settings saved, as JSON; none when they were refused |
 | `monitor.refresh` | presses **Refresh** on the **Monitor** page, to collect every reading again at once (administrators; see [Refresh](monitor.md#refresh)) | none |
 | `microsoft.settings` | saves the Microsoft sign-in settings on the **Service settings** page (administrators; see [Microsoft sign-in](service-settings.md#microsoft-sign-in)) | what was sent, as JSON: whether sign-in is allowed, the two IDs, and whether a client secret was sent (`secret_changed`), never the secret; none when what was sent was not valid |
+| `files.settings` | saves the files settings on the **Service settings** page (administrators; see [Files](service-settings.md#files)) | the settings saved, as JSON; none when they were refused |
 | `forwarding.settings` | saves the port forwarding settings on the **Service settings** page (administrators; see [Port forwarding](service-settings.md#port-forwarding)) | the settings saved, as JSON; none when they were refused |
 | `git.stage` | stages files in a workspace's repository | the workspace's name |
 | `git.unstage` | unstages files | the workspace's name |

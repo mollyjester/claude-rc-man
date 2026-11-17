@@ -26,9 +26,10 @@ rcman and its installer ask of it:
   user's runtime folder; ``podman.socket`` in a user's manager makes the socket Podman's would be;
 - ``loginctl enable-linger <user>`` makes the user's linger file;
 - ``podman`` answers what the installer asks of rcman's Podman: ``info`` with the OCI runtime it
-  checks, ``image exists`` with whether the image was built, ``build`` noting it, ``run`` of the
-  tmux build with the tmux it is given (``tmux`` in its folder, built by the suite with the
-  installer's own argument list) and its sha256, and the rest with nothing.
+  checks, ``image exists`` with whether the image was built, ``build`` noting it, ``run`` of a
+  tool's build (tmux's, bsdtar's) with the program of that name it is given in its folder, built
+  by the suite with the installer's own argument list, and its sha256, and the rest with
+  nothing.
 
 ``reboot``, run by name, forgets what a restart of the machine forgets: the slices' properties and
 the units that ran.
@@ -360,8 +361,9 @@ def podman(args: list[str]) -> int:
         names[tag] = time.time()
         _save(built, names)
         return 0
-    if "run" in words and any("tmux" in a for a in args):
-        program = (state() / "tmux").read_bytes()
+    built_tool = next((t for t in ("tmux", "libarchive") if any(t in a for a in args)), None)
+    if "run" in words and built_tool:
+        program = (state() / {"tmux": "tmux", "libarchive": "bsdtar"}[built_tool]).read_bytes()
         sys.stderr.write(f"sha256 {hashlib.sha256(program).hexdigest()}\n")
         sys.stdout.buffer.write(program)
         return 0

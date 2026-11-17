@@ -266,6 +266,16 @@ MIGRATIONS = [
         generation integer not null check (generation >= 0)
     );
     """,
+    """
+    -- The settings of a workspace's files (files_settings.py): the largest folder a person may
+    -- download as a zip, in decimal megabytes, 0 for no limit. One row, made by the first save;
+    -- none means the defaults, which files_settings.py holds, as it holds the bounds a save is
+    -- refused outside of.
+    create table files_settings (
+        id integer primary key check (id = 1),
+        folder_download_limit_mb integer not null check (folder_download_limit_mb >= 0)
+    );
+    """,
 ]
 
 

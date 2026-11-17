@@ -30,6 +30,7 @@ from rcman import (
     unrecognised,
 )
 from rcman.accounts import Accounts
+from rcman.files_settings import Store as FilesSettingsStore
 from rcman.forwarding_settings import Store as ForwardingSettingsStore
 from rcman.gitaccount import GitAccount
 from rcman.microsoft_settings import Store as MicrosoftSettingsStore
@@ -47,6 +48,8 @@ from rcman.routers import (
     terminal,
     workspaces,
 )
+from rcman.routers import files as files_router
+from rcman.routers import files_settings as files_settings_router
 from rcman.routers import forward as forward_router
 from rcman.routers import forwarding_settings as forwarding_router
 from rcman.routers import microsoft_settings as microsoft_router
@@ -57,6 +60,8 @@ from rcman.runtime import PodmanConfig, PodmanRuntime, Runtime
 from rcman.settings import Settings
 from rcman.terminals import Terminals
 from rcman.terminals import log as terminals_log
+from rcman.transfers import Transfers
+from rcman.transfers import log as transfers_log
 from rcman.workspaces import Workspaces
 from rcman.workspaces import log as workspaces_log
 
@@ -148,6 +153,7 @@ def create_app(
         forward.log,
         forwards.log,
         microsoft.log,
+        transfers_log,
     ):
         journal.install(log)
     if runtime is None:  # rcman's own Podman, whose workspaces take the profile
@@ -156,6 +162,7 @@ def create_app(
     check_instructions(service.runtime)
     sign_ins = Accounts(service)
     terminals = Terminals(service)
+    transfers = Transfers(service)
     collector = monitor.Monitor(service.runtime, settings.database)
     # Whatever forwards ports registers here to hear of forwarding being turned off (on_off).
     forwarding_store = ForwardingSettingsStore(settings.database)
@@ -214,6 +221,8 @@ def create_app(
     app.state.versions = service.versions
     app.state.accounts = sign_ins
     app.state.terminals = terminals
+    app.state.transfers = transfers
+    app.state.files_settings = FilesSettingsStore(settings.database)
     app.state.monitor = collector
     app.state.forwarding_settings = forwarding_store
     app.state.forward = forwarding
@@ -251,12 +260,14 @@ def create_app(
         attention,
         monitor_router,
         forwarding_router,
+        files_settings_router,
         microsoft_router,
         auth,
         forward_router,
         docs,
         client_errors,
         terminal,
+        files_router,
     ):
         app.include_router(module.router)
     spa.install(app, settings.frontend_dir)  # last: it answers every path not matched above

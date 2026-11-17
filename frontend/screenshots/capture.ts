@@ -230,6 +230,62 @@ const EVERYONE_MIX: Record<string, unknown>[] = [
   },
 ];
 
+// A folder of the screenshot workspace's files as the server lists it, folders first, its ages
+// from the workspace's clock: a folder, a link to one, files, and a link out of reach.
+const FILES_NOW = 1_800_000_000;
+const SRC = {
+  path: "work/src",
+  entries: [
+    { name: "components", kind: "folder", size: null, changed: FILES_NOW - 7200, target: null },
+    { name: "node_modules", kind: "folder", size: null, changed: FILES_NOW - 86400 * 3 },
+    { name: "shared", kind: "link", size: null, changed: FILES_NOW - 86400, target: "folder" },
+    { name: "App.tsx", kind: "file", size: 4100, changed: FILES_NOW - 300, target: null },
+    { name: "main.tsx", kind: "file", size: 2048, changed: FILES_NOW - 45, target: null },
+    {
+      name: "a-file-with-a-rather-long-name-that-has-to-wrap-somewhere.generated.d.ts",
+      kind: "file",
+      size: 1_234_567,
+      changed: FILES_NOW - 86400 * 40,
+      target: null,
+    },
+    { name: "secrets", kind: "link", size: null, changed: FILES_NOW - 600, target: null },
+  ].map((e) => ({ target: null, ...e })),
+  more: 0,
+  now: FILES_NOW,
+};
+
+// The screenshot workspace's Files tab at `path`, `listed` its folder's answer, `routes` the
+// other answers planted, drawn once its rows (or what stands in their place) are.
+const filesTab =
+  (
+    path: string,
+    listed: Record<string, unknown>,
+    shownBy: string,
+    routes: (page: Page, id: number) => Promise<void> = async () => {},
+    file = "",
+  ): Opens =>
+  async (page, _path, id) => {
+    await page.route(
+      (url) => url.pathname === `/api/workspaces/${id}/files`,
+      (route) =>
+        route.request().method() === "GET" ? route.fulfill({ json: listed }) : route.fallback(),
+    );
+    await routes(page, id);
+    const query = new URLSearchParams({ workspace: String(id), tab: "files", path });
+    if (file) query.set("file", file);
+    await page.goto(`/?${query}`);
+    await page.getByText(shownBy, { exact: true }).first().waitFor();
+  };
+
+// Files chosen with the file chooser of the Files tab, as Upload opens it.
+async function choose(page: Page, names: string[]) {
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles(
+      names.map((name) => ({ name, mimeType: "text/plain", buffer: Buffer.from(name) })),
+    );
+}
+
 // The states a page has only when asked, by name.
 const STATES: Record<string, State> = {
   // the New workspace dialog
@@ -366,6 +422,101 @@ const STATES: Record<string, State> = {
       await listedAs(STOPPED, null)(page, path, id);
       await page.getByRole("tab", { name: m.tabTerminal }).click();
       await page.getByText(m.terminalPower.workspace_stopped).waitFor();
+    },
+  },
+  // the screenshot workspace's Files tab: a folder, its row main.tsx marked, as from Changes
+  files: { pages: ["/"], opens: filesTab("work/src", SRC, "App.tsx", undefined, "main.tsx") },
+  // an empty folder
+  "files-empty": {
+    pages: ["/"],
+    opens: filesTab(
+      "work/new",
+      { path: "work/new", entries: [], more: 0, now: FILES_NOW },
+      m.filesEmpty,
+    ),
+  },
+  // a stopped workspace's Files tab
+  "files-stopped": {
+    pages: ["/"],
+    opens: async (page, path, id) => {
+      await page.route("**/api/workspaces", (route) => listing(route, id, STOPPED));
+      await filesTab("work", SRC, m.filesPower.workspace_stopped)(page, path, id);
+    },
+  },
+  // a folder over the limit, refused under its row
+  "files-refused": {
+    pages: ["/"],
+    opens: async (page, path, id) => {
+      await filesTab("work/src", SRC, "App.tsx", async (page, id) => {
+        await page.route(
+          (url) => url.pathname === `/api/workspaces/${id}/files/download/check`,
+          (route) =>
+            route.fulfill({
+              status: 413,
+              json: {
+                type: "urn:rcman:problem:folder_too_big",
+                title: "The folder is larger than a folder download may be.",
+                status: 413,
+                code: "folder_too_big",
+                size: 1_234_000_000,
+                limit_mb: 500,
+              },
+            }),
+        );
+      })(page, path, id);
+      await page.getByRole("button", { name: m.filesDownloadFolder("node_modules") }).click();
+      await page.getByRole("alert").waitFor();
+    },
+  },
+  // files dragged over the folder
+  "files-drop": {
+    pages: ["/"],
+    opens: async (page, path, id) => {
+      await filesTab("work/src", SRC, "App.tsx")(page, path, id);
+      await page.locator(".file-browser").evaluate((card) => {
+        const data = new DataTransfer();
+        data.items.add(new File(["x"], "x.txt"));
+        card.dispatchEvent(new DragEvent("dragenter", { bubbles: true, dataTransfer: data }));
+      });
+      await page.getByText(m.filesDrop("work/src")).waitFor();
+    },
+  },
+  // the question before files replace those of their names
+  "files-replace": {
+    pages: ["/"],
+    window: true,
+    opens: async (page, path, id) => {
+      await filesTab("work/src", SRC, "App.tsx")(page, path, id);
+      await choose(page, ["main.tsx", "App.tsx", "notes.txt"]);
+      await page.getByRole("dialog", { name: m.filesReplaceTitleCount(2) }).waitFor();
+    },
+  },
+  // two files uploaded, one of which the workspace could not take
+  "files-uploaded": {
+    pages: ["/"],
+    opens: async (page, path, id) => {
+      await filesTab("work/src", SRC, "App.tsx", async (page, id) => {
+        await page.route(
+          (url) => url.pathname === `/api/workspaces/${id}/files`,
+          (route) => {
+            const request = route.request();
+            if (request.method() !== "PUT") return route.fallback();
+            if (new URL(request.url()).searchParams.get("name") !== "big.iso")
+              return route.fulfill({ json: { name: "notes.txt" } });
+            return route.fulfill({
+              status: 502,
+              json: {
+                type: "urn:rcman:problem:transfer_failed",
+                title: "The workspace could not pass the file.",
+                status: 502,
+                code: "transfer_failed",
+              },
+            });
+          },
+        );
+      })(page, path, id);
+      await choose(page, ["notes.txt", "big.iso"]);
+      await page.getByText(m.filesUploadedCount(1, 2)).waitFor();
     },
   },
   // a workspace being started

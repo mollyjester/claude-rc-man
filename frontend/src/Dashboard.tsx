@@ -15,6 +15,7 @@ import { ApiError, api } from "./api";
 import { Caret } from "./Caret";
 import { Changes, type GitStatus, type Unsaved, unsavedIn } from "./Changes";
 import { Dialog } from "./Dialog";
+import { Files } from "./Files";
 import { BackIcon, PlusIcon, RepoIcon, TrashIcon, WorkspacesIcon } from "./Icons";
 import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
@@ -1089,11 +1090,14 @@ function PortRow({ port }: { port: ForwardedPort }) {
 const TABS = [
   { name: "overview", label: m.tabOverview },
   { name: "terminal", label: m.tabTerminal },
+  { name: "files", label: m.tabFiles },
 ] as const;
+// What the Files tab keeps in the address beside it: the folder shown and the row marked.
+const FILES_PLACE = ["path", "file"];
 type TabName = (typeof TABS)[number]["name"];
 
 // Which tab the address shows, and the choice of another, kept in the address in place of
-// the one before it.
+// the one before it; the Files tab's place goes with it when another is chosen.
 function useTab(): [TabName, (tab: TabName) => void] {
   const [params, setParams] = useSearchParams();
   const asked = params.get("tab");
@@ -1104,6 +1108,7 @@ function useTab(): [TabName, (tab: TabName) => void] {
         const params = new URLSearchParams(current);
         if (next === TABS[0].name) params.delete("tab");
         else params.set("tab", next);
+        if (next !== "files") for (const name of FILES_PLACE) params.delete(name);
         return params;
       },
       { replace: true },
@@ -1290,9 +1295,10 @@ function PowerStatus({ workspace }: { workspace: Workspace }) {
 
 // The selected workspace: under its name, the GitHub page of the repository it was
 // cloned from, when the server gives one; what its state allows, and, once it is ready,
-// two tabs: Overview, with its Claude server or the offer to start one and the Changes of
-// its repository, and Terminal, a shell in it, opened once the tab is first shown. Each
-// tab's panel stays on the page while the other is shown, so the terminal stays open.
+// its tabs: Overview, with its Claude server or the offer to start one and the Changes of
+// its repository; Terminal, a shell in it, opened once the tab is first shown; and Files, its
+// files, listed once the tab is first shown. Each tab's panel stays on the page while another is
+// shown, so the terminal stays open.
 function WorkspacePanel({
   workspace,
   approved,
@@ -1328,6 +1334,12 @@ function WorkspacePanel({
     if (!reachable) setTerminalOpened(false);
     else if (terminalShown) setTerminalOpened(true);
   }, [reachable, terminalShown]);
+  // The Files tab is drawn once it is first shown, and kept from then on.
+  const filesShown = tabbed && tab === "files";
+  const [filesOpened, setFilesOpened] = useState(false);
+  useEffect(() => {
+    if (filesShown) setFilesOpened(true);
+  }, [filesShown]);
   const tabsId = useId();
   const cloning = workspace.state === "creating" && workspace.source !== null;
   const { server, server_error: serverError } = workspace;
@@ -1481,6 +1493,15 @@ function WorkspacePanel({
             {!reachable && (
               <TerminalNotice
                 said={m.terminalPower[starting ? "workspace_starting" : "workspace_stopped"]}
+              />
+            )}
+          </TabPanel>
+          <TabPanel id={tabsId} name="files" shown={filesShown}>
+            {(filesOpened || filesShown) && (
+              <Files
+                workspace={workspace.id}
+                shown={filesShown}
+                power={replacing ? REBUILDING : power}
               />
             )}
           </TabPanel>

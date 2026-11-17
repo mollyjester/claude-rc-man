@@ -64,6 +64,12 @@ forwarded ports leave behind come from the logger `rcman.forwards`: that a relay
 a workspace was ended, at info level, and that what a workspace's relays left could not be read,
 at warning level.
 
+Those about downloads and uploads of a workspace's [files](workspaces.md#files) come from the
+logger `rcman.transfers`: one ended by a Stop, a Rebuild or a deletion, at info level; and, at
+warning level, one that did not start, or that ended without the workspace passing it whole, and
+whatever else the **Files** tab asked of the workspace and it did not answer, such as a listing,
+each with what the workspace said. They never hold what was downloaded or uploaded.
+
 Those about [Microsoft sign-in](service-settings.md#microsoft-sign-in) come from the logger
 `rcman.microsoft`, at warning level, one line for each sign-in:
 

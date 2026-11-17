@@ -46,9 +46,9 @@ default), since no test is about surviving a crash and production
 keeps the default; the collections `tests/test_make.py` reads are made once per
 run and shared by all the workers through pytest's basetemp
 (`tests/collected.py`).
-The suite needs `tmux`, `git`, procps' `kill` and a busybox with `nc` and `setsid`
-on the host, as `busybox-static`, which `.devcontainer/Dockerfile` installs, has
-them. Each test's tmux sockets are in a folder of its own, made under `/tmp` by
+The suite needs `tmux`, `git`, procps' `kill`, a busybox with `nc` and `setsid`, as
+`busybox-static` has them, `bsdtar` (`libarchive-tools`) and `unzip` on the host, all of which
+`.devcontainer/Dockerfile` installs. Each test's tmux sockets are in a folder of its own, made under `/tmp` by
 `tmux_sockets` in `devtools/held_folders.py`, because a socket's path has to stay
 short, and removed, with every tmux server in it, when the test ends; one a killed
 run left is removed by a later run (see
@@ -59,7 +59,7 @@ Workspaces in the backend's tests run on the host runtime (see
 the fake `claude`, real tmux, and a real channel through the host's `sh`.
 `tests/runtime_contract.py`, which is not a test module, holds the cases every
 runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
-`tests/container/test_runtime_in_podman.py`, in three basic cases, against real Podman on the
+`tests/container/test_runtime_in_podman.py`, in its basic cases (`BASIC`), against real Podman on the
 tests' engine. Its case of `port_argv` reaches a listener
 the workspace's `python3` runs, so the runtime's image needs python3, as the default image and
 the host have it.
@@ -819,8 +819,8 @@ loopback, and the workspaces, in a network of their own, reach it as `github.com
 the relay (`Relay` in `tests/container/network.py`). A range of the
 suites' size holds no id as high as the group `nogroup` (65534), which apt drops to: nothing in a
 test workspace or build runs `apt-get` as Ubuntu ships it. `tests/container/conftest.py` holds the
-shared fixtures: the tools as the installer writes them, tmux built on the engine with the
-installer's own argument list from its pinned source in the toolchain (the user's cache, filled
+shared fixtures: the tools as the installer writes them, those it builds built on the engine
+with the installer's own argument lists from its pinned source in the toolchain (the user's cache, filled
 with the installer's own download code by the `toolchain` fixture), an empty store and one
 holding the fake `claude`, the default image and the builder image built on the engine from the
 installer's own files, and the helpers that make a runtime, rcman's settings and the stand-ins
@@ -845,9 +845,10 @@ helper made inside the holder's network and handed back.
 The tier is a small core: one basic happy-path test of each thing only real Podman proves, and
 nothing else (no variants, refusals, edge cases or timing).
 
-- `tests/container/test_runtime_in_podman.py`: three basic cases of the runtime contract
-  (`tests/runtime_contract.py`) on Podman: a workspace made, running and removed; an exec
-  answering; and its files outliving a stop and start. And one workspace on the product's own
+- `tests/container/test_runtime_in_podman.py`: its `BASIC`, the basic cases of the runtime
+  contract (`tests/runtime_contract.py`) on Podman, among them a workspace made, running and
+  removed, an exec answering, its files outliving a stop and start, a stream ended in the
+  container, and a folder zipped by the tools' bsdtar. And one workspace on the product's own
   network, `NETWORK`: it has a network namespace of its own; through `169.254.1.2` a listener of
   the test's on all the machine's addresses answers and one on its loopback refuses at once; and
   a container nested in it with `--network=pasta` runs.
@@ -871,7 +872,7 @@ stand-ins of `tests/container/stand_ins.py`, mounted over the programs. They rec
 and answer as the real programs answer what the installer asks: a unit the installer starts is
 run as its `User=`, with its environment, folder and umask, so rcman and oauth2-proxy really run
 and the installer's own health check is the real one; rcman's Podman reports the runtime the
-installer checks, notes the images it builds, and hands the installer the tmux built on the
+installer checks, notes the images it builds, and hands the installer the tools built on the
 engine. A path unit started, as `rcman-upgrade.path` is, is only noted active and runs no
 service, since nothing changes its path; `tests/test_stand_ins.py` holds that, with a folder of
 planted units the stand-in reads in place of `/etc/systemd/system`, named by

@@ -509,10 +509,13 @@ class ToolsHost:
         tarball = tmp_path / "toolchain" / "tmux.tar.gz"
         tarball.parent.mkdir()
         tarball.write_bytes(b"source")
+        self.libarchive = tmp_path / "toolchain" / "libarchive.tar.gz"
+        self.libarchive.write_bytes(b"libarchive source")
         monkeypatch.setattr(ins, "STATE", self.state)
         monkeypatch.setattr(ins, "BUSYBOX", busybox)
         monkeypatch.setattr(ins, "TERMINFO_DIRS", (terminfo,))
         monkeypatch.setattr(ins, "tmux_tarball", lambda toolchain=None: tarball)
+        monkeypatch.setattr(ins, "libarchive_tarball", lambda toolchain=None: self.libarchive)
         monkeypatch.setattr(ins, "app_uid", lambda: 990)
         monkeypatch.setattr(ins, "run", self.run)
 
@@ -531,7 +534,9 @@ def test_the_tools_are_built_into_a_folder_of_roots_and_nothing_is_made_in_rcman
         host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
     )
     assert f"tmux {ins.TMUX_VERSION}" in changes and "busybox" in changes and "tmux.conf" in changes
+    assert f"bsdtar {ins.LIBARCHIVE_VERSION}" in changes
     assert (host.tools / "bin" / "tmux").read_bytes() == host.built
+    assert (host.tools / "bin" / "bsdtar").read_bytes() == host.built
     assert os.readlink(host.tools / "bin" / "sh") == "busybox"
     assert (host.tools / "tmux.conf").read_text() == host.conf.read_text()
     for entry in ins.TERMINFO:
@@ -539,15 +544,48 @@ def test_the_tools_are_built_into_a_folder_of_roots_and_nothing_is_made_in_rcman
     for path in (host.tools, host.tools / "bin", host.tools / "terminfo"):
         assert stat.S_IMODE(path.stat().st_mode) == 0o755
     assert stat.S_IMODE((host.tools / "bin" / "tmux").stat().st_mode) == 0o755
-    [build] = host.calls
-    assert build[:4] == RUNUSER  # tmux is built by rcman's Podman, as every container is
+    assert stat.S_IMODE((host.tools / "bin" / "bsdtar").stat().st_mode) == 0o755
+    [tmux, bsdtar] = host.calls
+    for build in (tmux, bsdtar):
+        assert build[:4] == RUNUSER  # each is built by rcman's Podman, as every container is
+    bsdtar_argv = ins.bsdtar_build_argv(host.libarchive)
+    assert bsdtar[-len(bsdtar_argv) :] == bsdtar_argv
     assert not host.state.exists()  # no scratch folder in rcman's home, the build is not run there
-    assert not [p for p in host.tools.rglob(".*") if p.name != ".tmux-version"]
+    stamps = {".tmux-version", ".bsdtar-version"}
+    assert {p.name for p in host.tools.rglob(".*")} == stamps  # the stamps, and nothing else
     host.calls.clear()
     again = ins.ensure_tools(
         host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
     )
     assert again == [] and host.calls == []  # not built again
+
+
+def test_a_tool_that_arrives_broken_or_not_static_is_refused_and_the_old_one_kept(
+    tmp_path, monkeypatch
+):
+    host = ToolsHost(tmp_path, monkeypatch)
+    ensure = lambda: ins.ensure_tools(  # noqa: E731
+        host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
+    )
+    ensure()
+    host.calls.clear()
+    program = host.tools / "bin" / "bsdtar"
+    kept = program.read_bytes()
+    stamp = host.tools / ".bsdtar-version"
+    stamp.write_text("an older version\n")  # bsdtar alone is built again
+    host.built = static_elf() + b"changed"  # the planted twin: the reported sha256 is the old one's
+    with pytest.raises(ins.InstallError, match="bsdtar did not arrive whole"):
+        ensure()
+    host.built = b"#!/bin/sh\n"  # whole, but not a static program
+    host.stderr = f"sha256 {hashlib.sha256(host.built).hexdigest()}\n".encode()
+    with pytest.raises(ins.InstallError, match="bsdtar was not built static"):
+        ensure()
+    assert program.read_bytes() == kept and stamp.read_text() == "an older version\n"
+    assert [c for c in host.calls if "tmux" in " ".join(c)] == []  # tmux was not built again
+    host.built = static_elf() + b"new"  # the control: a good build is taken
+    host.stderr = f"sha256 {hashlib.sha256(host.built).hexdigest()}\n".encode()
+    assert ensure() == [f"bsdtar {ins.LIBARCHIVE_VERSION}"]
+    assert program.read_bytes() == host.built
 
 
 def pin_problems(version: str, table: dict, architectures: set[str]) -> list[str]:
@@ -620,7 +658,7 @@ def test_every_base_image_the_installer_builds_from_is_pinned_by_tag_and_digest(
     assert {p.parent.name for p in files} >= {"workspace", "builder"}  # non-vacuity: both found
     assert sum(len(from_lines(p)) for p in files) >= 3  # and the FROM lines in them
     assert unpinned_bases(files) == []
-    assert PINNED_IMAGE.fullmatch(ins.TMUX_BUILD_REFERENCE)  # tmux's, named in the installer
+    assert PINNED_IMAGE.fullmatch(ins.TOOLS_BUILD_REFERENCE)  # the tools', named in the installer
 
 
 def test_a_base_image_without_a_tag_and_a_digest_is_found_unpinned(tmp_path):

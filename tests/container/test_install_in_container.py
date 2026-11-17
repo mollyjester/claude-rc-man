@@ -111,11 +111,13 @@ def installation(
         try:
             ran(made, "the installation's container did not start")
             found = Installation(podman_service, name)
-            tmux = (engine_tools / "bin" / "tmux").read_bytes()
-            put = found.exec(
-                "sh", "-c", f"mkdir -p -m 777 {STAND_INS} && cat > {STAND_INS}/tmux", stdin=tmux
-            )
-            ran(put, "tmux was not handed to the stand-in")
+            for tool in ("tmux", "bsdtar"):
+                program = (engine_tools / "bin" / tool).read_bytes()
+                put = found.exec(
+                    "sh", "-c", f"mkdir -p -m 777 {STAND_INS} && cat > {STAND_INS}/{tool}",
+                    stdin=program,
+                )  # fmt: skip
+                ran(put, f"{tool} was not handed to the stand-in")
             found.check("first")
             yield found
         finally:

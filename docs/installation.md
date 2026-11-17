@@ -35,8 +35,8 @@ rcman from its web interface (see
   `USERNS_OVERLAY_KERNEL` in `installer/install.py`, before it changes anything.
 - **Access to the internet** while it runs, for the packages and the downloads
   below. Behind a firewall that limits outbound traffic, allow Ubuntu's package
-  archive, `nodejs.org` and `github.com` (Node.js, uv, oauth2-proxy and tmux's
-  source), the npm and Python package registries, Docker Hub, the Claude Code
+  archive, `nodejs.org` and `github.com` (Node.js, uv, oauth2-proxy, and the sources
+  of the tools it builds), the npm and Python package registries, Docker Hub, the Claude Code
   download address (`RCMAN_INSTALL_CLAUDE_DOWNLOAD`, below), and the hosts these
   redirect to.
 
@@ -48,14 +48,13 @@ OCI runtime workspaces and builds are tested with. Workspace containers run with
 seccomp profile derived from Podman's own, `/usr/share/containers/seccomp.json`, which
 Ubuntu's Podman brings; the installer refuses a machine where it is not there. Everything else — the Node.js
 that builds the web interface, uv for the Python environment, oauth2-proxy,
-tmux's source, and Claude Code — it downloads itself and checks against a
+the sources of the tools it builds, and Claude Code — it downloads itself and checks against a
 checksum. Claude Code is checked against the manifest of its release.
-Node.js, uv, oauth2-proxy and tmux are checked against checksums the repository
-pins (`NODE_SHA256`, `UV_SHA256`, `OAUTH2_PROXY_SHA256` and `TMUX_SHA256` in
-`installer/install.py`), each beside the version it belongs to, so a release page
+Node.js, uv, oauth2-proxy and those sources are checked against checksums the
+repository pins (the `_SHA256` constants in `installer/install.py`), each beside the version it belongs to, so a release page
 that is not to be trusted cannot swap an archive together with its checksum. The
-images the installer builds from are named by tag and by digest (`TMUX_BUILD_DIGEST`
-for the one tmux is built in, and the `FROM` line of each Containerfile under
+images the installer builds from are named by tag and by digest (`TOOLS_BUILD_DIGEST`
+for the one its tools are built in, and the `FROM` line of each Containerfile under
 `installer/`), so that a tag moved at Docker Hub changes nothing here. The images
 workspaces are built from come from Docker Hub. The builder image needs the
 network as well, for the Ubuntu packages and the npm package it installs, so an
@@ -214,8 +213,8 @@ does not work.
 7. **Makes it current** — `/opt/rcman/current` — and keeps the release before
    it as `/opt/rcman/previous`; older ones are removed.
 8. **Makes what workspaces are built from**:
-   - the tools every workspace has, whatever its image: tmux, built here into a
-     program that needs nothing of any image, with busybox and the terminal
+   - the tools every workspace has, whatever its image: tmux and bsdtar, each built
+     here into a program that needs nothing of any image, with busybox and the terminal
      descriptions; the `podman` and `docker` that run containers in a workspace,
      with their configuration (see [Containers](workspaces.md#containers)); the
      instructions rcman gives Claude in every workspace, made from the release's

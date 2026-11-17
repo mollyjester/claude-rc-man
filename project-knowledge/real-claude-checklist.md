@@ -501,6 +501,22 @@ systems' fetches of the icons, or Google's or Microsoft's sign-in from an instal
 4. **An upgrade.** Upgrade rcman with the app open, then reload it or close and open it
    again: it loads the new build.
 
+## A workspace's files
+
+On an installed server, once, and again whenever the bsdtar the installer builds moves to another
+version (`LIBARCHIVE_VERSION` in `installer/install.py`), with the folder download limit at 0 on
+**Service settings**. The contract cases check the zip bsdtar writes to a pipe (see
+[runtime.md](runtime.md#streams)); a zip too large for plain zip, which rests on Zip64, and the
+archive tools of other systems, are checked here.
+
+1. **A folder over 4 GiB.** In a workspace's **Terminal** tab, make a folder holding more than
+   4 GiB, one file in it larger than that among smaller ones, and download it from the **Files**
+   tab: the download ends whole, `unzip -t` passes the zip, and each file's size and sha256 after
+   `unzip` are those in the workspace.
+2. **Other systems open it.** Download a folder holding a file whose name is not plain ASCII, a
+   folder inside it and a link, and open the zip in macOS's Archive Utility and in Windows
+   Explorer: each lists and extracts every file with its name, and the folder with its files.
+
 ## Screens with no recording yet
 
 Some screens rcman has no recording of, and has not kept as observed, and so

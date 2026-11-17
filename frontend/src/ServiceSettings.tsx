@@ -25,6 +25,11 @@ type Scope = "host" | "people" | "containers" | "storage";
 type Forwarding = { enabled: boolean; idle_minutes: number; absolute_hours: number };
 type Timeout = "idle_minutes" | "absolute_hours";
 
+// The settings of a workspace's files, as GET and PUT /api/files/settings have them, the limit
+// in megabytes of a million bytes, 0 for none; its default and bounds are the server's
+// (backend/rcman/files_settings.py).
+type FilesSettings = { folder_download_limit_mb: number };
+
 // Microsoft sign-in's settings, as GET /api/microsoft/settings has them: never the client
 // secret, only whether one is stored, and whether rcman has the key it needs to keep one
 // (backend/rcman/microsoft_settings.py, backend/rcman/routers/microsoft_settings.py).
@@ -62,6 +67,7 @@ const FORWARDING_LABELS: Record<string, string> = {
   enabled: m.forwardingEnabled,
   ...Object.fromEntries(TIMEOUTS.map(([name, label]) => [name, label])),
 };
+const FILES_LABELS: Record<string, string> = { folder_download_limit_mb: m.filesFolderLimit };
 const MICROSOFT_LABELS: Record<string, string> = {
   client_id: m.microsoftClientId,
   tenant_id: m.microsoftTenantId,
@@ -89,6 +95,7 @@ export function ServiceSettings() {
       <p className="page-intro muted">{m.serviceSettingsIntro}</p>
       <MonitoringCard />
       <ForwardingCard />
+      <FilesCard />
       <MicrosoftCard />
     </section>
   );
@@ -378,6 +385,59 @@ function ForwardingForm({ initial }: { initial: Forwarding }) {
       </form>
       <SaveStatus status={status} saved={m.forwardingSaved} />
       <ProblemView error={error} labels={FORWARDING_LABELS} inline />
+    </>
+  );
+}
+
+function FilesCard() {
+  const [read, error] = useRead<FilesSettings>("/api/files/settings");
+  return (
+    <SettingsCard title={m.filesTitle} line={m.filesLine} error={error}>
+      {read && <FilesForm initial={read} />}
+    </SettingsCard>
+  );
+}
+
+function FilesForm({ initial }: { initial: FilesSettings }) {
+  const [limit, setLimit] = useState(() => String(initial.folder_download_limit_mb));
+  const [status, setStatus] = useState<Status>("idle");
+  const [error, setError] = useState<ApiError | null>(null);
+  const fields = useFieldErrors(error);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setStatus("busy");
+    setError(null);
+    try {
+      const answer = await api.put<{ settings: FilesSettings }>("/api/files/settings", {
+        folder_download_limit_mb: asSent(limit),
+      });
+      setLimit(String(answer.settings.folder_download_limit_mb));
+      setStatus("saved");
+    } catch (e) {
+      setError(asApiError(e));
+      setStatus("idle");
+    }
+  }
+
+  return (
+    <>
+      <form noValidate onSubmit={save} ref={fields.form} aria-busy={status === "busy"}>
+        <NumberField
+          name="folder_download_limit_mb"
+          label={m.filesFolderLimit}
+          help={m.filesFolderLimitHelp}
+          value={limit}
+          onChange={(value) => {
+            setLimit(value);
+            setStatus("idle");
+          }}
+          fields={fields}
+        />
+        <SaveRow name={m.filesSave} status={status} />
+      </form>
+      <SaveStatus status={status} saved={m.filesSaved} />
+      <ProblemView error={error} labels={FILES_LABELS} inline />
     </>
   );
 }

@@ -238,3 +238,40 @@ export const DoneIcon = () => (
     <path d="m5.5 8.2 1.7 1.7 3.3-3.6" />
   </Icon>
 );
+
+// A folder with its tab.
+export const FolderIcon = () => (
+  <Icon>
+    <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
+  </Icon>
+);
+
+// A sheet with its corner folded.
+export const FileIcon = () => (
+  <Icon>
+    <path d="M4.5 1.5h4.5l3 3v9a1 1 0 0 1-1 1h-6.5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1z" />
+    <path d="M9 1.5v3h3" />
+  </Icon>
+);
+
+// An arrow turning to the right: a link, which points elsewhere.
+export const LinkIcon = () => (
+  <Icon>
+    <path d="M3.5 2.5v5a2.5 2.5 0 0 0 2.5 2.5h7.5" />
+    <path d="M10.5 7l3 3-3 3" />
+  </Icon>
+);
+
+// An arrow down onto a line: saving to this computer.
+export const DownloadIcon = () => (
+  <Icon>
+    <path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M3 13.5h10" />
+  </Icon>
+);
+
+// An arrow up from a line: sending from this computer.
+export const UploadIcon = () => (
+  <Icon>
+    <path d="M8 10.5V2M4.5 5.5 8 2l3.5 3.5M3 13.5h10" />
+  </Icon>
+);

@@ -470,13 +470,16 @@ class Workspaces:
         # theirs that waits for its code.
         self.on_person_deleting: Callable[[int], None] = lambda person: None
         # Called with a workspace just before its container is removed: terminals.py ends its
-        # terminal, through its channel, while the workspace is still there to end it in.
+        # terminal, and transfers.py its downloads and uploads, through its channel, while the
+        # workspace is still there to end them in.
         self.on_removing: Callable[[Workspace], None] = lambda workspace: None
         # Called with a workspace whose container a rebuild is about to replace: terminals.py
-        # ends its terminal, through its channel, while the old container is still there.
+        # ends its terminal, and transfers.py its downloads and uploads, through its channel,
+        # while the old container is still there.
         self.on_rebuilding: Callable[[Workspace], None] = lambda workspace: None
         # Called with a workspace whose container a Stop is about to stop: terminals.py ends its
-        # terminal, and forward.py its forwarded ports, while the container still runs.
+        # terminal, forward.py its forwarded ports and transfers.py its downloads and uploads,
+        # while the container still runs.
         self.on_stopping: Callable[[Workspace], None] = lambda workspace: None
         # Called with a workspace whose container kept running while rcman was not: terminals.py
         # ends what the terminals of an earlier rcman left in it.
@@ -2331,7 +2334,7 @@ class Workspaces:
         workspace's; from then until it is done the workspace is being stopped (``_stopping``),
         which refuses what would enter it. Then: its server, if it runs, is stopped as the
         server's own Stop does, and killed if it will not, with whether it should run left as it
-        was; its terminal and forwarded ports are ended and its channel closed
+        was; its terminal, forwarded ports, downloads and uploads are ended and its channel closed
         (``on_stopping``, ``sweep_forwards``); and its container is stopped. Each of these that
         fails is logged, and the rest go on. The row is written stopped, its server's version no
         longer recorded, only once its container is known not to run; a container that still

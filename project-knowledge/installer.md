@@ -16,11 +16,11 @@ the installer's.
 | `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit, `passt` and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line, which `tests/test_install.py` holds. Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
-The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION` and
-`TMUX_VERSION` in `installer/install.py`, `frontend/.nvmrc` for Node.js, the CLI in
+The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION`, and those of the tools it
+builds (`TMUX_VERSION`, `LIBARCHIVE_VERSION`) in `installer/install.py`, `frontend/.nvmrc` for Node.js, the CLI in
 `installer/builder/package.json` and its lock, and `helpers/claude-version` for
 Claude Code. Every base image the installer builds from is named by tag and digest:
-`TMUX_BUILD_REFERENCE` (the tag `TMUX_BUILD_IMAGE` and `TMUX_BUILD_DIGEST`) and the
+`TOOLS_BUILD_REFERENCE` (the tag `TOOLS_BUILD_IMAGE` and `TOOLS_BUILD_DIGEST`) and the
 `FROM` of each Containerfile under `installer/`; a test reads every Containerfile it
 finds there and fails on a `FROM` without both (a stage of the same file is pinned
 where it is defined). The digest is the registry's own for the tag (its
@@ -29,7 +29,8 @@ returns); moving to another tag or another day's image is a change to the line.
 Downloads are checked against a checksum that does not come from the page that
 serves them where it can be: Node.js's, uv's and oauth2-proxy's archives against
 `NODE_SHA256`, `UV_SHA256` and `OAUTH2_PROXY_SHA256` (Node.js's version is
-`frontend/.nvmrc`'s, and its pin names the same), tmux's source against `TMUX_SHA256`, each
+`frontend/.nvmrc`'s, and its pin names the same), the built tools' sources against their pins (`TMUX_SHA256`, `LIBARCHIVE_SHA256`, the one
+GitHub gives for libarchive's release asset, which its release signature covers), each
 keyed by the version it belongs to (and the architecture), so that a version
 changed without its checksums fails `ensure_toolchain` (`_pinned`) and a test that
 reads the tables; Claude Code is checked against its release's manifest. To move Node.js,
@@ -93,11 +94,13 @@ Root must never follow a link inside a path rcman can write: rcman can put a lin
 anything inside its home or its socket's folder goes, and root would follow it. So:
 
 - The static tools are not in rcman's home: `TOOLS` is under `ROOT`, root's, and
-  `RCMAN_TOOLS_DIR` names it. tmux is built by rcman's Podman, and the program comes out on
+  `RCMAN_TOOLS_DIR` names it. Each tool the installer builds is built by rcman's Podman
+  (`_build_tool`), and the program comes out on
   the container's standard output, not logged (`--log-driver=none`: a log driver of the
   journal would write the program's bytes into the system journal, where they are not
   UTF-8) (the build says what it has to say on standard error,
-  `TMUX_BUILD`, with the program's sha256 on a last line that `ensure_tools` compares with
+  `TMUX_BUILD` or `BSDTAR_BUILD`, with the program's sha256 on a last line, `TOOL_SHA256_LINE`,
+  that `_build_tool` compares with
   the bytes received, since `is_static` reads only the header), which root writes into the
   tools folder after `is_static`; no scratch folder
   of rcman's is mounted for it. `ensure_tools` touches nothing in rcman's home.
@@ -246,10 +249,13 @@ back by `read_status`, which takes only a JSON object with exactly `FIELDS`:
 
 ## What workspaces are made of
 
-- **The tools**, `TOOLS` (`ensure_tools`): tmux, built from its pinned source in a throwaway
-  container of `TMUX_BUILD_REFERENCE`, musl and static, so that it needs nothing of any image
-  (`is_static` checks there is no dynamic loader), and built again only when the version or
-  checksum it was built from (`.tmux-version`) changes; the system's static busybox, and `sh` as
+- **The tools**, `TOOLS` (`ensure_tools`): the programs it builds, tmux and libarchive's
+  bsdtar (which writes a folder's zip, runtime.md's [Streams](runtime.md#streams)), each from
+  its pinned source in a throwaway container of `TOOLS_BUILD_REFERENCE`, musl and static, so
+  that it needs nothing of any image (`is_static` checks there is no dynamic loader), each
+  built again only when the version or checksum it was built from (its stamp,
+  `.<program>-version`) changes, and a build that does not arrive whole or static refused
+  with the program there kept; bsdtar is built with zlib and nothing else it could link to; the system's static busybox, and `sh` as
   a link to it; the terminal descriptions `TERMINFO`, from the system's;
   `backend/rcman/tmux.conf` of the release; and, by `ensure_podman_tools`, the `podman` and
   `docker` wrappers, their configuration and the `publish.sh` they source (`PODMAN_PUBLISH`)

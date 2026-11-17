@@ -62,7 +62,9 @@ export function fakeApi(routes: Routes) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://rcman.test");
     const method = (init?.method ?? "GET").toUpperCase();
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    // A file is kept as it was sent; anything else was JSON.
+    const sent = init?.body;
+    const body = sent instanceof Blob ? sent : sent ? JSON.parse(String(sent)) : undefined;
     const call = { method, path: url.pathname, query: url.searchParams, body };
     calls.push(call);
     const key = `${method} ${url.pathname}`;

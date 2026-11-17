@@ -72,7 +72,7 @@ from rcman.limits import Caps, Limits, Usage
 log = logging.getLogger("rcman.runtime")
 
 # Where things are inside a workspace container.
-TOOLS_MOUNT = "/opt/rcman"  # the static tools, read-only: bin/tmux, bin/busybox, terminfo
+TOOLS_MOUNT = "/opt/rcman"  # the static tools, read-only: bin/tmux, bin/bsdtar, bin/busybox, ...
 CLAUDE_MOUNT = "/opt/claude"  # the Claude Code store, read-only
 # The tools' podman and docker (backend/rcman/podman), on every workspace's PATH right after
 # Claude's folder; the folder holds nothing else (installer/install.py PODMAN_COMMANDS).
@@ -95,6 +95,9 @@ TMP_CHECK_REFUSED = 1
 # The folders of a workspace's volume: the one its server works in, Claude's
 # configuration (CLAUDE_CONFIG_DIR) and the home of the programs rcman runs there.
 WORK, CONFIG, HOME = "work", "claude", "home"
+# The folder of the volume that holds the storage of the Podman a workspace runs: the graphroot
+# of backend/rcman/podman/storage.conf.
+CONTAINERS = "containers"
 # Claude Code's credentials file, in its configuration folder: a person's sign-in.
 CREDENTIALS = ".credentials.json"
 SIGNED_IN, NOT_SIGNED_IN_EMPTY, NOT_SIGNED_IN_UNREADABLE = "signed_in", "empty", "unreadable"
@@ -150,6 +153,40 @@ SHELL=$shell
 export SHELL
 exec "$shell" -i
 """
+# A stream (``Runtime.stream``): a program in the workspace whose standard input and output are
+# passed on as they come, for what is too long, or needs too much input, for the channel. Its
+# pidfile, named by a token of its own, is in the runtime folder, which goes with the container.
+TRANSFER_PIDFILE = re.compile(r"transfer-[0-9a-f]{16}\.pid\Z")
+# What the launcher writes on stderr once the pidfile is written: the stream is ready.
+TRANSFER_READY = "<rcman-transfer-ready>"
+# What every stream is started by, a fixed program, as the workspace's shell runs it with ``-c``
+# and its arguments: the pidfile, then the program and its arguments. It writes its own id and
+# start time to the pidfile, which ending the stream checks before it signals anything, then the
+# ready mark, and execs the program, which so keeps the id: the leader of a process group of its
+# own, as a Podman exec's process is in the container and the host runtime's in its own session.
+TRANSFER_LAUNCHER = (
+    "pidfile=$1\nshift\nread -r stat < /proc/$$/stat\n"
+    'named() { printf \'%s %s\\n\' "$$" "${20}"; }\n'
+    'named ${stat##*) } > "$pidfile" || exit 1\n'
+    f"printf '%s' '{TRANSFER_READY}' >&2\n"
+    'exec "$@"\n'
+)
+# What ends a stream in the workspace, run through its channel with the pidfile and the files
+# the stream leaves (an upload's temporary file) as its arguments: the process group of the
+# process the pidfile names is killed, only while that process is still the one the launcher
+# wrote (by its start time), and then the pidfile and the files are removed. ``@KILL@`` and
+# ``@RM@`` are the layout's own tools. One line, as a channel's request is.
+END_TRANSFER = (
+    'pidfile=$1; shift; pid= start=; read -r pid start rest 2>/dev/null < "$pidfile"; '
+    'case $pid in ""|*[!0-9]*|0|1) pid= ;; esac; '
+    'same() { [ "$1" != Z ] && [ "${20}" = "$start" ]; }; '
+    'if [ -n "$pid" ] && read -r stat 2>/dev/null < "/proc/$pid/stat" && same ${stat##*) }; '
+    'then @KILL@ "-$pid"; fi; '
+    '@RM@ -f "$pidfile" "$@"'
+)
+# How much of what a stream's podman client and program write on stderr is kept: its head until
+# the marks are seen, then its tail.
+STREAM_SAID_BYTES = 64 * 1024
 
 
 def credentials_state(raw: bytes) -> str:
@@ -614,7 +651,7 @@ class Layout:
     path: str
     user: str  # who the programs run as there
     # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv, timeout, tar,
-    # head, od
+    # head, od, ln, realpath, stat, date, find, du
     tools: dict
     # The argv, but for the group's id, that sends SIGKILL to a whole process group:
     # busybox's kill refuses a "--" before it, and procps' kill needs one.
@@ -630,6 +667,12 @@ class Layout:
     # The busybox a relay to a port runs (``relay_shell``, RELAY_SCRIPT), by its path; none where
     # there is none to run.
     busybox: str = ""
+    # The workspace's volume, and the names at its top that are rcman's and not the person's
+    # files: its own folders but the work folder, and what the runtime keeps there.
+    volume: str = ""
+    hidden: tuple[str, ...] = ()
+    # The bsdtar that writes a folder's zip (files.py), by its path; none where there is none.
+    bsdtar: str = ""
 
     def tool(self, name: str) -> list[str]:
         return list(self.tools[name])
@@ -745,6 +788,204 @@ def relay_command(layout: Layout, pidfile: str, port: int) -> list[str]:
     runs the shell itself."""
     shell = relay_shell(layout, pidfile, port)
     return [layout.busybox, "setsid", *shell]
+
+
+def transfer_pidfile(layout: Layout) -> str:
+    """A new pidfile for a stream, in the workspace's runtime folder."""
+    return f"{layout.run}/transfer-{secrets.token_hex(8)}.pid"
+
+
+def _transfer_command(layout: Layout, pidfile: str, argv: list[str]) -> list[str]:
+    """``argv`` run by the stream's launcher (TRANSFER_LAUNCHER), writing ``pidfile``, a stream's
+    pidfile in the runtime folder (``transfer_pidfile``); ValueError for any other."""
+    folder, _, name = pidfile.rpartition("/")
+    if folder != layout.run or not TRANSFER_PIDFILE.fullmatch(name):
+        raise ValueError(f"{pidfile!r} is not a stream's pidfile")
+    return [layout.shell, "-c", TRANSFER_LAUNCHER, "rcman-transfer", pidfile, *argv]
+
+
+class StreamFailed(RuntimeFailed):
+    """A stream did not start, or ended without what shows that its program ran: its launcher's
+    ready mark, or, where the runtime writes one, the exec's mark (EXEC_MARK)."""
+
+
+class TransferIdle(RuntimeFailed):
+    """Nothing came from a stream for as long as a read was given."""
+
+
+class Stream:
+    """A program running in a workspace (``Runtime.stream``), with its standard input and output
+    passed on as they come. Its podman client, or on the host runtime the program itself, leads
+    a session of its own here; in the workspace its program leads a process group of its own,
+    which its pidfile names, and which ``end`` kills through the workspace's channel."""
+
+    def __init__(
+        self, argv: list[str], env: Mapping[str, str], layout: Layout, pidfile: str, mark: str
+    ):
+        self.pidfile = pidfile
+        self.layout = layout
+        # The exec's own mark, which must come before the ready one; none where there is none.
+        self._marks = [m.encode() for m in (mark, TRANSFER_READY) if m]
+        self._said = bytearray()
+        self._seen = 0  # how many of the marks have come, in order
+        self._read_all = False  # stderr has reached its end
+        self._changed = threading.Condition()
+        self._ended = False
+        self._end_lock = threading.Lock()
+        # Held by a read, or a write, for as long as it uses its pipe, and by whatever closes
+        # that pipe, so that no read or write uses a descriptor closed, or given to another file.
+        self._reading = threading.Lock()
+        self._writing = threading.Lock()
+        self._output_closed = False
+        self._input_closed = False
+        self.process = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=dict(env),
+            start_new_session=True,
+        )
+        os.set_blocking(self.process.stdin.fileno(), False)
+        self._reader = threading.Thread(target=self._read_said, daemon=True)
+        self._reader.start()
+
+    def _read_said(self) -> None:
+        """Keep what is written on stderr, the marks taken out of it as they come; this thread
+        alone closes the stream."""
+        stderr = self.process.stderr
+        try:
+            while chunk := stderr.read1(4096):
+                with self._changed:
+                    self._said += chunk
+                    while self._seen < len(self._marks):
+                        mark = self._marks[self._seen]
+                        at = self._said.find(mark)
+                        if at < 0:
+                            break
+                        del self._said[at : at + len(mark)]
+                        self._seen += 1
+                    if self._seen == len(self._marks) and len(self._said) > STREAM_SAID_BYTES:
+                        del self._said[: len(self._said) - STREAM_SAID_BYTES]
+                    elif len(self._said) > 4 * STREAM_SAID_BYTES:  # no mark is coming
+                        del self._said[STREAM_SAID_BYTES:]
+                    self._changed.notify_all()
+        finally:
+            with self._changed:
+                self._read_all = True
+                self._changed.notify_all()
+            stderr.close()
+
+    @property
+    def said(self) -> str:
+        """What the client and the program wrote on stderr, but the marks."""
+        with self._changed:
+            return bytes(self._said).decode("utf-8", "replace")
+
+    def ready(self, timeout: float) -> None:
+        """Wait until the launcher has written the pidfile; StreamFailed if it has not within
+        ``timeout`` seconds, or its program ended first."""
+        with self._changed:
+            done = self._changed.wait_for(
+                lambda: self._seen == len(self._marks) or self._read_all, timeout
+            )
+            if not done or self._seen < len(self._marks):
+                raise StreamFailed(self.said.strip() or "the stream did not start")
+
+    def read(self, size: int, idle: float) -> bytes:
+        """Up to ``size`` bytes the program wrote, as soon as there are any; empty at its end,
+        and once the stream was ended. TransferIdle if none came for ``idle`` seconds."""
+        with self._reading:
+            if self._output_closed:
+                return b""
+            fd = self.process.stdout.fileno()
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_READ)
+                if not selector.select(idle):
+                    raise TransferIdle(f"nothing came for {idle:g} seconds")
+            return os.read(fd, size)
+
+    def write(self, data: bytes, idle: float) -> None:
+        """Pass ``data`` to the program; TransferIdle where it takes none of it for ``idle``
+        seconds, StreamFailed once its input is closed, and OSError (BrokenPipeError) where the
+        program no longer reads it."""
+        view = memoryview(data)
+        with self._writing:
+            if self._input_closed:
+                raise StreamFailed("the stream's input is closed")
+            fd = self.process.stdin.fileno()
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_WRITE)
+                while view:
+                    if not selector.select(idle):
+                        raise TransferIdle(f"nothing was taken for {idle:g} seconds")
+                    try:
+                        view = view[os.write(fd, view) :]
+                    except BlockingIOError:
+                        continue
+
+    def close_input(self) -> None:
+        """The end of the program's input; once a write under way has given up."""
+        with self._writing:
+            self._input_closed = True
+            with contextlib.suppress(OSError):
+                self.process.stdin.close()
+
+    def wait(self, timeout: float) -> int:
+        """The program's exit code, once it has ended; StreamFailed if it did not end within
+        ``timeout`` seconds, if the stream was ended, or if it ended without its marks."""
+        try:
+            code = self.process.wait(timeout)
+        except subprocess.TimeoutExpired:
+            raise StreamFailed("the stream did not end in time") from None
+        self._reader.join(TAIL_JOIN_SECONDS)
+        with self._changed:
+            whole = self._seen == len(self._marks)
+        if self._ended or not whole:
+            raise StreamFailed(self.said.strip() or "the stream was lost")
+        return code
+
+    def end(self, run: Callable[[list[str]], Result], *temporary: str) -> None:
+        """End the stream: through ``run``, the workspace's channel, the program's process group
+        while the pidfile still names it, then the pidfile and ``temporary`` removed; then the
+        client here. Again is nothing."""
+        with self._end_lock:
+            if self._ended:
+                return
+            self._ended = True
+        script = END_TRANSFER.replace("@KILL@", shlex.join(self.layout.kill_group)).replace(
+            "@RM@", shlex.join(self.layout.tool("rm"))
+        )
+        try:
+            run([self.layout.shell, "-c", script, "rcman-end", self.pidfile, *temporary])
+        except Exception:  # noqa: BLE001 - the workspace may be gone; what is here still ends
+            log.warning("a stream could not be ended in its workspace", exc_info=True)
+        finally:
+            try:
+                # The client here first, which lets a read or a write under way give up.
+                if self.process.poll() is None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(self.process.pid, 9)
+            finally:
+                try:
+                    self.close_input()
+                finally:
+                    try:
+                        self.process.wait()
+                        self._reader.join(TAIL_JOIN_SECONDS)
+                    finally:
+                        with self._reading:
+                            self._output_closed = True
+                            with contextlib.suppress(OSError):
+                                self.process.stdout.close()
+
+    @contextlib.contextmanager
+    def ending(self, run: Callable[[list[str]], Result], *temporary: str):
+        """The stream, ended (``end``) however the block ends."""
+        try:
+            yield self
+        finally:
+            self.end(run, *temporary)
 
 
 class Runtime(ABC):
@@ -937,6 +1178,14 @@ class Runtime(ABC):
         ends by itself once either side ends (RELAY_SCRIPT), its pidfile ``pidfile``
         naming it while it runs. ValueError for a port that is not one and a pidfile that is not
         a relay's."""
+
+    @abstractmethod
+    def stream(self, name: str, argv: list[str], pidfile: str) -> Stream:
+        """``argv`` started in the workspace as the container's own user, by the stream's
+        launcher (TRANSFER_LAUNCHER) writing ``pidfile`` (``transfer_pidfile``), its standard
+        input and output the stream's: ready once ``Stream.ready`` says so, and ended by
+        ``Stream.end`` or by the workspace's stop. ValueError for a pidfile that is not a
+        stream's."""
 
     @abstractmethod
     def ensure_account(self, person: int, slot: int) -> None:
@@ -1201,12 +1450,21 @@ PODMAN_LAYOUT = Layout(
             "tar",
             "head",
             "od",
+            "ln",
+            "realpath",
+            "stat",
+            "date",
+            "find",
+            "du",
         )
     },
     kill_group=(*_busybox("kill"), "-KILL"),
     path_prefix=f"{CLAUDE_MOUNT}/bin:{PODMAN_BIN}",
     claude_root=CLAUDE_MOUNT,
     busybox=f"{TOOLS_MOUNT}/bin/busybox",
+    volume=VOLUME_MOUNT,
+    hidden=(CONFIG, HOME, CONTAINERS),
+    bsdtar=f"{TOOLS_MOUNT}/bin/bsdtar",
 )
 
 
@@ -2596,6 +2854,14 @@ class PodmanRuntime(Runtime):
         command = relay_shell(self.layout(name), pidfile, port)
         return Launch(self._argv("exec", "--interactive", name, *command), podman_env())
 
+    def stream(self, name: str, argv: list[str], pidfile: str) -> Stream:
+        """A remote exec with no tty, behind the exec's mark (``marked_exec``); its process
+        leads a session and process group of its own in the container, as crun makes it."""
+        layout = self.layout(name)
+        command = marked_exec(_transfer_command(layout, pidfile, argv))
+        argv_ = self._argv("exec", "--interactive", name, *command)
+        return Stream(argv_, podman_env(), layout, pidfile, EXEC_MARK)
+
     # --- a person's Claude sign-in ----------------------------------------------------
 
     def _account_run(
@@ -2870,6 +3136,8 @@ class HostRuntime(Runtime):
         # its removal, which stop it), as a container's stop ends every exec in it; held weakly,
         # so a channel nothing holds any more is let go, and one reopened is still among them.
         self._channels: dict[str, weakref.WeakSet[Channel]] = {}
+        # The streams started in each workspace, which its stop ends likewise.
+        self._streams: dict[str, weakref.WeakSet[Stream]] = {}
         self._channels_lock = threading.Lock()
         self.limits_error: Exception | None = None
         # The monitor's readings (monitor.py): what ``systemctl show`` would say of each slice a
@@ -2918,10 +3186,28 @@ class HostRuntime(Runtime):
                     "tar",
                     "head",
                     "od",
+                    "ln",
+                    "realpath",
+                    "stat",
+                    "date",
+                    "find",
+                    "du",
                 )
             },
             kill_group=(*_host_tool("kill"), "-KILL", "--"),
             busybox=shutil.which("busybox", path="/usr/bin:/bin") or "",
+            volume=str(volume),
+            hidden=(
+                CONFIG,
+                HOME,
+                CONTAINERS,
+                "run",
+                self.MARK_STOPPED,
+                self.MARK_DISCARDED,
+                ".labels",
+                ".owner",
+            ),  # fmt: skip
+            bsdtar=shutil.which("bsdtar", path="/usr/bin:/bin") or "",
         )
 
     def wait_ready(self, timeout: float) -> None:
@@ -3200,16 +3486,30 @@ class HostRuntime(Runtime):
 
     def _end_channels(self, name: str) -> None:
         """What a container's stop does to the execs in it: the shell of every channel made to
-        the workspace is killed, with what it started. The channels are not closed: a request in
-        flight fails as broken, and the next one opens its channel again, or fails while the
-        workspace is stopped."""
+        the workspace is killed, with what it started, and so is every stream started in it. The
+        channels are not closed: a request in flight fails as broken, and the next one opens its
+        channel again, or fails while the workspace is stopped."""
         with self._channels_lock:
             channels = list(self._channels.get(name, ()))
-        for channel in channels:
-            process = channel.process
+            streams = list(self._streams.get(name, ()))
+        processes = [channel.process for channel in channels]
+        processes += [stream.process for stream in streams]
+        for process in processes:
             if process is not None and process.returncode is None:  # a reaped pid may be reused
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(process.pid, 9)
+
+    def stream(self, name: str, argv: list[str], pidfile: str) -> Stream:
+        """The launcher run here, in a session of its own, so that its process group is the
+        program's alone; registered with the workspace's channels, whose stop ends them."""
+        if not self.running(name):
+            raise RuntimeFailed(f"the workspace {name} is not running")
+        layout = self.layout(name)
+        command = _transfer_command(layout, pidfile, argv)
+        made = Stream(command, {"PATH": "/usr/bin:/bin"}, layout, pidfile, "")
+        with self._channels_lock:
+            self._streams.setdefault(name, weakref.WeakSet()).add(made)
+        return made
 
     def terminal_argv(self, name: str, layout: Layout, pidfile: str) -> Launch:
         command = terminal_command(layout, pidfile)

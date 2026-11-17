@@ -16,18 +16,22 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import fcntl
+import io
 import os
 import re
 import select
 import shutil
+import stat
 import struct
 import subprocess
 import tempfile
 import termios
 import threading
+import zipfile
 from pathlib import Path
 
 import pytest
+from rcman import files
 from rcman import runtime as rt
 from rcman.channel import ChannelBroken
 from rcman.runtime import TIMED_OUT
@@ -821,6 +825,212 @@ def port_argv_carries_bytes_both_ways(runtime, spec):
             runtime.exec(name, [*layout.tool("kill"), "-KILL", str(listener)])
 
 
+def _named(channel, layout: rt.Layout, pidfile: str) -> tuple[bytes, bytes]:
+    """The id and start time a stream's pidfile holds, as its launcher wrote them."""
+    read = channel.run([*layout.tool("cat"), pidfile])
+    assert read.code == 0, read
+    pid, start = read.out.split()
+    return pid, start
+
+
+def _runs_as_named(channel, layout: rt.Layout, pid: bytes, start: bytes) -> bool:
+    """Whether the process ``pid`` runs in the workspace, started at ``start``: not one that has
+    ended and waits to be reaped (Z), nor another given the same id since."""
+    stat = channel.run([*layout.tool("cat"), f"/proc/{pid.decode()}/stat"])
+    if stat.code != 0:
+        return False
+    fields = stat.out.rpartition(b")")[2].split()
+    return fields[0] != b"Z" and fields[19] == start
+
+
+def _there(channel, layout: rt.Layout, path: str) -> bool:
+    return channel.run(_sh(layout, f"test -e {path}")).code == 0
+
+
+def _read_until_end(stream: rt.Stream) -> bytes:
+    """Everything the stream's program writes, up to its end."""
+    parts = []
+    while part := stream.read(65536, idle=tier_guard()):
+        parts.append(part)
+    return b"".join(parts)
+
+
+def a_stream_passes_bytes_both_ways_as_they_come_and_its_process_ends_with_it(runtime, spec):
+    """A stream's program is up, and named by its pidfile, once the stream is ready; a byte
+    written comes back through ``cat`` while its input is still open, so nothing holds it back;
+    the end of its input ends it with 0. A stream ended while its program still runs - one that
+    would outlive the end of its input - leaves no process its pidfile named, and no pidfile."""
+    with made(runtime, spec(21)) as name:
+        layout = runtime.layout(name)
+        channel = runtime.channel(name)
+        try:
+            stream = runtime.stream(name, layout.tool("cat"), rt.transfer_pidfile(layout))
+            try:
+                stream.ready(tier_guard())
+                pid, start = _named(channel, layout, stream.pidfile)
+                assert _runs_as_named(channel, layout, pid, start)
+                stream.write(b"a", idle=tier_guard())
+                assert stream.read(1, idle=tier_guard()) == b"a"
+                stream.close_input()
+                assert stream.read(1, idle=tier_guard()) == b""
+                assert stream.wait(tier_guard()) == 0
+            finally:
+                stream.end(channel.run)
+            assert not _there(channel, layout, stream.pidfile)
+            outlasting = _sh(layout, f"echo part; exec sleep {3 * tier_guard():g}")
+            held = runtime.stream(name, outlasting, rt.transfer_pidfile(layout))
+            try:
+                held.ready(tier_guard())
+                held.close_input()  # its program goes on without it
+                pid, start = _named(channel, layout, held.pidfile)
+                said = b""
+                while len(said) < 5 and (part := held.read(5 - len(said), idle=tier_guard())):
+                    said += part
+                assert said == b"part\n"
+                assert _runs_as_named(channel, layout, pid, start)  # the positive for below
+            finally:
+                held.end(channel.run)
+            until(lambda: not _runs_as_named(channel, layout, pid, start))
+            assert not _there(channel, layout, held.pidfile)
+        finally:
+            channel.close()
+
+
+def a_stop_ends_a_live_stream(runtime, spec):
+    """A stop ends a stream's program, as it ends every exec in the workspace: its reader sees
+    the end, and the process its pidfile named is gone once the workspace runs again."""
+    with made(runtime, spec(22)) as name:
+        layout = runtime.layout(name)
+        channel = runtime.channel(name)
+        stream = runtime.stream(name, layout.tool("cat"), rt.transfer_pidfile(layout))
+        try:
+            stream.ready(tier_guard())
+            pid, start = _named(channel, layout, stream.pidfile)
+            assert _runs_as_named(channel, layout, pid, start)  # the positive for below
+            runtime.stop(name)
+            assert _read_until_end(stream) == b""
+            runtime.start(name)
+            until(lambda: not _runs_as_named(channel, layout, pid, start))
+        finally:
+            stream.end(channel.run)
+            channel.close()
+
+
+def _streamed(runtime, name: str, argv: list[str]) -> bytes:
+    """Everything ``argv`` writes, run as a stream with its input closed, which ends with 0."""
+    layout = runtime.layout(name)
+    channel = runtime.channel(name)
+    try:
+        stream = runtime.stream(name, argv, rt.transfer_pidfile(layout))
+        with stream.ending(channel.run):
+            stream.ready(tier_guard())
+            stream.close_input()
+            out = _read_until_end(stream)
+            assert stream.wait(tier_guard()) == 0, stream.said
+    finally:
+        channel.close()
+    return out
+
+
+def _read_whole(data: bytes) -> zipfile.ZipFile:
+    """The zip ``data``, once both ``unzip -t`` and Python's zipfile have read every entry of it
+    and found each one whole."""
+    with tempfile.NamedTemporaryFile(suffix=".zip") as kept:
+        kept.write(data)
+        kept.flush()
+        unzip = shutil.which("unzip", path="/usr/bin:/bin")
+        assert unzip, "unzip is not installed"
+        tested = subprocess.run(
+            [unzip, "-tq", kept.name], capture_output=True, timeout=tier_guard()
+        )
+        assert tested.returncode == 0, tested.stdout + tested.stderr
+    archive = zipfile.ZipFile(io.BytesIO(data))
+    assert archive.testzip() is None
+    return archive
+
+
+def _extra_ids(info: zipfile.ZipInfo) -> set[int]:
+    ids, at = set(), 0
+    while at + 4 <= len(info.extra):
+        header, size = struct.unpack_from("<HH", info.extra, at)
+        ids.add(header)
+        at += 4 + size
+    return ids
+
+
+# A folder of what a zip must keep: a file in a subfolder, a link out of it, a hard link, and
+# names a shell, a wildcard or an option reader would take for something else.
+PLANTED_FOLDER = (
+    "mkdir -p d/sub && printf hello > d/a.txt && printf deep > d/sub/b.txt && "
+    "ln -s ../claude d/l && ln d/a.txt d/hard && printf x > 'd/[ab].txt' && printf y > d/-dash"
+)
+
+
+def a_folder_streams_out_as_a_zip_with_links_kept_and_the_top_without_its_hidden_folders(
+    runtime, spec
+):
+    """A folder's zip (``files.zip_argv``), streamed through the workspace's bsdtar, is whole on
+    a pipe, by ``unzip -t`` and Python's zipfile: its entries named under the folder's own name,
+    files deflated behind data descriptors, as the size is not known before them, and no Zip64
+    record in so small an archive; a link stored as a link, its target as text and never
+    followed; both names of a hard link with the bytes; names taken as they are. The top's zip
+    holds what is there but the layout's hidden folders, which are there."""
+    with made(runtime, spec(23)) as name:
+        layout = runtime.layout(name)
+        assert layout.bsdtar, "bsdtar is not installed"
+        planted = runtime.exec(name, _sh(layout, PLANTED_FOLDER), cwd=layout.work)
+        assert planted.code == 0, planted
+        data = _streamed(runtime, name, files.zip_argv(layout, f"{rt.WORK}/d"))
+        archive = _read_whole(data)
+        names = {"d/", "d/sub/", "d/a.txt", "d/sub/b.txt", "d/l", "d/hard", "d/[ab].txt", "d/-dash"}
+        assert set(archive.namelist()) == names
+        contents = {"a.txt": b"hello", "hard": b"hello", "sub/b.txt": b"deep", "[ab].txt": b"x"}
+        for entry, content in {**contents, "-dash": b"y"}.items():
+            info = archive.getinfo(f"d/{entry}")
+            assert archive.read(info) == content, entry
+            assert info.compress_type == zipfile.ZIP_DEFLATED and info.flag_bits & 0x8, entry
+        link = archive.getinfo("d/l")
+        assert stat.S_ISLNK(link.external_attr >> 16) and archive.read(link) == b"../claude"
+        assert not any(0x0001 in _extra_ids(info) for info in archive.infolist())
+        assert b"PK\x06\x06" not in data  # no Zip64 end record
+
+        hidden = runtime.exec(name, _sh(layout, "mkdir -p containers/x && echo n > notes.txt"),
+                              cwd=layout.volume)  # fmt: skip
+        assert hidden.code == 0, hidden
+        for folder in (rt.CONFIG, rt.HOME, rt.CONTAINERS):  # the positives for the absences below
+            there = runtime.exec(name, _sh(layout, f"test -d {layout.volume}/{folder}"))
+            assert there.code == 0, folder
+        top = _read_whole(_streamed(runtime, name, files.zip_argv(layout, ""))).namelist()
+        assert "notes.txt" in top and "work/d/a.txt" in top and "work/d/l" in top
+        assert not [n for n in top if n.split("/")[0] in layout.hidden], top
+
+
+def the_resolver_refuses_what_leaves_the_volume_or_enters_a_hidden_folder(runtime, spec):
+    """The one resolver (``files.RESOLVE``), run through the channel on the runtime's own
+    programs: a link that stays in the work folder resolves to its target; ``..`` into a hidden
+    folder, a path in one, and links out to one and to the root are refused; a path whose last
+    part, or a part before it, is missing is not found, however its ``realpath`` treats each."""
+    with made(runtime, spec(24)) as name:
+        layout = runtime.layout(name)
+        planted = runtime.exec(
+            name, _sh(layout, "mkdir src && ln -s ../claude out && ln -s / up && ln -s src in"),
+            cwd=layout.work,
+        )  # fmt: skip
+        assert planted.code == 0, planted
+        channel = runtime.channel(name)
+        try:
+            inside = channel.run(files.kind_argv(layout, f"{rt.WORK}/in"))
+            assert inside.code == 0, inside
+            kind = files.parse_kind(inside.out)
+            assert (kind.kind, kind.path) == ("folder", f"{kind.volume}/{rt.WORK}/src")
+            for path in (f"{rt.WORK}/../{rt.CONFIG}", f"{rt.CONFIG}/x", "work/out", "work/up"):
+                assert channel.run(files.kind_argv(layout, path)).code == files.REFUSED, path
+            for path in (f"{rt.WORK}/nothing", f"{rt.WORK}/nothing/x"):
+                assert channel.run(files.kind_argv(layout, path)).code == files.NOT_FOUND, path
+        finally:
+            channel.close()
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -852,6 +1062,10 @@ CASES = [
     ending_a_canary_that_is_not_there_is_nothing,
     a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile,
     port_argv_carries_bytes_both_ways,
+    a_stream_passes_bytes_both_ways_as_they_come_and_its_process_ends_with_it,
+    a_stop_ends_a_live_stream,
+    a_folder_streams_out_as_a_zip_with_links_kept_and_the_top_without_its_hidden_folders,
+    the_resolver_refuses_what_leaves_the_volume_or_enters_a_hidden_folder,
 ]
 # The cases that run the canary's program in the runtime's own image, which therefore needs
 # python3, as the default workspace image has it.

@@ -1422,6 +1422,169 @@ a.port-link {
   font-size: var(--text-small);
   overflow-wrap: anywhere;
 }
+/* The Files tab: one card of a folder, its crumbs and its actions at its head, its entries as
+   list rows; the size and the age in columns of their own at the right, in small tabular
+   figures. Files dragged over it draw its outline in the accent, and one line over its rows. */
+.file-browser {
+  margin-top: var(--space-4);
+}
+.file-browser.dropping {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+/* the crumbs take the head's room, and the actions go under them only where the crumbs would
+   have less than their least */
+.crumbs {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+nav.crumbs a {
+  text-decoration: none;
+}
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.crumbs li {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+nav.crumbs a[aria-current="location"] {
+  color: var(--fg);
+}
+.crumb-divider {
+  padding: 0 var(--space-1);
+  color: var(--muted);
+  font-weight: normal;
+}
+.file-browser-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.file-browser-body {
+  position: relative;
+}
+.file-browser-refusal {
+  padding: 0 var(--space-4) var(--space-3);
+}
+.file-browser > .message {
+  margin: var(--space-3) 0 0;
+}
+ul.entries {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+ul.entries:focus-visible {
+  outline-offset: -2px;
+}
+ul.entries[aria-busy="true"] {
+  opacity: 0.6;
+}
+.file-browser .entry {
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+  min-height: var(--control);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-4);
+  scroll-margin-top: var(--panel-bar);
+  /* a long folder draws only the rows in view */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.5rem;
+}
+.entry-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+/* the name and what is said of it, the whole of which opens a folder: its link's box covers it */
+.entry-main {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  align-self: stretch;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.entry-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+a.entry-name {
+  color: var(--fg);
+  text-decoration: none;
+}
+a.entry-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.entry-meta {
+  display: flex;
+  flex: none;
+  gap: var(--space-3);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+.entry-size {
+  min-width: 4.5rem;
+  text-align: right;
+}
+.entry-age {
+  min-width: 3.5rem;
+  text-align: right;
+}
+.entry-action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: var(--control);
+  font-size: var(--text-small);
+}
+/* a refusal under its row, across the row's whole width, the stroke under the row its foot */
+.entry-problem {
+  flex-basis: calc(100% + var(--space-6));
+  min-width: 0;
+  margin: var(--space-1) calc(-1 * var(--space-2)) calc(-1 * var(--space-1))
+    calc(-1 * var(--space-4));
+}
+.entry-problem .message {
+  margin: 0;
+  border-bottom: 0;
+}
+.drop-line {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+.replace-names {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+  overflow-wrap: anywhere;
+}
+
 /* The Claude server, inside its card with no box of its own: its state's pill and version, what
    to do next, and its actions. */
 .server-head {
@@ -1686,6 +1849,20 @@ button.disclosure[aria-expanded="true"] > .caret {
   width: 1rem;
   margin: 0.15rem var(--space-2) 0 0;
   vertical-align: middle;
+}
+/* a file's checkbox in a label of its own, in the middle of the name's first line */
+.files .file-check {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--line-body);
+}
+.files li .file-check > input[type="checkbox"] {
+  margin-top: 0;
+}
+.files a.file-name {
+  color: var(--fg);
+  text-decoration: none;
 }
 .files .file-note {
   min-width: 0;
@@ -2542,7 +2719,10 @@ td.result-failed {
     border-color: var(--danger-text);
     color: var(--danger-text);
   }
-  a.repo-link:hover {
+  a.repo-link:hover,
+  nav.crumbs a:hover,
+  .files a.file-name:hover,
+  a.entry-name:hover {
     color: var(--accent-text);
     text-decoration: underline;
   }
@@ -2857,8 +3037,28 @@ td.result-failed {
     margin-left: var(--space-2);
     text-align: right;
   }
+  /* Files: a row's size and age muted under its name, a dot between them */
+  .entry-main {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0;
+  }
+  .entry-meta {
+    flex-wrap: wrap;
+    gap: 0;
+  }
+  .entry-size,
+  .entry-age {
+    min-width: 0;
+    text-align: left;
+  }
+  .entry-size:empty {
+    display: none;
+  }
   /* the values of the second line apart, a dot between each and the one before */
-  table.stacked td.meta ~ td.meta {
+  table.stacked td.meta ~ td.meta,
+  .entry-size:not(:empty) + .entry-age {
     padding-left: var(--space-4);
     background-image: radial-gradient(circle, var(--muted) 0 1.5px, transparent 2px);
     background-repeat: no-repeat;
@@ -2960,7 +3160,8 @@ td.result-failed {
     align-items: center;
     justify-content: center;
   }
-  a.port-link {
+  a.port-link,
+  .files a.file-name {
     display: inline-flex;
     align-items: center;
   }
@@ -2981,6 +3182,8 @@ td.result-failed {
   .files-head > button.subtle,
   a.repo-link,
   a.port-link,
+  .files a.file-name,
+  .file-browser .entry,
   .docs-toc nav a {
     min-height: var(--touch);
   }
@@ -2988,6 +3191,11 @@ td.result-failed {
   .docs nav a,
   .docs-toc nav a {
     display: flex;
+    justify-content: flex-start;
+  }
+  /* a folder's crumb is as high as a finger, and only as wide as its name */
+  nav.crumbs a {
+    min-width: auto;
     justify-content: flex-start;
   }
 }
