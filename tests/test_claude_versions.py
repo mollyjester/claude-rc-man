@@ -1,5 +1,5 @@
 """Claude Code versions: the approved one, rolling out another through the canary, and what
-is pruned (backend/rcman/claude_versions.py), on the host runtime. The routes are
+is pruned or deleted (backend/rcman/claude_versions.py), on the host runtime. The routes are
 tests/test_claude.py's, a server's pinning tests/test_workspaces.py's."""
 
 import hashlib
@@ -292,6 +292,21 @@ def test_prune_keeps_the_approved_the_previous_the_tested_and_what_servers_may_r
     # the approved 1.5.0, the previous 1.4.0 and the tested one; 1.3.0 runs; 1.2.0 cannot be read
     assert present(world) == sorted([tested, "1.2.0", "1.3.0", "1.4.0", "1.5.0"])
     assert link(world) == "versions/1.5.0"
+
+
+def test_a_version_a_workspace_record_pins_is_not_deleted_until_the_record_is_cleared(world):
+    install(world, "1.1.0")
+    pinned = insert_workspace(world, 1, "mine", "1.1.0")
+    problem = refusal(world.versions.delete, "1.1.0")
+    assert (problem.code, problem.status, problem.extra["reason"]) == (
+        "claude_version_kept",
+        409,
+        "in_use",
+    )
+    assert "1.1.0" in present(world)
+    world.service._set(pinned, claude_version=None)  # as a stop leaves the record
+    assert "1.1.0" not in [i["version"] for i in world.versions.delete("1.1.0")["installed"]]
+    assert "1.1.0" not in present(world)
 
 
 # --- the report -------------------------------------------------------------------------------

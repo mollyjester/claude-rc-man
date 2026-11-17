@@ -23,6 +23,9 @@ type Installed = {
   in_use: number;
   // Whether an administrator marked it as failed, which keeps it from being used again.
   failed: boolean;
+  // Why it may not be deleted, of its own (approved, named by the store's link, or named by a
+  // workspace's record): the problem a deletion would be refused with; null where it may be.
+  delete_refused: ApiError | null;
 };
 type Drift = {
   workspace: number;
@@ -52,11 +55,14 @@ type Report = {
 export const UPGRADE_POLL_MS = 3000;
 
 // Refusals that say the report shown is out of date: another roll-out runs, a version was marked
-// as failed, or its mark removed, by another administrator; the report is read again.
+// as failed, its mark removed, or a version kept or deleted, by another administrator or a
+// server's start; the report is read again.
 const STALE = new Set([
   "claude_upgrade_busy",
   "claude_version_failed",
   "claude_version_not_failed",
+  "claude_version_kept",
+  "claude_version_not_installed",
 ]);
 
 // Whether a version is marked as failed, installed or not.
@@ -68,7 +74,8 @@ const isFailed = (report: Report, version: string) =>
 // version. A roll-out is one request that lasts as long as the checks do, so the page says it is
 // working, and offers no second one meanwhile; the server refuses a second one regardless. A
 // mark, and its removal, may be made at any time, a roll-out under way included: the server
-// stops the approval of a version marked while it is checked.
+// stops the approval of a version marked while it is checked. Deleting a version asks first, and
+// shuts every roll-out while it runs, as the server does.
 export function Versions() {
   const [report, setReport] = useState<Report | null>(null);
   // The newest release the release site names: undefined until asked, null where it is not known.
@@ -96,13 +103,25 @@ export function Versions() {
   // The Failed versions card's heading, which focus moves to after a mark or a removal: the
   // button that had it may have gone with its row.
   const failedHeading = useRef<HTMLHeadingElement>(null);
-  const [moveFocus, setMoveFocus] = useState(false);
+  // The Installed versions card's heading, which focus moves to after a deletion, for the same
+  // reason.
+  const installedHeading = useRef<HTMLHeadingElement>(null);
+  // The heading focus moves to next, once the page has drawn what was done.
+  const [moveFocus, setMoveFocus] = useState<RefObject<HTMLHeadingElement | null> | null>(null);
   useEffect(() => {
     if (moveFocus) {
-      failedHeading.current?.focus();
-      setMoveFocus(false);
+      moveFocus.current?.focus();
+      setMoveFocus(null);
     }
   }, [moveFocus]);
+  // The version Delete asks about, in its dialog; null while none is asked about.
+  const [asking, setAsking] = useState<string | null>(null);
+  // The version being deleted while its request is out; one at a time.
+  const deletingNow = useRef(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  // What was last deleted, and a deletion refused, both said in the Installed versions card.
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<ApiError | null>(null);
 
   const load = useCallback(() => {
     api.get<Report>("/api/claude/versions").then(
@@ -140,6 +159,8 @@ export function Versions() {
       setError(null);
       setNotice(null);
       setMarkNotice(null); // what was last done to a mark is no longer the news
+      setDeleteNotice(null);
+      setDeleteError(null);
       try {
         const result = await api.post<Report>("/api/claude/upgrade", { version: which });
         setReport(result);
@@ -164,7 +185,7 @@ export function Versions() {
     setReport(answer);
     setMarkError(null);
     setMarkNotice(said);
-    setMoveFocus(true);
+    setMoveFocus(failedHeading);
   };
 
   // Removes a version's mark at once: a mark is put back as easily, so nothing is asked first.
@@ -182,10 +203,35 @@ export function Versions() {
       setMarkError(failed);
       if (STALE.has(failed.code)) load();
       // the refusal is said under the card's heading; the button may go with the report read again
-      setMoveFocus(true);
+      setMoveFocus(failedHeading);
     } finally {
       clearing.current = false;
       setRemoving(null);
+    }
+  }
+
+  // Deletes the version its dialog asked about, once confirmed. The dialog stays, and cannot be
+  // closed, while the request is out; then it closes, and what came of it is said in the
+  // Installed versions card, focus on its heading, as the row and its buttons may be gone.
+  async function deleteVersion(which: string) {
+    if (deletingNow.current) return;
+    deletingNow.current = true;
+    setDeleting(which);
+    setDeleteError(null);
+    setDeleteNotice(null);
+    try {
+      const answer = await api.delete<Report>(`/api/claude/versions/${encodeURIComponent(which)}`);
+      setReport(answer);
+      setDeleteNotice(m.versionsDeleted(which));
+    } catch (e) {
+      const failed = asApiError(e);
+      setDeleteError(failed);
+      if (STALE.has(failed.code)) load();
+    } finally {
+      deletingNow.current = false;
+      setDeleting(null);
+      setAsking(null);
+      setMoveFocus(installedHeading);
     }
   }
 
@@ -194,9 +240,13 @@ export function Versions() {
     if (await rollOut(version.trim())) setVersion("");
   }
 
-  // Nothing more is offered while a roll-out runs, here or by another administrator, nor while
-  // rcman is being upgraded.
-  const shut = rolling !== null || report?.upgrading === true || report?.rcman_upgrading === true;
+  // Nothing more is offered while a roll-out or a deletion runs, here or by another
+  // administrator, nor while rcman is being upgraded.
+  const shut =
+    rolling !== null ||
+    deleting !== null ||
+    report?.upgrading === true ||
+    report?.rcman_upgrading === true;
   const status =
     rolling !== null
       ? m.versionsRolling(rolling)
@@ -289,8 +339,12 @@ export function Versions() {
           <InstalledVersions
             installed={report.installed}
             shut={shut}
+            heading={installedHeading}
+            notice={deleteNotice}
+            error={deleteError}
             onUse={rollOut}
             onMark={setMarking}
+            onDelete={setAsking}
           />
           <FailedVersions
             failed={report.failed}
@@ -313,6 +367,17 @@ export function Versions() {
           }}
           onStale={load}
           onCancel={() => setMarking(null)}
+        />
+      )}
+      {report && asking !== null && (
+        <DeleteVersionDialog
+          version={asking}
+          previous={report.previous === asking}
+          tested={report.tested === asking}
+          failed={isFailed(report, asking)}
+          busy={deleting !== null}
+          onConfirm={() => deleteVersion(asking)}
+          onCancel={() => setAsking(null)}
         />
       )}
     </section>
@@ -349,19 +414,38 @@ function TableCard({
   );
 }
 
+// The versions in the store, each with Use and Mark as failed where it is neither approved nor
+// marked, and Delete where nothing of its own keeps it, or else why it is kept. What was last
+// deleted is said in the card's own live region, and a deletion refused under it.
 function InstalledVersions({
   installed,
   shut,
+  heading,
+  notice,
+  error,
   onUse,
   onMark,
+  onDelete,
 }: {
   installed: Installed[];
   shut: boolean;
+  heading: RefObject<HTMLHeadingElement | null>;
+  notice: string | null;
+  error: ApiError | null;
   onUse: (version: string) => void;
   onMark: (version: string) => void;
+  onDelete: (version: string) => void;
 }) {
   return (
-    <TableCard title={m.versionsInstalledTitle}>
+    <TableCard title={m.versionsInstalledTitle} heading={heading}>
+      <p role="status" className="card-status">
+        {notice}
+      </p>
+      {error && (
+        <div className="card-status">
+          <ProblemView error={error} />
+        </div>
+      )}
       <TableScroll label={m.tableTitle}>
         <table>
           <thead>
@@ -388,29 +472,48 @@ function InstalledVersions({
                   )}
                 </td>
                 <td>{m.versionsServers(i.in_use)}</td>
-                <td className="row-actions">
+                <td className={i.delete_refused ? "row-actions wrap" : "row-actions"}>
                   {/* the approved version can be neither used again nor marked; a marked one
-                      is used again only once its mark is removed */}
-                  {!i.approved && !i.failed && (
+                      is used again only once its mark is removed; any may be deleted that
+                      nothing of its own keeps, and one that is kept says why instead */}
+                  {(!i.delete_refused || (!i.approved && !i.failed)) && (
                     <div className="actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        aria-label={m.versionsUseVersion(i.version)}
-                        disabled={shut}
-                        onClick={() => onUse(i.version)}
-                      >
-                        {m.versionsUse}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        aria-label={m.versionsMarkFailedVersion(i.version)}
-                        onClick={() => onMark(i.version)}
-                      >
-                        {m.versionsMarkFailed}
-                      </button>
+                      {!i.approved && !i.failed && (
+                        <>
+                          <button
+                            type="button"
+                            className="secondary"
+                            aria-label={m.versionsUseVersion(i.version)}
+                            disabled={shut}
+                            onClick={() => onUse(i.version)}
+                          >
+                            {m.versionsUse}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            aria-label={m.versionsMarkFailedVersion(i.version)}
+                            onClick={() => onMark(i.version)}
+                          >
+                            {m.versionsMarkFailed}
+                          </button>
+                        </>
+                      )}
+                      {!i.delete_refused && (
+                        <button
+                          type="button"
+                          className="secondary-danger"
+                          aria-label={m.versionsDeleteVersion(i.version)}
+                          disabled={shut}
+                          onClick={() => onDelete(i.version)}
+                        >
+                          {m.versionsDelete}
+                        </button>
+                      )}
                     </div>
+                  )}
+                  {i.delete_refused && (
+                    <span className="row-note muted">{i.delete_refused.title}</span>
                   )}
                 </td>
               </tr>
@@ -646,6 +749,57 @@ function MarkFailedDialog({
         labels={{ version: m.versionsVersion, reason: m.versionsReason }}
         inline
       />
+    </Dialog>
+  );
+}
+
+// Asks before a version is deleted, naming it and saying what is lost: its file, so that rolling
+// it out or going back to it later downloads it again and runs the checks; and, where it is so,
+// that it is the previous version, the tested one, or marked as failed. The deletion is the
+// page's, which says what came of it once the dialog has closed.
+function DeleteVersionDialog({
+  version,
+  previous,
+  tested,
+  failed,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  version: string;
+  previous: boolean;
+  tested: boolean;
+  failed: boolean;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  function confirm(event: FormEvent) {
+    event.preventDefault();
+    onConfirm();
+  }
+
+  return (
+    <Dialog
+      owner="DeleteVersionDialog"
+      title={m.versionsDeleteTitle(version)}
+      onClose={onCancel}
+      closable={!busy}
+    >
+      <form noValidate onSubmit={confirm}>
+        <p>{m.versionsDeleteBody}</p>
+        {previous && <p>{m.versionsDeletePrevious}</p>}
+        {tested && <p>{m.versionsDeleteTested}</p>}
+        {failed && <p>{m.versionsDeleteFailed}</p>}
+        <div className="actions footer">
+          <button type="submit" className="danger" disabled={busy}>
+            {busy ? m.versionsDeleteBusy : m.versionsDeleteConfirm}
+          </button>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            {m.cancel}
+          </button>
+        </div>
+      </form>
     </Dialog>
   );
 }

@@ -3,8 +3,8 @@
 Signing in and out is accounts.py's; ``connection`` reads the account's state from
 its status, against the ``login_warning_days`` setting. The versions routes are the
 report of what is approved, installed and running, the rollout of a version, marking a
-version as failed and removing the mark, and the release site's suggestion of the latest
-one; the versions themselves are claude_versions.py's.
+version as failed and removing the mark, deleting a version from the store, and the release
+site's suggestion of the latest one; the versions themselves are claude_versions.py's.
 """
 
 from __future__ import annotations
@@ -147,7 +147,8 @@ def versions(request: Request) -> dict:
     """What is approved, what is installed and by how many servers used, which running servers
     run another version than the approved one, the versions marked as failed (who marked each,
     when and why, the newest first) with a ``failed`` flag on each installed version and each
-    running server's, and whether a rollout runs."""
+    running server's, why each installed version may not be deleted (``delete_refused``, or
+    null), and whether a rollout runs."""
     return request.app.state.versions.report()
 
 
@@ -192,6 +193,20 @@ def clear_failed(
     """Remove a version's mark as failed. The report afterwards."""
     record.target = version
     return request.app.state.versions.clear_failed(version)
+
+
+@router.delete("/versions/{version}", dependencies=[Depends(admin_user)])
+def delete_version(
+    version: VersionInPath,
+    request: Request,
+    record: Record = Depends(Recorder("claude.delete_version")),
+) -> dict:
+    """Delete a version from the store; refused, with why, for the approved version, the one
+    the store's link names, one a workspace's record names, and any while a rollout, another
+    deletion or an upgrade of rcman runs. Its mark as failed, if any, stays. The report
+    afterwards."""
+    record.target = version
+    return request.app.state.versions.delete(version)
 
 
 @router.get("/latest", dependencies=[Depends(admin_user)])

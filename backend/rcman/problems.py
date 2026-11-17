@@ -150,13 +150,15 @@ MESSAGES = {
     "to before it is approved, so it was not approved. The checks it failed are below.",
     "claude_canary_failed": "rcman could not run the checks on that Claude Code version, so it "
     "was not approved and nothing was changed. Try again in a moment.",
-    "claude_upgrade_busy": "Another Claude Code version is being rolled out. Try again when it "
-    "is done.",
+    "claude_upgrade_busy": "Another Claude Code version is being rolled out, or a version is "
+    "being deleted. Try again when it is done.",
     "claude_version_failed": "That Claude Code version is marked as failed. To roll it out, or "
     "to mark it again, first remove its mark under Failed versions.",
     "claude_version_approved": "The approved Claude Code version cannot be marked as failed. Use "
     "another version first, then mark this one.",
     "claude_version_not_failed": "That Claude Code version is not marked as failed.",
+    "claude_version_kept": "That Claude Code version cannot be deleted just now.",
+    "claude_version_not_installed": "That Claude Code version is not installed.",
     # upgrading rcman
     "rcman_upgrade_refused": "rcman cannot be upgraded just now.",
     "rcman_upgrading": "rcman is being upgraded. Try again once the upgrade is done.",
@@ -264,8 +266,8 @@ UPGRADE_REFUSED_MESSAGES = {
     ),
     "under_way": "rcman is being upgraded already.",
     "rolling_out": (
-        "A Claude Code version is being rolled out, or what one left is being cleared away. "
-        "Try again when it is done."
+        "A Claude Code version is being rolled out or deleted, or what a roll-out left is being "
+        "cleared away. Try again when it is done."
     ),
     "creating": "A workspace is being made. Try again once it is made.",
     "rebuilding": "A workspace is being rebuilt. Try again once it is rebuilt.",
@@ -273,6 +275,18 @@ UPGRADE_REFUSED_MESSAGES = {
         "A workspace is being stopped or started. Try again once that is done."
     ),
     "images": "rcman is clearing away images no workspace uses. Try again in a moment.",
+}
+# Why a Claude Code version cannot be deleted now, in plain words, by the reason
+# claude_versions.py gives: the title of ``claude_version_kept``, which the report of
+# GET /api/claude/versions gives each installed version too, for the reasons of its own.
+VERSION_KEPT_MESSAGES = {
+    "approved": "The approved version is kept. Roll out another version first.",
+    "current": "The store's link names it, so a claude typed in a terminal runs it.",
+    "in_use": (
+        "A workspace's server uses it. Stop that server first, even if it has ended on its own."
+    ),
+    "rolling_out": UPGRADE_REFUSED_MESSAGES["rolling_out"],
+    "rcman_upgrading": MESSAGES["rcman_upgrading"],
 }
 # The status of ``claude_install_failed`` by kind: a release site that does not answer is a
 # bad gateway, and the rest is for the administrator who named the version.
@@ -665,6 +679,8 @@ STATUS = {
     "claude_version_failed": 409,
     "claude_version_approved": 409,
     "claude_version_not_failed": 404,
+    "claude_version_kept": 409,
+    "claude_version_not_installed": 404,
     "claude_not_logged_in": 409,
     "claude_signing_out": 409,
     "login_failed": 409,

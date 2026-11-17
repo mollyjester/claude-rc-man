@@ -40,8 +40,8 @@ other than the approved one sees a quiet note in the server section of their
 workspace, which says to stop the server and start it again to use the approved
 one.
 
-A version leaves the store only when it is neither the approved nor the
-previous version, nor the tested one, nor the one `current` names, no running server
+rcman removes a version from the store by itself only when it is neither the
+approved nor the previous version, nor the tested one, nor the one `current` names, no running server
 uses it, and it was not put in the store within `PRUNE_GRACE_SECONDS`
 (`backend/rcman/claude_versions.py`); rcman removes such versions
 after a roll-out, after a version is marked as failed, when servers stop and
@@ -49,7 +49,9 @@ when it starts. A server whose state rcman cannot read counts as running.
 `rcman-admin` removes none. A version marked as failed is never the previous
 version, so it leaves the store like any other once nothing else keeps it; its
 mark stays. The previous version, too, can be one that is not in the store: one
-that left it while it was neither approved nor previous.
+that left it while it was neither approved nor previous. An administrator can
+also delete a version from the store by hand (see
+[Deleting a version](#deleting-a-version)).
 
 ## The versions page
 
@@ -61,7 +63,8 @@ page shows:
 - the **Installed versions**, with how many running servers use each,
   **Failed** beside one marked as failed, and beside each one that is neither
   approved nor marked as failed **Use**, which approves it again, and **Mark as
-  failed**;
+  failed**; beside each one that may be deleted **Delete**, and beside one that
+  may not, why (see [Deleting a version](#deleting-a-version));
 - the **Failed versions**, each with why it was marked, by whom and when, and
   **Remove mark**; at the card's head, **Mark a version as failed**, for a
   version by its number, installed or not (see
@@ -73,8 +76,8 @@ page shows:
   a suggestion with **Roll out**, or, where it is marked as failed, says so and
   offers nothing; nothing is installed or approved until an administrator
   chooses it;
-- a page that follows a roll-out another administrator has under way, and reads
-  the versions again after an answer that one is under way;
+- a page that follows a roll-out or a deletion another administrator has under
+  way, and reads the versions again after an answer that one is under way;
 - a form to roll out any version by its number, with **Check and roll out**.
 
 ## Rolling out a version
@@ -147,7 +150,7 @@ When a version you rolled out does not work as it should, go back to the
 1. Where the previous version is among the **Installed versions**, choose
    **Use** beside it. It was approved before and is in the store, so it is
    approved again at once, with no download and no canary. Where it has left
-   the store, it is not among the installed versions: roll it out by the
+   the store, by pruning or a deletion, it is not among the installed versions: roll it out by the
    number the **Previous version** shows, with **Check and roll out**, which downloads it and runs it through
    the canary again, as any roll-out does.
 2. Then mark the version you left as failed, with **Mark as failed** beside it,
@@ -193,10 +196,39 @@ through the download and the canary where it is not in the store. A version
 marked already cannot be marked again; remove the mark first to give it
 another reason.
 
+## Deleting a version
+
+**Delete** beside an installed version removes its file from the store, to free
+the space it takes. It asks first, naming the version and saying what is lost;
+**Delete version** in that dialog deletes it. Deleting is refused, and the page
+offers no **Delete** but says why, for:
+
+- the approved version;
+- the version `current` names, which a `claude` typed in a terminal runs;
+- a version a workspace's record names: its server started with it, and the
+  record keeps it until that server is stopped, also where the server ended on
+  its own. Stop the server first.
+
+No version is deleted while a roll-out, another deletion or an upgrade of rcman
+runs, and the page then offers no **Delete** and says why; none is rolled out, nor an upgrade of rcman asked for, while a
+deletion runs. rcman reads what workspaces' records name again as it deletes,
+under the lock a server's start records its version under, so a server starting
+meanwhile keeps its version. The grace period that pruning gives a version just
+put in the store does not apply to a deletion asked for by hand.
+
+The previous and the tested version may be deleted. Going back to the previous
+version afterwards, or rolling either out again, downloads it and runs it
+through the canary, as any roll-out of a version not in the store does (see
+[Going back to the previous version](#going-back-to-the-previous-version)); the
+installer puts the tested version back in the store the next time it runs. The
+dialog says so for each. A version marked as failed may be deleted too, and its
+mark stays under **Failed versions**.
+
 ## Audit and journal
 
 A roll-out is the audit action `claude.upgrade`, with the version as its
 target and `ok` or the error code as its result. Marking a version as failed is
-`claude.mark_failed`, and removing a mark is `claude.clear_failed`; what each
-records is in [Audit trail](audit.md).
+`claude.mark_failed`, removing a mark is `claude.clear_failed`, and deleting a
+version is `claude.delete_version`; what each records is in
+[Audit trail](audit.md).
 What rcman logs about versions is in [The journal](journal.md).

@@ -535,6 +535,7 @@ export const m = {
     "claude.upgrade": "Rolled out a Claude Code version",
     "claude.mark_failed": "Marked a Claude Code version as failed",
     "claude.clear_failed": "Removed a Claude Code version's failed mark",
+    "claude.delete_version": "Deleted a Claude Code version",
     "rcman.upgrade": "Asked for rcman to be upgraded",
     "monitor.settings": "Changed the monitoring settings",
     "monitor.refresh": "Refreshed the monitor's figures",
@@ -654,9 +655,10 @@ export const m = {
     `Checking Claude Code ${version}. This can take a few minutes.`,
   versionsUpgraded: (version: string) =>
     `Claude Code ${version} is approved. Servers that start from now on run it.`,
-  versionsBusyElsewhere: "Another version is being rolled out. Try again when it is done.",
+  versionsBusyElsewhere:
+    "Another version is being rolled out or deleted. Try again when it is done.",
   versionsRcmanUpgrading:
-    "rcman is being upgraded, so no version can be rolled out until the upgrade is done.",
+    "rcman is being upgraded, so no version can be rolled out or deleted until the upgrade is done.",
   versionsLatestTitle: "Newest release",
   versionsLatest: (version: string) => `The newest release is ${version}.`,
   versionsLatestApproved: "The approved version is the newest release.",
@@ -684,6 +686,19 @@ export const m = {
   versionsClearFailedVersion: (version: string) => `Remove mark on ${version}`,
   versionsCleared: (version: string) =>
     `The mark on ${version} is removed. It can be rolled out again.`,
+  versionsDelete: "Delete",
+  versionsDeleteVersion: (version: string) => `Delete ${version}`,
+  versionsDeleteTitle: (version: string) => `Delete Claude Code ${version}?`,
+  versionsDeleteBody:
+    "Its file leaves the store. Rolling it out, or going back to it, later downloads it again and runs the checks on it first.",
+  versionsDeletePrevious:
+    "It is the previous version, the one to go back to if the approved version fails.",
+  versionsDeleteTested:
+    "It is the tested version: the installer puts it back in the store the next time it runs.",
+  versionsDeleteFailed: "Its mark as failed stays, under Failed versions.",
+  versionsDeleteConfirm: "Delete version",
+  versionsDeleteBusy: "Deleting…",
+  versionsDeleted: (version: string) => `Claude Code ${version} is deleted from the store.`,
   versionsLatestFailed: (version: string) => `The newest release, ${version}, is marked as failed.`,
 
   serverClaudeVersion: (version: string) => `Claude Code ${version}`,
