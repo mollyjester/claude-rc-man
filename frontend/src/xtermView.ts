@@ -18,6 +18,15 @@ export interface XtermView {
   setTheme(theme: TerminalTheme): void;
   // Whether what is typed is taken at all.
   setInputEnabled(enabled: boolean): void;
+  // Input as if typed, handed on to onData's listeners at once, and dropped while input is not
+  // taken; focus stays where it is.
+  input(data: string): void;
+  // Whether the shell has asked for application cursor keys (DECCKM), with which the arrows,
+  // Home and End send other sequences.
+  applicationCursorKeys(): boolean;
+  // Text pasted, as xterm.js's own paste handler sends it (bracketed where the shell asked),
+  // handed on to onData's listeners at once, and dropped while input is not taken.
+  paste(text: string): void;
   // Clears the screen, for a new shell.
   reset(): void;
   focus(): void;
@@ -52,6 +61,9 @@ export function createXtermView(element: HTMLElement, theme: TerminalTheme): Xte
     setInputEnabled: (enabled) => {
       terminal.options.disableStdin = !enabled;
     },
+    input: (data) => terminal.input(data, true),
+    applicationCursorKeys: () => terminal.modes.applicationCursorKeysMode,
+    paste: (text) => terminal.paste(text),
     reset: () => terminal.reset(),
     focus: () => terminal.focus(),
     dispose: () => terminal.dispose(),

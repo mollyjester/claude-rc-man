@@ -216,6 +216,32 @@ shell can complete what you type; no key moves out of it: click outside the
 terminal to move out of it. Its colours follow the light or dark setting of your
 system, as the rest of the page does.
 
+For the keys a phone's or a tablet's keyboard lacks, the keyboard button at the
+right of the bar, **Special keys**, shown while the terminal is connected, opens
+a panel over the top of the terminal:
+
+- **Esc**, **Tab** and the arrows ↑ ↓ ← → are sent as soon as you press them,
+  and the panel stays open for the next.
+- **Shift**, **Ctrl** and **Alt** are held for the next key, whether you press
+  it on the panel or type it on your device's own keyboard, as Termux does:
+  **Ctrl** and then `c` on the keyboard sends Ctrl+C. Something pasted goes as
+  it is and leaves it held. While one is held, the keyboard button is
+  highlighted and shows the names of those held, even with the panel closed.
+  It is let go once a key has gone with it, when you press it again, when you
+  press **Send** with the field empty, which sends nothing, or when the
+  terminal's connection ends.
+- In the field under them, **Key or text**, type a key by its name, with any
+  of `ctrl+`, `alt+` and `shift+` before it, in any case: `ctrl+c`,
+  `shift+tab`, `alt+x`, `ctrl+del`. The names are `up`, `down`, `left`,
+  `right`, `tab`, `esc` (or `escape`), `enter`, `space`, `backspace`, `home`,
+  `end`, `pgup` (or `pageup`), `pgdn` (or `pagedown`), `delete` (or `del`),
+  `insert` (or `ins`) and `f1` to `f12`, and a single character is a key too;
+  what is held goes with the key. Anything else is sent as text, as you typed
+  it, an arrow character among it; what is held goes with its first character
+  only. **Send**, or Enter, sends it, closes the panel and puts you back in the
+  terminal.
+- Pressing outside the panel, or Escape, closes it and sends nothing.
+
 ### The Container card and rebuilding
 
 A workspace's container is made from its repository's `devcontainer.json` when the

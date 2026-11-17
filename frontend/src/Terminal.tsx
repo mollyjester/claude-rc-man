@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type ApiError, api, problemFrom, UNREACHABLE } from "./api";
 import { browser } from "./browser";
 import { noteFailure, PAGE_ERROR } from "./clientErrors";
 import { m } from "./messages";
 import { ProblemView } from "./ProblemView";
+import { TerminalKeys } from "./TerminalKeys";
+import { encode, type Key, type Modifier, sent, typedWithHeld } from "./terminalKeys";
 import { PROTOCOL, readFrame, resizeFrame, type Size } from "./terminalSocket";
 import { readTheme } from "./terminalTheme";
 import type { XtermView } from "./xtermView";
@@ -77,7 +79,9 @@ function closedWith(code: number): Closed {
 // is unmounted; what closes it otherwise is said, with Reconnect where rcman would open
 // another, and nothing reconnects by itself. A socket that never opened is noted, and
 // onFailure asks the page to refresh, which shows whether rcman is not reached or the
-// sign-in has ended; so does a close after which rcman would refuse another. The screen is
+// sign-in has ended; so does a close after which rcman would refuse another. While connected,
+// the bar offers the special keys (src/TerminalKeys.tsx), whose Shift, Ctrl and Alt go with the
+// next key typed on the device's own keyboard too. The screen is
 // fitted when `shown` and whenever its box changes size, and its colours read again when
 // the colour scheme changes.
 export function Terminal({
@@ -101,6 +105,14 @@ export function Terminal({
   failed.current = onFailure;
   const [phase, setPhase] = useState<Phase>(CONNECTING);
   const [attempt, setAttempt] = useState(0);
+  // Shift, Ctrl and Alt held on the special keys for the next key, from them or from the
+  // device's own keyboard; the ref is what is held now, for what is typed before a render.
+  const [held, setHeld] = useState<readonly Modifier[]>([]);
+  const holding = useRef<readonly Modifier[]>([]);
+  const hold = useCallback((next: readonly Modifier[]) => {
+    holding.current = next;
+    setHeld(next);
+  }, []);
 
   // Fits the screen and sends its size where it is new.
   const fit = useRef(() => {
@@ -148,7 +160,37 @@ export function Terminal({
     view.current = made;
     setShell(made);
     const send = (bytes: Uint8Array<ArrayBuffer>) => carrying.current?.send(bytes);
-    made.onData((data) => send(encoder.encode(data)));
+    // What is typed goes with what is held where it is a key or plain text, which lets it go;
+    // what xterm.js sends of its own goes as it is: a paste, which the screen takes from
+    // xterm.js in the capture phase and hands to its paste() itself, so that what that sends,
+    // at once, is known (`pasting`), and a focus or mouse report. An arrow xterm.js sends for
+    // the mouse wheel on the alternate screen, where no program asked for the mouse, cannot be
+    // told from a typed one, and takes what is held.
+    let pasting = false;
+    const onPaste = (event: ClipboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // as xterm.js's own handler, nothing where the event carries no clipboard
+      if (!event.clipboardData) return;
+      pasting = true;
+      try {
+        made.paste(event.clipboardData.getData("text/plain"));
+      } finally {
+        pasting = false;
+      }
+    };
+    element.addEventListener("paste", onPaste, { capture: true });
+    made.onData((data) => {
+      let typed = data;
+      if (holding.current.length > 0 && !pasting) {
+        const withHeld = typedWithHeld(data, holding.current, made.applicationCursorKeys());
+        if (withHeld !== null) {
+          typed = withHeld;
+          hold([]);
+        }
+      }
+      send(encoder.encode(typed));
+    });
     made.onBinary((data) => send(bytesOf(data)));
     const refit = fit.current;
     const observer = new ResizeObserver(() => refit());
@@ -157,13 +199,14 @@ export function Terminal({
     const recolour = () => made.setTheme(readTheme());
     scheme.addEventListener("change", recolour);
     return () => {
+      element.removeEventListener("paste", onPaste, { capture: true });
       observer.disconnect();
       scheme.removeEventListener("change", recolour);
       view.current = null;
       setShell(null);
       made.dispose();
     };
-  }, [xterm, placed]);
+  }, [xterm, placed, hold]);
 
   // The socket: one for each attempt, closed when the next is made or the tab goes.
   useEffect(() => {
@@ -218,6 +261,28 @@ export function Terminal({
     };
   }, [shell, workspace, attempt]);
 
+  // What is held is let go once the terminal's connection ends.
+  useEffect(() => {
+    if (phase.kind !== "connected") hold([]);
+  }, [phase.kind, hold]);
+
+  // A special key, or the keys field's text, with what is held, which is let go first, so that
+  // what the screen then hands on is not given it again. It goes through the screen's input, so
+  // that it is dropped where typing would be.
+  function input(data: (applicationCursor: boolean) => string) {
+    const shown = view.current;
+    if (!shown) return;
+    const bytes = data(shown.applicationCursorKeys());
+    hold([]);
+    if (bytes !== "") shown.input(bytes);
+  }
+  const pressKey = (key: Key) => input((cursor) => encode(key, holding.current, cursor));
+  // Sent, the pop-up closes and focus goes to the screen, where typing resumes.
+  function sendText(text: string) {
+    input((cursor) => sent(text, holding.current, cursor));
+    view.current?.focus();
+  }
+
   // Shown again, the screen may have another size than when it was hidden.
   useEffect(() => {
     if (shown) fit.current();
@@ -240,8 +305,10 @@ export function Terminal({
         : phase.kind === "unloaded" || (phase.kind === "closed" && phase.problem)
           ? "problem"
           : "stopped";
+  // The card is .terminal-card, never .terminal: xterm.js puts the class terminal on its own
+  // element, and rcman's rules never name a class xterm.js uses.
   return (
-    <div className="terminal card">
+    <div className="terminal-card card">
       <div className="terminal-bar">
         <span className={`dot dot-${kind}`} aria-hidden="true" />
         <p role="status">
@@ -250,6 +317,9 @@ export function Terminal({
           {phase.kind === "connected" && m.terminalConnected}
           {phase.kind === "closed" && phase.said}
         </p>
+        {phase.kind === "connected" && (
+          <TerminalKeys held={held} onHold={hold} onKey={pressKey} onSend={sendText} />
+        )}
         {phase.kind === "unloaded" && (
           // the page loaded afresh names the build rcman serves now
           <button type="button" className="primary" onClick={() => browser.reload()}>
@@ -276,7 +346,7 @@ export function Terminal({
 // terminal's bar alone, saying why, its dot not running, and no screen.
 export function TerminalNotice({ said }: { said: string }) {
   return (
-    <div className="terminal card">
+    <div className="terminal-card card">
       <div className="terminal-bar">
         <span className="dot dot-stopped" aria-hidden="true" />
         <p role="status">{said}</p>

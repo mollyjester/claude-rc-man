@@ -14,6 +14,9 @@ export class FakeView implements XtermView {
   size: Size = { cols: 80, rows: 24 };
   resets = 0;
   inputEnabled = true;
+  // Whether the shell has asked for application cursor keys, as applicationCursorKeys() says;
+  // false, as a shell starts, unless a test sets it.
+  applicationCursor = false;
   disposed = false;
   private dataListeners: ((data: string) => void)[] = [];
 
@@ -34,6 +37,17 @@ export class FakeView implements XtermView {
   setTheme() {}
   setInputEnabled(enabled: boolean) {
     this.inputEnabled = enabled;
+  }
+  // As xterm.js's input(): handed on as typed, and dropped while input is not taken.
+  input(data: string) {
+    if (this.inputEnabled) this.type(data);
+  }
+  // As xterm.js's paste(), with no bracketing: handed on, and dropped while input is not taken.
+  paste(text: string) {
+    if (this.inputEnabled) this.type(text);
+  }
+  applicationCursorKeys() {
+    return this.applicationCursor;
   }
   reset() {
     this.resets += 1;

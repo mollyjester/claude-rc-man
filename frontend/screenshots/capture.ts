@@ -104,6 +104,17 @@ const plain: Opens = async (page, path) => {
   await page.getByRole("main").waitFor();
 };
 
+// The screenshot workspace's Terminal tab, connected, with more lines printed than its screen
+// holds, so that the prompt is on its last row.
+async function filledTerminal(page: Page, id: number) {
+  await page.goto(`/?workspace=${id}&tab=terminal`);
+  await page.getByText(m.terminalConnected).waitFor();
+  await page.locator(".terminal-screen").click();
+  await page.keyboard.type("seq 500");
+  await page.keyboard.press("Enter");
+  await page.locator(".xterm-rows > div", { hasText: /^\s*500\s*$/ }).waitFor();
+}
+
 // The screenshot workspace selected on the Workspaces page, once its panel is drawn.
 const panel: Opens = async (page, _path, id) => {
   await page.goto(`/?workspace=${id}`);
@@ -341,13 +352,17 @@ const STATES: Record<string, State> = {
   },
   // the navigation's drawer, open
   drawer: { pages: "every", phone: true, window: true, opens: popUp(m.navMenu) },
-  // the screenshot workspace's Terminal tab, connected
-  terminal: {
+  // the screenshot workspace's Terminal tab, connected, its screen filled to the prompt
+  terminal: { pages: ["/"], window: true, opens: (page, _path, id) => filledTerminal(page, id) },
+  // the same, its special keys open, Ctrl held
+  "terminal-keys": {
     pages: ["/"],
     window: true,
     opens: async (page, _path, id) => {
-      await page.goto(`/?workspace=${id}&tab=terminal`);
-      await page.getByText(m.terminalConnected).waitFor();
+      await filledTerminal(page, id);
+      await page.getByRole("button", { name: m.terminalKeys }).click();
+      await page.getByRole("button", { name: m.terminalModifiers.ctrl }).click();
+      await page.getByRole("textbox", { name: m.terminalKeysField }).waitFor();
     },
   },
   // the Container card with the devcontainer.json changed

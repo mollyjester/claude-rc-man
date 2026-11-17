@@ -3,7 +3,7 @@
 // button, or its one danger button where what it does cannot be undone.
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactElement, useState } from "react";
 import { parseAst } from "vite";
@@ -26,6 +26,7 @@ import {
   SIGNING_OUT,
 } from "./test/fakeApi";
 import { modalDialogs } from "./test/fakeDialog";
+import { sockets } from "./test/fakeSocket";
 import { renderAlone, renderApp } from "./test/render";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
@@ -308,6 +309,16 @@ const OUTSIDE_FORMS: [string, Where, () => Promise<void>][] = [
     async () => {
       await userEvent.click(await screen.findByRole("button", { name: m.onBranch("main") }));
       await screen.findByRole("textbox", { name: m.findBranch });
+    },
+  ],
+  [
+    "the terminal's special keys",
+    "/?workspace=1&tab=terminal",
+    async () => {
+      await waitFor(() => expect(sockets()).toHaveLength(1));
+      act(() => sockets()[0].accept());
+      await userEvent.click(await screen.findByRole("button", { name: m.terminalKeys }));
+      await screen.findByRole("textbox", { name: m.terminalKeysField });
     },
   ],
 ];

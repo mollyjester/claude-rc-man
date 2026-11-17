@@ -275,3 +275,11 @@ export const UploadIcon = () => (
     <path d="M8 10.5V2M4.5 5.5 8 2l3.5 3.5M3 13.5h10" />
   </Icon>
 );
+
+// A keyboard: its keys in two rows over the space bar.
+export const KeyboardIcon = () => (
+  <Icon>
+    <rect x="1.5" y="3.5" width="13" height="9" rx="1.5" />
+    <path d="M4.5 6.5h.01M7 6.5h.01M9.5 6.5h.01M12 6.5h.01M5.5 10h5" />
+  </Icon>
+);
