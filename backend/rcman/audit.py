@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from fastapi import Depends, Request
@@ -77,6 +78,16 @@ class Record:
     target: str | None = None
     extra: dict = field(default_factory=dict)
     result: str | None = None  # what to record when the request succeeds; ``ok`` when unset
+    # Writes the row now, where the Recorder that made it can (``let_through``).
+    writer: Callable[[str], None] | None = field(default=None, repr=False)
+    written: bool = False
+
+    def let_through(self) -> None:
+        """Write the row now, ``ok``, before the route ends: for a transfer, whose row says it
+        was let through, written before its first byte. Its Recorder then writes nothing."""
+        if not self.written and self.writer is not None:
+            self.writer(self.result or OK)
+            self.written = True
 
 
 def write(con: sqlite3.Connection, record: Record, result: str) -> None:
@@ -104,14 +115,17 @@ class Recorder:
     def __call__(self, request: Request, identity: Identity = Depends(current_user)):
         record = Record(self.action, identity)
         con = db.connect(request.app.state.settings.database)
+        record.writer = lambda result: write(con, record, result)
         try:
             try:
                 yield record
             except Exception as error:
-                write(con, record, code_of(error))
+                if not record.written:
+                    write(con, record, code_of(error))
                 raise
             else:
-                write(con, record, record.result or OK)
+                if not record.written:
+                    write(con, record, record.result or OK)
         finally:
             con.close()
 

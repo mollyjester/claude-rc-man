@@ -25,6 +25,8 @@ Implemented and tested:
   and where the cloud environment Remote Control describes to Claude differs from it.
 - **A terminal in each workspace**: a shell in the workspace's panel, as the
   container's own user, one per workspace.
+- **A workspace's files in the browser**: download a file, or a folder as a zip, and upload
+  files into a folder, from the workspace's panel.
 - **Containers in a workspace**: Podman, as `podman` and `docker`, in workspaces of the
   default image or of an image with Podman of its own, kept inside the workspace, sharing
   its network, or, with `--network=pasta`, on a network of their own inside it.

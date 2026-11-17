@@ -250,6 +250,30 @@ GUID = Rule(
     "Enter the ID as Microsoft Entra shows it: 32 hexadecimal digits in groups, such as "
     "0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e.",
 )
+# A path in a workspace's volume, from its top (backend/rcman/files.py), which resolves it in
+# the workspace and refuses what leaves it or enters a hidden folder; here, only what no path
+# there can be, one that begins with a slash or holds a null character, and one the workspace's
+# channel cannot carry, which holds a line break.
+MAX_FILES_PATH_LENGTH = 4096
+_SLASH = _class(chars="/")
+_BREAK = _class(chars="\n\r")
+FILES_PATH = Rule(
+    re.compile(rf"[^{_SLASH}{_NUL}{_BREAK}][^{_NUL}{_BREAK}]*"),
+    "A path is taken from the top of the workspace's files, so it may not begin with a slash, "
+    "may not hold a null character or a line break, and may be at most "
+    f"{MAX_FILES_PATH_LENGTH} characters long.",
+)
+# The name a file is uploaded under: one part of a path, not . or .., the names of a folder and
+# the one above it.
+MAX_FILE_NAME_LENGTH = 255
+_DOT = _class(chars=".")
+_IN_NAME = f"[^{_SLASH}{_NUL}{_BREAK}]"
+_NOT_DOT = f"[^{_SLASH}{_NUL}{_BREAK}{_DOT}]"
+FILE_NAME = Rule(
+    re.compile(rf"{_NOT_DOT}{_IN_NAME}*|{_DOT}{_NOT_DOT}{_IN_NAME}*|{_DOT}{_DOT}{_IN_NAME}+"),
+    "A file's name may not be empty, . or .., hold a slash, a null character or a line break, "
+    f"or be longer than {MAX_FILE_NAME_LENGTH} characters.",
+)
 # rcman's secret key (RCMAN_SECRET_KEY), as the installer generates it and the backend holds it
 # to: SECRET_KEY_BYTES random bytes, in lowercase hexadecimal.
 SECRET_KEY_BYTES = 32

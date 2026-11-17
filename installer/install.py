@@ -179,21 +179,43 @@ TMUX_SHA256 = "16216bd0877170dfcc64157085ba9013610b12b082548c7c9542cc0103198951"
 TMUX_URL = (
     f"https://github.com/tmux/tmux/releases/download/{TMUX_VERSION}/tmux-{TMUX_VERSION}.tar.gz"
 )
-# What tmux is built in: musl, so that the static binary needs nothing of any image. Named by
-# tag, which says what it is, and by the registry's digest of that tag, which cannot move.
-TMUX_BUILD_IMAGE = "docker.io/library/alpine:3.20"
-TMUX_BUILD_DIGEST = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
-TMUX_BUILD_REFERENCE = f"{TMUX_BUILD_IMAGE}@{TMUX_BUILD_DIGEST}"
-# The build says what it has to say on standard error, with the program's sha256 on a line of
-# its own at the end, and the program comes out on standard output: no folder of rcman's is
-# mounted for it to be written in. The checksum is what shows the program arrived whole.
-TMUX_SHA256_LINE = re.compile(rb"^sha256 ([0-9a-f]{64})$", re.MULTILINE)
+# bsdtar (libarchive's), built statically for the workspaces from its release's source, which is
+# checked against this sha256, the one GitHub gives for the release's asset and the one the
+# release's signature covers: a folder's download is the zip it writes on standard output.
+LIBARCHIVE_VERSION = "3.8.11"
+LIBARCHIVE_SHA256 = "900fe9fc7237c2b04f090f3c3648de8fe597525771f5035016537ce2d667d12b"
+LIBARCHIVE_URL = (
+    f"https://github.com/libarchive/libarchive/releases/download/v{LIBARCHIVE_VERSION}/"
+    f"libarchive-{LIBARCHIVE_VERSION}.tar.gz"
+)
+# What the tools are built in: musl, so that each static program needs nothing of any image.
+# Named by tag, which says what it is, and by the registry's digest of that tag, which cannot move.
+TOOLS_BUILD_IMAGE = "docker.io/library/alpine:3.20"
+TOOLS_BUILD_DIGEST = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+TOOLS_BUILD_REFERENCE = f"{TOOLS_BUILD_IMAGE}@{TOOLS_BUILD_DIGEST}"
+# A build says what it has to say on standard error, with the program's sha256 on a line of its
+# own at the end, and the program comes out on standard output: no folder of rcman's is mounted
+# for it to be written in. The checksum is what shows the program arrived whole.
+TOOL_SHA256_LINE = re.compile(rb"^sha256 ([0-9a-f]{64})$", re.MULTILINE)
 TMUX_BUILD = (
     "(apk add -q build-base libevent-dev libevent-static ncurses-dev ncurses-static bison "
     "&& cd /tmp && tar xzf /tmux.tar.gz && cd tmux-* && "
     "./configure --enable-static && make -j4) >&2 && "
     "printf 'sha256 %s\\n' \"$(sha256sum /tmp/tmux-*/tmux | cut -d' ' -f1)\" >&2 && "
     "cat /tmp/tmux-*/tmux"
+)
+# bsdtar alone, with zlib for deflate and nothing else it could link to: no other compressor,
+# crypto, XML, ACL or extended attributes, and none of libarchive's other programs.
+BSDTAR_BUILD = (
+    "(apk add -q build-base zlib-dev zlib-static "
+    f"&& cd /tmp && tar xzf /libarchive.tar.gz && cd libarchive-{LIBARCHIVE_VERSION} && "
+    "./configure --enable-bsdtar=static --disable-shared --disable-bsdcpio --disable-bsdcat "
+    "--disable-bsdunzip --disable-acl --disable-xattr --without-bz2lib --without-libb2 "
+    "--without-lz4 --without-zstd --without-lzma --without-openssl --without-xml2 "
+    "--without-expat && make -j4 bsdtar LDFLAGS=-all-static) >&2 && "
+    f"printf 'sha256 %s\\n' \"$(sha256sum /tmp/libarchive-{LIBARCHIVE_VERSION}/bsdtar | "
+    "cut -d' ' -f1)\" >&2 && "
+    f"cat /tmp/libarchive-{LIBARCHIVE_VERSION}/bsdtar"
 )
 # The terminal descriptions a workspace's tmux and Claude need, from the host's ncurses-base.
 TERMINFO = ("x/xterm-256color", "t/tmux", "t/tmux-256color", "s/screen", "s/screen-256color")
@@ -1095,6 +1117,10 @@ def tmux_tarball(toolchain: Path = TOOLCHAIN) -> Path:
     return toolchain / f"tmux-{TMUX_VERSION}.tar.gz"
 
 
+def libarchive_tarball(toolchain: Path = TOOLCHAIN) -> Path:
+    return toolchain / f"libarchive-{LIBARCHIVE_VERSION}.tar.gz"
+
+
 def _unpack(
     data: bytes, dest: Path, mode: str, strip: int, members: list[str] | None = None
 ) -> None:
@@ -1130,8 +1156,8 @@ TOOLCHAIN_LOCK = ".lock"
 
 
 def ensure_toolchain(toolchain: Path = TOOLCHAIN) -> list[str]:
-    """Node.js (to build the frontend), uv, oauth2-proxy and tmux's source, each
-    checksum-verified.
+    """Node.js (to build the frontend), uv, oauth2-proxy and the sources of the tools
+    ensure_tools builds, each checksum-verified.
     Callers filling the same toolchain take turns, holding a lock in it."""
     toolchain.mkdir(parents=True, exist_ok=True)
     with open(toolchain / TOOLCHAIN_LOCK, "a") as lock:
@@ -1178,6 +1204,12 @@ def _fill_toolchain(toolchain: Path) -> list[str]:
         partial.write_bytes(data)
         partial.rename(tmux_tarball(toolchain))
         changes.append(f"tmux {TMUX_VERSION} source")
+    if not libarchive_tarball(toolchain).exists():
+        data = _verified(LIBARCHIVE_URL, LIBARCHIVE_SHA256)
+        partial = libarchive_tarball(toolchain).with_suffix(".partial")
+        partial.write_bytes(data)
+        partial.rename(libarchive_tarball(toolchain))
+        changes.append(f"libarchive {LIBARCHIVE_VERSION} source")
     open_up(toolchain)
     return changes
 
@@ -1293,7 +1325,16 @@ def tmux_build_argv(tarball: Path) -> list[str]:
     system journal, and the build's output with them."""
     return [
         "run", "--rm", "--log-driver=none", f"--volume={tarball}:/tmux.tar.gz:ro",
-        TMUX_BUILD_REFERENCE, "sh", "-c", TMUX_BUILD,
+        TOOLS_BUILD_REFERENCE, "sh", "-c", TMUX_BUILD,
+    ]  # fmt: skip
+
+
+def bsdtar_build_argv(tarball: Path) -> list[str]:
+    """podman's arguments that build bsdtar statically from libarchive's ``tarball`` and write
+    the program on standard output, unlogged, as tmux's (``tmux_build_argv``)."""
+    return [
+        "run", "--rm", "--log-driver=none", f"--volume={tarball}:/libarchive.tar.gz:ro",
+        TOOLS_BUILD_REFERENCE, "sh", "-c", BSDTAR_BUILD,
     ]  # fmt: skip
 
 
@@ -1304,45 +1345,59 @@ def _install_file(source: Path, dest: Path, mode: int) -> None:
     os.replace(tmp, dest)
 
 
+def _build_tool(tools: Path, name: str, built: str, argv: list[str]) -> bool:
+    """The program ``name`` in the tools' ``bin``, built by rcman's Podman with ``argv`` where it
+    is not there or its stamp ``.<name>-version`` is not ``built``: whether it was built. It is
+    taken only whole, by the sha256 the build reports, and static; otherwise InstallError, and
+    the program and stamp there stay as they were."""
+    stamp = tools / f".{name}-version"
+    program = tools / "bin" / name
+    if program.exists() and stamp.exists() and stamp.read_text() == built:
+        return False
+    made = run(as_rcman_podman(app_uid(), *argv), text=False)
+    staged = tools / "bin" / f".{name}.new"
+    try:
+        reported = TOOL_SHA256_LINE.findall(made.stderr or b"")
+        if not reported or reported[-1].decode() != hashlib.sha256(made.stdout).hexdigest():
+            raise InstallError(
+                f"{name} did not arrive whole: the sha256 the container reports for it is "
+                "not that of the bytes received"
+            )
+        staged.write_bytes(made.stdout)
+        if not is_static(staged):
+            raise InstallError(f"{name} was not built static")
+        os.chmod(staged, 0o755)
+        os.replace(staged, program)
+    finally:
+        staged.unlink(missing_ok=True)
+    stamp.write_text(built)
+    return True
+
+
 def ensure_tools(
     tools: Path = TOOLS,
     conf: Path | None = None,
     podman: Path | None = None,
     fragments: Path | None = None,
 ) -> list[str]:
-    """The static tools every workspace mounts read-only: tmux, built here from its pinned
-    source, busybox and a shell that is busybox, the terminal descriptions, and tmux's
-    configuration ``conf``, by default the release's, the Podman tools of ``podman``, by
-    default the release's (ensure_podman_tools), and the instructions for Claude made of the
-    fragments in ``fragments``, by default the release's (ensure_instructions). Root's, and
-    readable by everyone: they
-    are in a folder only root can write, and the program is built by rcman's Podman and
-    comes out on standard output, so nothing here is made in a folder rcman can write."""
+    """The static tools every workspace mounts read-only: tmux and bsdtar, each built here from
+    its pinned source (``_build_tool``), busybox and a shell that is busybox, the terminal
+    descriptions, and tmux's configuration ``conf``, by default the release's, the Podman tools
+    of ``podman``, by default the release's (ensure_podman_tools), and the instructions for
+    Claude made of the fragments in ``fragments``, by default the release's
+    (ensure_instructions). Root's, and readable by everyone: they are in a folder only root can
+    write, and each program is built by rcman's Podman and comes out on standard output, so
+    nothing here is made in a folder rcman can write."""
     changes = []
     (tools / "bin").mkdir(parents=True, exist_ok=True)
     os.chmod(tools, 0o755)
     os.chmod(tools / "bin", 0o755)
-    built = f"{TMUX_VERSION} {TMUX_SHA256}\n"
-    stamp = tools / ".tmux-version"
-    if not (tools / "bin" / "tmux").exists() or not stamp.exists() or stamp.read_text() != built:
-        program = run(as_rcman_podman(app_uid(), *tmux_build_argv(tmux_tarball())), text=False)
-        staged = tools / "bin" / ".tmux.new"
-        try:
-            reported = TMUX_SHA256_LINE.findall(program.stderr or b"")
-            if not reported or reported[-1].decode() != hashlib.sha256(program.stdout).hexdigest():
-                raise InstallError(
-                    "tmux did not arrive whole: the sha256 the container reports for it is "
-                    "not that of the bytes received"
-                )
-            staged.write_bytes(program.stdout)
-            if not is_static(staged):
-                raise InstallError("tmux was not built static")
-            os.chmod(staged, 0o755)
-            os.replace(staged, tools / "bin" / "tmux")
-        finally:
-            staged.unlink(missing_ok=True)
-        stamp.write_text(built)
-        changes.append(f"tmux {TMUX_VERSION}")
+    for name, version, pin, argv in (
+        ("tmux", TMUX_VERSION, TMUX_SHA256, tmux_build_argv(tmux_tarball())),
+        ("bsdtar", LIBARCHIVE_VERSION, LIBARCHIVE_SHA256, bsdtar_build_argv(libarchive_tarball())),
+    ):
+        if _build_tool(tools, name, f"{version} {pin}\n", argv):
+            changes.append(f"{name} {version}")
     if not is_static(BUSYBOX):
         raise InstallError(f"{BUSYBOX} is not static; install busybox-static")
     busybox = tools / "bin" / "busybox"

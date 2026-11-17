@@ -699,6 +699,19 @@ def test_a_podman_exec_runs_the_program_as_podman_would_behind_a_mark_it_takes_a
     missing = runtime.exec("rcman-ws-7", ["no-such-program"])
     assert missing.code == 127 and b"no-such-program" in missing.err
     assert rt.EXEC_MARK.encode() not in missing.err
+    # A stream whose exec ends, with 0, without the mark: what it wrote was lost, so it failed,
+    # and never ends as if whole.
+    lost = fake_podman(tmp_path, "if args[0] == 'exec':\n    sys.exit(0)\n")
+    layout = lost.layout("rcman-ws-7")
+    stream = lost.stream("rcman-ws-7", layout.tool("cat"), rt.transfer_pidfile(layout))
+    try:
+        with pytest.raises(rt.StreamFailed):
+            stream.ready(HANG_GUARD)
+        assert stream.read(1, idle=HANG_GUARD) == b""
+        with pytest.raises(rt.StreamFailed):
+            stream.wait(HANG_GUARD)
+    finally:
+        stream.end(lambda argv: rt.Result(0, b"", b""))
 
 
 # --- the version a server is pinned to ------------------------------------------------------

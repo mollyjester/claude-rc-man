@@ -154,6 +154,68 @@ export const m = {
   workspaceTabs: "Workspace views",
   tabOverview: "Overview",
   tabTerminal: "Terminal",
+  tabFiles: "Files",
+
+  // The Files tab: a workspace's files, to download and upload, from the top of its volume down.
+  // The crumbs' name, and the name of their first part, the top.
+  filesPath: "Folder",
+  filesTop: "rcman",
+  // The list of a folder's entries, named by the folder's path from the top.
+  filesAt: (path: string): string => (path === "" ? m.filesTop : `${m.filesTop}/${path}`),
+  filesUpload: "Upload",
+  filesRefresh: "Refresh files",
+  filesDownload: (name: string) => `Download ${name}`,
+  filesDownloadFolder: (name: string) => `Download ${name} as a zip`,
+  // An entry's kind, which its icon shows, for assistive technology.
+  filesKinds: { folder: "Folder", file: "File", link: "Link", other: "Other" } as Record<
+    string,
+    string
+  >,
+  // Where a link points somewhere that cannot be reached from here, in its Download's place.
+  filesLinkOutside: "Points outside the files shown here",
+  filesLoading: "Loading files…",
+  // Under a refused listing: the crumbs above lead back.
+  filesGoUp: "Go back to a folder above.",
+  // A row's Download while rcman looks before the download starts.
+  filesPreparing: "Preparing…",
+  filesTooBig: (name: string, size: string, limit: string) =>
+    `${name} is ${size}. Folders up to ${limit} can be downloaded.`,
+  filesUnreadable: (name: string, path: string) =>
+    `${name} cannot be downloaded: ${path} cannot be read.`,
+  filesUnreadableNext: "Make it readable in the Terminal, or download the files around it.",
+  filesMore: (count: string) =>
+    `And ${count} more, not listed. Open a folder inside, or use the Terminal to see them all.`,
+  filesEmpty: "No files here yet",
+  filesEmptyBody: "Upload files to this folder.",
+  // Over the list while files are dragged over it.
+  filesDrop: (path: string): string => `Drop to upload to ${path === "" ? m.filesTop : path}`,
+  filesUploading: (name: string, at: number, count: number) =>
+    count === 1 ? `Uploading ${name}…` : `Uploading ${name} (${at} of ${count})…`,
+  filesUploaded: (name: string) => `Uploaded ${name}.`,
+  filesUploadedCount: (done: number, count: number) =>
+    done === count ? `Uploaded ${count} files.` : `Uploaded ${done} of ${count} files.`,
+  // Before the reason a file was not uploaded, as the server gave it.
+  filesUploadFailed: (name: string) => `${name} was not uploaded:`,
+  filesNoFolders: "Folders cannot be uploaded. Upload the files in them instead.",
+  filesReserved: (name: string) => `${name} is kept by rcman and cannot be uploaded here.`,
+  // The question before files replace those of the same names.
+  filesReplaceTitle: (name: string) => `Replace ${name}?`,
+  filesReplaceTitleCount: (count: number) => `Replace ${count} files?`,
+  filesReplaceBody: (name: string, path: string): string =>
+    `A file named ${name} is already in ${path === "" ? m.filesTop : path}. Uploading replaces it.`,
+  filesReplaceBodyCount: (path: string): string =>
+    `These files are already in ${path === "" ? m.filesTop : path}. Uploading replaces them.`,
+  filesReplace: "Replace",
+  filesSkip: "Skip",
+  // The Files tab while the workspace is not up, by the code the listing gives for its server.
+  filesPower: {
+    workspace_stopped:
+      "The workspace is stopped, so its files cannot be reached. Start it to see them.",
+    workspace_starting: "The workspace is starting. Its files show once it is up.",
+    workspace_stopping: "The workspace is being stopped, so its files cannot be reached.",
+    workspace_rebuilding:
+      "The workspace's container is being made again. Its files show once it is up.",
+  } as Record<string, string>,
 
   // The Terminal tab: how its connection stands, and what ended it.
   terminalConnecting: "Connecting to the workspace's shell…",
@@ -428,6 +490,8 @@ export const m = {
     "workspace.rebuild": "Asked for a workspace to be rebuilt",
     "workspace.stop": "Stopped a workspace",
     "workspace.start": "Started a workspace",
+    "workspace.files.download": "Downloaded from a workspace",
+    "workspace.files.upload": "Uploaded to a workspace",
     "server.start": "Started a server",
     "server.resume": "Resumed a server",
     "server.stop": "Stopped a server",
@@ -461,6 +525,7 @@ export const m = {
     "monitor.settings": "Changed the monitoring settings",
     "monitor.refresh": "Refreshed the monitor's figures",
     "forwarding.settings": "Changed the port forwarding settings",
+    "files.settings": "Changed the files settings",
     "microsoft.settings": "Changed the Microsoft sign-in settings",
     "terminal.open": "Opened a terminal",
     "terminal.close": "A terminal closed",
@@ -832,6 +897,12 @@ export const m = {
   forwardingAbsoluteHelp: "How long such a session is to last in all, busy or not.",
   forwardingSave: "Save port forwarding settings",
   forwardingSaved: "Port forwarding settings saved.",
+  filesTitle: "Files",
+  filesLine: "What people can download from their workspaces.",
+  filesFolderLimit: "Largest folder download (MB)",
+  filesFolderLimitHelp: "0 means no limit.",
+  filesSave: "Save files settings",
+  filesSaved: "Files settings saved.",
   microsoftTitle: "Microsoft sign-in",
   microsoftLine:
     "Let people sign in with their Microsoft work account as well as with Google. Only accounts of one Microsoft Entra tenant get in.",
@@ -865,7 +936,7 @@ export const m = {
   // Units, after a non-breaking space (src/format.ts): sizes in decimal SI, as Podman gives
   // them, and intervals.
   byteUnits: ["B", "kB", "MB", "GB", "TB", "PB", "EB"],
-  timeUnits: { second: "s", minute: "min", hour: "h" },
+  timeUnits: { second: "s", minute: "min", hour: "h", day: "d" },
 
   problemFieldErrors: "Details:",
   problemCheckFields: "Check the fields marked below.",

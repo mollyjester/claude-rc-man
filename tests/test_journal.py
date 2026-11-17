@@ -49,6 +49,7 @@ def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
         microsoft,
         monitor,
         terminals,
+        transfers,
         unrecognised,
         workspaces,
     )
@@ -66,6 +67,7 @@ def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
         forward.log,
         forwards.log,
         microsoft.log,
+        transfers.log,
     )
     # An app made earlier in this process installed them with the standard error of
     # its time; they are taken off here, so that this app installs them afresh.

@@ -93,9 +93,10 @@ selected before.
 The panel's head shows the workspace's name and its state, and, for a workspace
 cloned from GitHub, the repository, owner first, as a link that opens its page
 on GitHub in a new tab, whatever state the workspace is in. The panel of a
-workspace that is ready or stopped has two tabs, **Overview**, shown first, and
-**Terminal** (see [The terminal](#the-terminal)); the arrow keys move between
-them. The tab you chose is part of the page's address, as the workspace is.
+workspace that is ready or stopped has three tabs, **Overview**, shown first,
+**Terminal** (see [The terminal](#the-terminal)) and **Files** (see [Files](#files)); the
+arrow keys move between them. The tab you chose is part of the page's address, as the
+workspace is, and so is the folder **Files** shows.
 **Overview** has these cards: **Claude server**, which shows the workspace's
 server, or **Start** when it has none, and says why instead if rcman could not
 read the server, or that its container is being made again during a rebuild;
@@ -170,7 +171,8 @@ with its device name under its name, to go straight to another; Escape, or
 pressing above the sheet, closes it. Dialogs rise from the foot of the screen as
 a sheet, their buttons kept at its foot above the on-screen keyboard, and on any
 touch screen every button and link is at least a fingertip wide, but for a link
-inside a sentence.
+inside a sentence. In **Files**, each row runs the width of the screen, with its size and the
+time since it changed under its name.
 
 ### The terminal
 
@@ -228,7 +230,7 @@ workspace's container is not there.
 
 **Rebuild** asks first, and says what happens. The image is pulled or built while everything
 in the workspace keeps running; only then is its server stopped, its container made again and
-its server started again. A rebuild ends the terminal, every process in the workspace, those
+its server started again. A rebuild ends the terminal, the downloads and uploads under way, every process in the workspace, those
 started with `nohup` or `setsid` too, the containers running inside it, what is in `/tmp`, the
 container's own files, and what the repository's create commands installed outside the
 workspace's files. It keeps the files in the workspace — the work folder, your home, Claude's
@@ -258,8 +260,8 @@ container, which frees the memory, CPU and processes it uses while you do not ne
 stops it at once, without asking. What is lost and what is kept:
 
 - It ends every process in the workspace, those started with `nohup` or `setsid` too, the
-  terminal's shell and the containers running inside the workspace, and closes its forwarded
-  ports until it is started again. Its server is stopped first,
+  terminal's shell, the downloads and uploads under way (see [Files](#files)) and the containers
+  running inside the workspace, and closes its forwarded ports until it is started again. Its server is stopped first,
   as its own **Stop** stops it, so that its sessions are kept.
 - It keeps the files in the workspace — the work folder, your home, Claude's settings, what
   Podman stored inside it and what is in `/tmp` — the image the workspace is made from, and the
@@ -270,7 +272,7 @@ container does not stop, the workspace keeps running and the page says so; its s
 have been stopped, and is started again from its **Claude server** card. A stopped
 workspace says **Stopped** beside its name, and stays stopped, through restarts and upgrades of
 rcman and restarts of the machine, until it is started. Its **Claude server** and **Ports**
-cards and its **Terminal** tab say it is stopped, and it has no **Changes** card.
+cards and its **Terminal** and **Files** tabs say it is stopped, and it has no **Changes** card.
 
 **Start workspace**, the stopped workspace's main button, starts its container again, or makes
 it again from the image it was made from, on its files, where it was lost; then the
@@ -305,6 +307,57 @@ What runs on the port must listen on `127.0.0.1` or `0.0.0.0` in the workspace, 
 only, and serve plain http. A change to `forwardPorts` takes effect at the next
 [rebuild](#the-container-card-and-rebuilding). What a repository may ask for, and what follows
 for the machine, is in [Forwarded ports](devcontainer.md#forwarded-ports).
+
+### Files
+
+The **Files** tab of a ready workspace reaches the workspace's own files, everything its volume
+keeps, which outlives a rebuild: to download them, and to upload files into them. Nothing is
+opened, renamed, edited or deleted there; the terminal and Claude do that.
+
+The tab shows one folder at a time. Its path leads from **rcman**, the top of the workspace's
+files, each part a link back up; a folder's name opens it, and the folder shown is part of the
+page's address. Each row gives the size of a file and how long ago it changed, and its download
+button, named after it. **Upload**, at the path's side, chooses files to upload into the folder
+shown; files dragged from your computer onto the folder do the same, while the folder outlined
+says where they go. A file's name in the **Changes** card of **Overview** opens its folder here,
+its row marked; a deleted file's name is not a link. While the workspace is stopped, starting,
+being stopped or having its container made again, the tab says so in place of the files.
+
+- What is shown. Every folder and file from the top of the workspace's files down, the work
+  folder among them, but for the folders rcman keeps at the top: Claude's settings (`claude`),
+  the home of the programs rcman runs there (`home`) and the storage of the containers you run in
+  the workspace (`containers`). These are not listed, and they are refused for listing,
+  downloading and uploading, however a path or a link reaches into them, as is anything outside
+  the workspace's files. A link is listed, and followed only where its target stays among the
+  files shown. A folder lists its folders first, then the rest, each by name, up to the number
+  `LISTING_CAP` in `backend/rcman/files.py` sets, and says how many more it holds.
+- Hidden is not secret from you. The hidden folders are your own: the terminal and Claude
+  reach them, and a hard link you make to a file in one downloads that file's bytes. They are
+  hidden so that rcman's own files are not taken or changed by mistake.
+- Downloading. A file downloads as it is, a folder as a zip of its name, with its links kept
+  as links and never followed. rcman looks first, so a folder over the
+  [folder download limit](service-settings.md#files) an administrator set, or one holding
+  something the workspace cannot read, is refused before anything downloads, with the folder's
+  size and the limit, or with what cannot be read: make it readable in the terminal, or
+  download the files around it. While rcman looks, the row says **Preparing…**. A single file's download is never limited. A download cannot
+  be resumed, and a folder's zip shows no total size while it downloads. A folder whose files
+  change while it downloads, such as one a program in the workspace is writing to, may fail to
+  download: try again once it is still.
+- Uploading. Files go into the folder shown, one at a time, and the tab says which it is
+  sending. A name a file already has there is replaced only when you say so: one question lists
+  every such name, and **Replace** replaces them while **Skip** uploads only the others; a name the folder's list did not show, which rcman finds already there, is asked about the same way once the others have gone. The name
+  of a folder or a link there, and the names rcman keeps at the top, are refused; a file that
+  is not uploaded is named with why, and the rest still go. A folder dropped on the tab is not
+  uploaded, and the tab says so: upload the files in it instead. A file is written beside its place under a name of its own, starting
+  `.rcman-upload-`, and takes its name only once it has arrived whole.
+- Limits. Each person, and everyone together, may have only a few downloads and uploads under
+  way at once (`TRANSFERS_PER_PERSON` and `TRANSFERS_IN_ALL` in `backend/rcman/transfers.py`), and
+  one that moves nothing for `TRANSFER_IDLE_SECONDS` there is ended.
+- Stopping. A Stop, a Rebuild or a deletion ends the workspace's downloads and uploads first:
+  a download under way fails in the browser, and an upload under way is refused, its unfinished
+  file removed.
+
+Every download and upload is recorded in the [audit trail](audit.md), as it is let through or refused.
 
 ## Containers
 

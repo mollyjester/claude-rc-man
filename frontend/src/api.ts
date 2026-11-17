@@ -35,6 +35,26 @@ export class ApiError extends Error {
 
 type Query = Record<string, string | number | boolean | undefined>;
 
+// A path with its query: a value undefined is left out, and so is an empty one, but for those
+// named in `kept`, as a workspace's files' path, which is empty for the top.
+function withQuery(path: string, query?: Query, kept: readonly string[] = []): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined && (value !== "" || kept.includes(key))) params.set(key, String(value));
+  }
+  return params.size ? `${path}?${params}` : path;
+}
+// The query value of a workspace's files that names the path, given even when empty.
+const FILES_PATH = ["path"];
+
+// Where a workspace's files are asked for (backend/rcman/routers/files.py).
+const filesOf = (workspace: number) => `/api/workspaces/${workspace}/files`;
+
+// The address of a file's or a folder's download, which the browser itself asks for
+// (browser.download), so that it saves the answer as it streams in.
+export const downloadUrl = (workspace: number, path: string) =>
+  withQuery(`${filesOf(workspace)}/download`, { path }, FILES_PATH);
+
 // Problem details as the server sent them, in a failed response or in an
 // answer that reports one, as an ApiError.
 export function problemFrom(data: unknown, status: number): ApiError {
@@ -64,15 +84,13 @@ async function request<T>(
   path: string,
   body?: unknown,
   query?: Query,
-  { quiet = false }: { quiet?: boolean } = {},
+  { quiet = false, kept = [] }: { quiet?: boolean; kept?: readonly string[] } = {},
 ): Promise<T> {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined && value !== "") params.set(key, String(value));
-  }
-  const url = params.size ? `${path}?${params}` : path;
-  // Written before anything is sent: a body that cannot be written is the page's fault.
-  const sent = body === undefined ? undefined : JSON.stringify(body);
+  const url = withQuery(path, query, kept);
+  // Written before anything is sent: a body that cannot be written is the page's fault. A file
+  // is sent as it is, which the browser streams from the disk.
+  const raw = body instanceof Blob;
+  const sent = body === undefined || raw ? undefined : JSON.stringify(body);
   const started = performance.now();
   const note = (kind: string, cause: unknown, answer?: Response) => {
     if (quiet) return;
@@ -101,8 +119,12 @@ async function request<T>(
       // Signed out, the proxy in front of rcman redirects to sign in, elsewhere;
       // rcman's own routes never redirect.
       redirect: "manual",
-      headers: sent === undefined ? {} : { "content-type": "application/json" },
-      body: sent,
+      headers: raw
+        ? { "content-type": "application/octet-stream" }
+        : sent === undefined
+          ? {}
+          : { "content-type": "application/json" },
+      body: raw ? body : sent,
       signal: abort.signal,
     });
     if (response.type === "opaqueredirect") {
@@ -215,4 +237,31 @@ export const api = {
   patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),
   delete: <T>(path: string, query?: Query) => request<T>("DELETE", path, undefined, query),
   openTerminal,
+  // A workspace's files: a folder listed, a download looked at before it starts, and a file
+  // uploaded into a folder, its body the file as it is; with no progress, since only fetch can
+  // be told not to follow the sign-in's redirect.
+  files: {
+    list: <T>(workspace: number, path: string) =>
+      request<T>("GET", filesOf(workspace), undefined, { path }, { kept: FILES_PATH }),
+    check: <T>(workspace: number, path: string) =>
+      request<T>(
+        "GET",
+        `${filesOf(workspace)}/download/check`,
+        undefined,
+        { path },
+        {
+          kept: FILES_PATH,
+        },
+      ),
+    upload: <T>(workspace: number, path: string, file: File, overwrite: boolean) =>
+      request<T>(
+        "PUT",
+        filesOf(workspace),
+        file,
+        { path, name: file.name, overwrite },
+        {
+          kept: FILES_PATH,
+        },
+      ),
+  },
 };

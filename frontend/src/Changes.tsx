@@ -149,6 +149,7 @@ export function Files({
   action,
   busy,
   onAct,
+  workspace,
 }: {
   title: string;
   list: FileList;
@@ -157,6 +158,7 @@ export function Files({
   action: string;
   busy: boolean;
   onAct: () => void;
+  workspace: number;
 }) {
   const hasFiles = list.files.length > 0;
   const [open, setOpen] = useState(hasFiles);
@@ -224,14 +226,19 @@ export function Files({
                 // biome-ignore lint/suspicious/noArrayIndexKey: two names that are not UTF-8 can read the same once decoded, so the path alone is not unique; a row keeps no state of its own
                 <li key={`${file.path}:${i}`}>
                   {selectable(file) ? (
-                    <label className="file">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(file.path)}
-                        onChange={() => toggle(file.path)}
-                      />
-                      <span className="file-name">{file.path}</span>
-                    </label>
+                    <span className="file">
+                      {/* its own label, so that a touch screen gives the box a finger's room;
+                          the name beside it is a link */}
+                      <label className="file-check">
+                        <input
+                          type="checkbox"
+                          aria-label={file.path}
+                          checked={selected.has(file.path)}
+                          onChange={() => toggle(file.path)}
+                        />
+                      </label>
+                      <FileName workspace={workspace} file={file} />
+                    </span>
                   ) : (
                     <span className="file">
                       <span className="no-checkbox" aria-hidden="true" />
@@ -252,6 +259,30 @@ export function Files({
         )}
       </div>
     </div>
+  );
+}
+
+// Where the repository is among a workspace's files, which the Files tab shows from their top:
+// WORK in backend/rcman/runtime.py.
+const REPOSITORY_FOLDER = "work";
+
+// A file's name, a link to its folder in the Files tab with its row marked; a deleted file's,
+// which is not there to show, as text.
+function FileName({ workspace, file }: { workspace: number; file: GitFile }) {
+  if (file.change === "deleted") return <span className="file-name">{file.path}</span>;
+  // an untracked folder is listed with a slash at its end
+  const parts = file.path.replace(/\/+$/, "").split("/");
+  const name = parts.pop() ?? "";
+  const search = new URLSearchParams({
+    workspace: String(workspace),
+    tab: "files",
+    path: [REPOSITORY_FOLDER, ...parts].join("/"),
+    file: name,
+  });
+  return (
+    <Link className="file-name" to={{ pathname: "/", search: `?${search}` }} replace>
+      {file.path}
+    </Link>
   );
 }
 
@@ -616,6 +647,7 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
             action={m.unstageSelected}
             busy={busy}
             onAct={unstage}
+            workspace={workspace}
           />
           <ProblemView error={errors.unstage ?? null} labels={{ files: m.stagedTitle }} />
           <Files
@@ -626,6 +658,7 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
             action={m.stageSelected}
             busy={busy}
             onAct={stage}
+            workspace={workspace}
           />
           <ProblemView error={errors.stage ?? null} labels={{ files: m.notStagedTitle }} />
         </>

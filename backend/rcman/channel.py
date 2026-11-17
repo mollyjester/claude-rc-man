@@ -10,7 +10,8 @@ stdin from /dev/null and its two output streams into files of the channel's own
 in the workspace's runtime folder; then a header line, the request's nonce, the
 exit code and the two files' sizes, and the two files' bytes. Only argv crosses:
 nothing a request runs reads anything from rcman, and anything that needs stdin
-runs as an exec of its own (Runtime.exec).
+runs as an exec of its own (Runtime.exec), or, where its input or output is too long
+to be held whole, as a stream (Runtime.stream).
 
 Requests are answered one at a time. A channel that cannot be opened because of
 conmon's error (``no logs from conmon``), and one found dead before a request was

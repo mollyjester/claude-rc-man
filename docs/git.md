@@ -81,7 +81,8 @@ Its head names the branch, with the buttons to switch or make a branch, fetch or
 sync, how far the branch is ahead of and behind the one it tracks, and **Push**;
 below are the files staged and the files changed and not yet staged, each list
 folding under its heading with **Unstage selected** or **Stage selected** beside
-it; and at its foot, **Commit** and when the status was last checked. Everything
+it; and at its foot, **Commit** and when the status was last checked. A file's name opens its
+folder in the **Files** tab (see [Files](workspaces.md#files)), with its row marked. Everything
 it does is done in that workspace, as the commit author and with the token
 above.
 

@@ -4,8 +4,8 @@ Administrators change the settings of rcman itself, which are the same for every
 the **Service settings** page, under **Administration**. It is not a person's own
 [Settings](settings.md) page.
 
-The page has a card for each part, **Monitoring**, **Port forwarding** and
-**Microsoft sign-in**. Each card
+The page has a card for each part, **Monitoring**, **Port forwarding**, **Files**
+and **Microsoft sign-in**. Each card
 saves on its own: **Save** in a card saves only what that card holds, the card says
 **Saving…** while it does, and then that its settings are saved. A value rcman refuses
 is shown under its field, with what to change, and nothing in that card is saved. The
@@ -43,6 +43,16 @@ Each timeout is a whole number in its label's unit, and the idle timeout must be
 than the absolute lifetime. The defaults, and the shortest and longest each takes, are in
 `backend/rcman/forwarding_settings.py`. Saving them is recorded in the
 [audit trail](audit.md) as `forwarding.settings`.
+
+## Files
+
+What may be downloaded from the files of a workspace (see [Files](workspaces.md#files)):
+**Largest folder download (MB)**, the largest folder that downloads as a zip, in megabytes of a
+million bytes, a whole number, where 0 means no limit. A single file's download is never
+limited. A folder over the limit is refused before anything downloads, with its size and the
+limit. The default, and the largest value it
+takes, are in `backend/rcman/files_settings.py`. Saving it is recorded in the
+[audit trail](audit.md) as `files.settings`.
 
 ## Microsoft sign-in
 

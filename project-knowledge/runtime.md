@@ -541,6 +541,52 @@ counted. `LATENCY_P95_SECONDS` in
 ([tests.md](tests.md#the-benchmark)); no test holds the memory the podman client of a
 channel takes.
 
+## Streams
+
+What needs more input, or gives more output, than a channel's request holds whole runs as a
+stream: `Runtime.stream(name, argv, pidfile)`, whose standard input and output are passed on as
+they come (`Stream.write`, `Stream.read`, the end of input `Stream.close_input`). On Podman it is
+`podman --remote exec --interactive <container>` behind the exec's mark (`marked_exec`), and a
+stream whose exec ends without the mark failed (`StreamFailed`), as its output was lost; the host
+runtime runs it itself, in a session of its own.
+
+- **The launcher** (`TRANSFER_LAUNCHER`, a fixed program the layout's shell runs with `-c`)
+  writes its own id and start time from `/proc` to the stream's pidfile, `transfer-<token>.pid`
+  in the runtime folder (`transfer_pidfile`), then `TRANSFER_READY` on stderr, then execs the
+  program, which so keeps the id: the leader of a process group of its own, as crun makes a
+  Podman exec's process, and the host runtime's in its own session. `Stream.ready` waits for the
+  mark, so a stream is not taken for started before its pidfile names it.
+- **Ending.** `Stream.end(run, *files)` runs `END_TRANSFER` through the workspace's channel
+  (`run`): the process group the pidfile names is killed only while that process still has the
+  start time written there, and the pidfile and `files` are removed; then the client here is
+  killed and reaped, each step whatever the one before did. Killing the podman client alone would
+  leave the program running in the container. Ending again is nothing; a stream ended so, or one that ended without its marks,
+  never reads as whole (`Stream.wait`).
+- **Stopping.** A container's stop ends every exec in it, a stream's among them; the host
+  runtime registers each stream beside its channels, and its stop kills their process groups
+  too (`_end_channels`).
+- **Idle.** `Stream.read` waits at most the seconds it is given for a byte, and `Stream.write`
+  as long for the program to take one (`TransferIdle`). A read or a write holds its pipe while
+  it uses it, and `end` closes each only once none does, so neither uses a descriptor closed or
+  given to another file.
+- **A folder's zip** is a stream of the workspace's bsdtar (`Layout.bsdtar`): the tools' static
+  build on Podman (`TOOLS_MOUNT/bin/bsdtar`, [installer.md](installer.md#what-workspaces-are-made-of)),
+  the host's own on the host runtime, as its tmux is. `files.ZIP` is the fixed script it runs
+  (backend/rcman/files.py says what it keeps and how names are passed). The top of the volume
+  (`Layout.volume`) is zipped without the names `Layout.hidden` gives: on Podman the volume's
+  `claude`, `home` and `containers` (`CONTAINERS`, the graphroot of
+  `backend/rcman/podman/storage.conf`); on the host runtime those and what the runtime keeps
+  beside them in the workspace's folder.
+- **Paths in the volume** are resolved in the workspace by `files.RESOLVE`, which every script of
+  `files.py` begins with: the layout's `realpath`, then the script's own tests of where the path
+  went and whether it is there, since busybox's and GNU's `realpath` alike pass a path whose last
+  part is missing, and fail on a missing part before it. The scripts name the layout's programs
+  (`files.TOOLS`, each among `Layout.tools`), busybox's applets on Podman and the host's own on
+  the host runtime.
+
+The contract's stream, zip and resolver cases (`tests/runtime_contract.py`) hold both runtimes to
+this, Podman's among the basic ones.
+
 ## A workspace's server
 
 `claude_server.Server` runs everything in the workspace through the channel:
@@ -1028,8 +1074,8 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
   `wanted` is left as it is - and `claude_version` cleared. A server request that passed
   `ready()` before and reaches the lock after is refused there too: `start_server`,
   `stop_server`, `forget_server` and `confirm` look at the phase under the lock
-  (`_not_switching`). Then, without the lock, `on_rebuilding` (terminals.py ends the terminal
-  with `workspace_rebuilding`) and the channel closed; `_replace` discards the container, the
+  (`_not_switching`). Then, without the lock, `on_rebuilding` (terminals.py ends the terminal,
+  and transfers.py the downloads and uploads, with `workspace_rebuilding`) and the channel closed; `_replace` discards the container, the
   first step whose failure, of whatever kind, is rolled back. `_make_new` makes the new
   container from the plan as built (a built image by its next name, and by id), with `_made_for` after it, which removes
   the container and volume of a workspace deleted meanwhile; checks libc and git; runs every
@@ -1123,8 +1169,8 @@ are kept.
   server, if tmux says it runs, is stopped with `Server.stop` (Ctrl+C, then `STOP_TIMEOUT`),
   killed if it still runs, never through `stop_server`, so `wanted` stays as the record that it
   ran. Without the lock, each step logged on failure and none stopping the rest:
-  `on_stopping` (terminals.py ends the terminal, forward.py the forward sessions, each with
-  `workspace_stopped`), `sweep_forwards`, the channel closed, and `Runtime.stop` where the
+  `on_stopping` (terminals.py ends the terminal, forward.py the forward sessions, transfers.py
+  the downloads and uploads, each with `workspace_stopped`), `sweep_forwards`, the channel closed, and `Runtime.stop` where the
   container is there and runs, which ends what runs in it, the containers in it among it, after
   the runtime's grace, and loses its tmpfs. Under the lock again, the row is written `halted`,
   `claude_version` and `error` cleared, only once the runtime says the container is not there or
@@ -1238,7 +1284,8 @@ the prefix it was started with.
   clone, a repository's devcontainer.json, is described under
   [A repository's devcontainer.json](#a-repositorys-devcontainerjson).
 - **Deleting.** `delete` marks it `deleting`, ends its terminal (see
-  [The terminal's shell](#the-terminals-shell)), and removes its container and
+  [The terminal's shell](#the-terminals-shell)) and its downloads and uploads (see
+  [Streams](#streams)), and removes its container and
   volume, which ends its server, then its row — never the person's sign-in; one still being made
   or rebuilt goes once that work stops (see [Rebuilding](#rebuilding), Deleting). One being cloned, pulled for, built for or running a lifecycle command is
   cancelled by deleting it: `_stop_working` sets its event, which stops a pull, and

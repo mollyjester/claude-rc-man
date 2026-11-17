@@ -15,7 +15,7 @@ ARG NODE_SHA256_ARM64=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d
 ARG PLAYWRIGHT_VERSION=1.63.0
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      podman crun catatonit uidmap make git gh tmux busybox-static curl xz-utils python3 \
+      podman crun catatonit uidmap make git gh tmux busybox-static libarchive-tools unzip curl xz-utils python3 \
       ca-certificates libcap2-bin passt \
  && rm -rf /var/lib/apt/lists/*
 # uv and Node.js, each checked against its pinned sha256 before it is unpacked.

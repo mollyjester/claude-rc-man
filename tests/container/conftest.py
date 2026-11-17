@@ -6,9 +6,10 @@ stand-ins of tests/container/stand_ins.py as programs.
 
 The tools are those ``installer/install.py`` writes: busybox and its shell, the terminal
 descriptions, tmux's configuration, the Podman tools and the workspaces' seccomp profile of
-``ensure_podman_tools``, the instructions for Claude of ``ensure_instructions``, and tmux,
-built on the engine with the installer's own argument list from its pinned source in the
-toolchain (the ``toolchain`` fixture), as the installer builds it through rcman's own Podman.
+``ensure_podman_tools``, the instructions for Claude of ``ensure_instructions``, and the tools
+the installer builds (tmux and bsdtar), each built on the engine with the installer's own
+argument list from its pinned source in the toolchain (the ``toolchain`` fixture), as the
+installer builds it through rcman's own Podman.
 They are in held folders under /tmp, readable by everyone, as the installer's are: a
 container's ids are none of the user's, and pytest's own folders are the user's alone.
 """
@@ -42,14 +43,12 @@ def readable(folder: Path) -> None:
                 os.chmod(path, 0o755 if os.access(path, os.X_OK) else 0o644)
 
 
-def built_tmux(engine, toolchain: Path) -> bytes:
-    """tmux, built on ``engine`` as the installer builds it (``ensure_tools``): its argument
-    list, the program on standard output and its sha256 on standard error."""
-    program = engine.cli(
-        *ins.tmux_build_argv(ins.tmux_tarball(toolchain)), timeout=CONTAINER_HANG_GUARD
-    )
+def built_tool(engine, argv: list[str]) -> bytes:
+    """A tool built on ``engine`` as the installer builds it (``ensure_tools``): its argument
+    list ``argv``, the program on standard output and its sha256 on standard error."""
+    program = engine.cli(*argv, timeout=CONTAINER_HANG_GUARD)
     assert program.returncode == 0, program.stderr[-4000:]
-    reported = ins.TMUX_SHA256_LINE.findall(program.stderr)
+    reported = ins.TOOL_SHA256_LINE.findall(program.stderr)
     assert reported and reported[-1].decode() == hashlib.sha256(program.stdout).hexdigest()
     return program.stdout
 
@@ -59,9 +58,13 @@ def engine_tools(podman_service, toolchain):
     with hf.held("rctools-") as folder:
         os.chmod(folder, 0o755)
         (folder / "bin").mkdir()
-        (folder / "bin" / "tmux").write_bytes(built_tmux(podman_service, toolchain))
-        os.chmod(folder / "bin" / "tmux", 0o755)
-        assert ins.is_static(folder / "bin" / "tmux")
+        for name, argv in (
+            ("tmux", ins.tmux_build_argv(ins.tmux_tarball(toolchain))),
+            ("bsdtar", ins.bsdtar_build_argv(ins.libarchive_tarball(toolchain))),
+        ):
+            (folder / "bin" / name).write_bytes(built_tool(podman_service, argv))
+            os.chmod(folder / "bin" / name, 0o755)
+            assert ins.is_static(folder / "bin" / name), name
         shutil.copyfile(ins.BUSYBOX, folder / "bin" / "busybox")
         assert ins.is_static(folder / "bin" / "busybox")
         os.chmod(folder / "bin" / "busybox", 0o755)

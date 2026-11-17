@@ -613,6 +613,86 @@ test("choosing Terminal shows it, keeps the choice in the address, and opens one
   expect(sockets()[0].closedByPage).toBeUndefined();
 });
 
+// A folder's listing as the server answers it: folders first.
+const folder = (path: string, entries: [string, string][]) => ({
+  path,
+  entries: entries.map(([name, kind]) => ({
+    name,
+    kind,
+    size: kind === "file" ? 10 : null,
+    changed: 1_800_000_000 - 60,
+    target: null,
+  })),
+  more: 0,
+  now: 1_800_000_000,
+  ...(path === "" ? { reserved: ["claude", "home", "containers"] } : {}),
+});
+const FOLDERS: Record<string, ReturnType<typeof folder>> = {
+  "": folder("", [["work", "folder"]]),
+  work: folder("work", [
+    ["src", "folder"],
+    ["a.txt", "file"],
+  ]),
+  "work/src": folder("work/src", [["app.ts", "file"]]),
+};
+const listingOf = {
+  "GET /api/workspaces/1/files": (call: { query: URLSearchParams }) =>
+    FOLDERS[call.query.get("path") ?? "missing"],
+};
+const pathOf = (search: string) => new URLSearchParams(search).get("path");
+
+test("choosing Files lists the folder the address names, folders first, and opening a folder keeps it in the address in place", async () => {
+  const fake = dashboard(withServer("ready"), listingOf);
+  const { location } = renderApp("/?workspace=1");
+  await userEvent.click(await tab(m.tabFiles));
+  expect(tabOf(location().search)).toBe("files");
+  const top = await screen.findByRole("list", { name: m.filesAt("") });
+  await userEvent.click(await within(top).findByRole("link", { name: "work" }));
+  expect(pathOf(location().search)).toBe("work");
+  const work = await screen.findByRole("list", { name: m.filesAt("work") });
+  await within(work).findByText("a.txt");
+  expect(
+    within(work)
+      .getAllByRole("listitem")
+      .map((row) => row.textContent),
+  ).toEqual([expect.stringContaining("src"), expect.stringContaining("a.txt")]);
+  expect(work).toHaveFocus();
+  expect(fake.made("GET", "/api/workspaces/1/files").map((c) => c.query.get("path"))).toEqual([
+    "",
+    "work",
+  ]);
+  // back to Overview: the folder leaves the address with the tab
+  await userEvent.click(await tab(m.tabOverview));
+  expect(tabOf(location().search)).toBeNull();
+  expect(pathOf(location().search)).toBeNull();
+});
+
+test("a file's name in Changes opens its folder in Files with its row marked", async () => {
+  dashboard(withServer("ready"), {
+    ...listingOf,
+    "GET /api/git/status": {
+      ...STATUS_CLEAN,
+      not_staged: { files: [{ path: "src/app.ts", change: "modified" }], more: 0 },
+    },
+    "GET /api/git/branches": BRANCHES,
+  });
+  const { location } = renderApp("/?workspace=1");
+  const changes = await within(await panel("alpha")).findByRole("region", {
+    name: m.changesTitle,
+  });
+  await userEvent.click(await within(changes).findByRole("link", { name: "src/app.ts" }));
+  const search = new URLSearchParams(location().search);
+  expect([search.get("tab"), search.get("path"), search.get("file")]).toEqual([
+    "files",
+    "work/src",
+    "app.ts",
+  ]);
+  const list = await screen.findByRole("list", { name: m.filesAt("work/src") });
+  const download = await within(list).findByRole("button", { name: m.filesDownload("app.ts") });
+  expect(download.closest("li")).toHaveAttribute("aria-current", "true");
+  await waitFor(() => expect(download).toHaveFocus());
+});
+
 // --- the Container card, and rebuilding a workspace ---------------------------------
 
 // A cloned workspace that may be rebuilt now, with what more is given.
@@ -750,6 +830,9 @@ test("Stop is sent at once, and once; the stopped workspace says so where it is 
   await userEvent.click(await tab(m.tabTerminal));
   expect(opened.getByText(m.terminalPower.workspace_stopped)).toBeInTheDocument();
   expect(sockets()).toEqual([]); // no terminal is asked of a stopped workspace
+  await userEvent.click(await tab(m.tabFiles));
+  expect(opened.getByText(m.filesPower.workspace_stopped)).toBeInTheDocument();
+  expect(fake.made("GET", "/api/workspaces/1/files")).toEqual([]); // nor a listing
 
   // Start says it is starting while its request runs, and while the workspace is starting.
   await userEvent.click(start);

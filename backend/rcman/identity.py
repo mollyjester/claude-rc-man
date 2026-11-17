@@ -38,6 +38,11 @@ NAVIGATIONS = {
         "a navigation from a forwarded port's host, which sends no Origin: refused unless the "
         "browser says it loads a document, and it hands out a way in only to the person's own port"
     ),
+    ("GET", "/api/workspaces/{workspace}/files/download"): (
+        "a navigation that saves a workspace's file or folder, which sends no Origin: refused "
+        "unless the browser says it comes from rcman's own pages (Sec-Fetch-Site: same-origin), "
+        "and only for the person's own workspace"
+    ),
 }
 
 

@@ -40,6 +40,21 @@ export function formatSeconds(seconds: number): string {
   return `${COUNT.format(seconds)}${NBSP}${m.timeUnits.second}`;
 }
 
+// How long ago something changed, in the largest unit of which it is a whole one or more,
+// rounded down: 5 min, 2 h, 3 d; under a minute, in seconds, and none below 0, as a clock that
+// differs a little could give.
+export function formatAge(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const units: [number, string][] = [
+    [86400, m.timeUnits.day],
+    [3600, m.timeUnits.hour],
+    [60, m.timeUnits.minute],
+  ];
+  for (const [size, unit] of units)
+    if (whole >= size) return `${COUNT.format(Math.floor(whole / size))}${NBSP}${unit}`;
+  return `${COUNT.format(whole)}${NBSP}${m.timeUnits.second}`;
+}
+
 // A moment as a date and a time in UTC, as the audit trail shows one, the same for everyone;
 // what cannot be read as one is shown as it is.
 export function utcMoment(iso: string): string {

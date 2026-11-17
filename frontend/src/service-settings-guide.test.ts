@@ -21,6 +21,8 @@ const NAMED = [
   m.forwardingEnabled,
   m.forwardingIdle,
   m.forwardingAbsolute,
+  m.filesTitle,
+  m.filesFolderLimit,
   m.microsoftTitle,
   m.microsoftRedirect,
   m.microsoftClientId,
@@ -31,7 +33,7 @@ const NAMED = [
 ];
 const missingNames = (markdown: string) => missing(NAMED, markdown);
 // The cards, by title: the guide has a section named as each.
-const CARDS = [m.monitorSettingsTitle, m.forwardingTitle, m.microsoftTitle];
+const CARDS = [m.monitorSettingsTitle, m.forwardingTitle, m.filesTitle, m.microsoftTitle];
 const anchorOf = (title: string) => anchors(`## ${title}`)[0];
 
 test("every name the Service settings guide gives in bold is text the page shows, it names the page, its cards and their settings with a section for each card, and every link to its sections names one it has", () => {

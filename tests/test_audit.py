@@ -113,7 +113,7 @@ def recorded_actions(app) -> set[str]:
 
 def guide_actions(guide: str) -> set[str]:
     """The actions the guide's actions table lists."""
-    return set(re.findall(r"^\| `([a-z]+\.[a-z_]+)` \|", guide, re.MULTILINE))
+    return set(re.findall(r"^\| `([a-z]+(?:\.[a-z_]+)+)` \|", guide, re.MULTILINE))
 
 
 def undocumented_actions(app) -> set[str]:

@@ -154,6 +154,14 @@ function api() {
     "GET /api/forwarding/settings": {
       settings: { enabled: false, idle_minutes: 5, absolute_hours: 12 },
     },
+    "GET /api/files/settings": { settings: { folder_download_limit_mb: 0 } },
+    "GET /api/workspaces/1/files": {
+      path: "",
+      entries: [{ name: "a.txt", kind: "file", size: 1, changed: 0, target: null }],
+      more: 0,
+      now: 0,
+      reserved: [],
+    },
     "GET /api/microsoft/settings": {
       settings: {
         enabled: false,
@@ -351,6 +359,16 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
   ],
   // beta is being made, so its trash button says why it cannot be deleted yet
   ["a workspace that cannot be deleted", "/", () => openTrash("beta")],
+  [
+    "replacing a file",
+    "/?workspace=1&tab=files",
+    async () => {
+      await screen.findByRole("button", { name: m.filesDownload("a.txt") });
+      const chooser = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+      await userEvent.upload(chooser, new File(["planted"], "a.txt"));
+      await screen.findByRole("dialog", { name: m.filesReplaceTitle("a.txt") });
+    },
+  ],
 ];
 
 // What is wrong with the inputs under root: a validation rule of an input's own, an input of a
@@ -440,7 +458,16 @@ function hierarchyFaults(root: ParentNode): string[] {
 }
 
 // The forms whose submit cannot be undone, which lead with danger instead.
-const DESTRUCTIVE = ["removing someone", "deleting a workspace", "removing the GitHub token"];
+const DESTRUCTIVE = [
+  "removing someone",
+  "deleting a workspace",
+  "removing the GitHub token",
+  "replacing a file",
+];
+// Destructive forms asked on the way through another action, not opened by a button of their
+// own: replacing a file is asked by an upload, whose Upload replaces nothing where no name is
+// taken, so it is no danger outline.
+const ASKED_ON_THE_WAY = ["replacing a file"];
 
 // Forms that lead with danger where they are, with no dialog to ask first: the choice is the
 // danger button itself.
@@ -485,26 +512,27 @@ function openerFaults(opener: Element | undefined): string[] {
   return [];
 }
 
-test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))(
-  "what opens the form for %s is a danger outline",
-  async (_, where, open) => {
-    api();
-    show(where);
-    const clicked: Element[] = [];
-    const click = userEvent.click;
-    const spy = vi.spyOn(userEvent, "click").mockImplementation(async (element) => {
-      clicked.push(element);
-      return click(element);
-    });
-    try {
-      await open();
-    } finally {
-      spy.mockRestore();
-    }
-    expect(screen.getByRole("dialog")).toBeInTheDocument(); // positive control: it opened
-    expect(openerFaults(clicked.at(-1))).toEqual([]);
-  },
-);
+test.each(
+  [...PAGES, ...CHOICES].filter(
+    ([page]) => DESTRUCTIVE.includes(page) && !ASKED_ON_THE_WAY.includes(page),
+  ),
+)("what opens the form for %s is a danger outline", async (_, where, open) => {
+  api();
+  show(where);
+  const clicked: Element[] = [];
+  const click = userEvent.click;
+  const spy = vi.spyOn(userEvent, "click").mockImplementation(async (element) => {
+    clicked.push(element);
+    return click(element);
+  });
+  try {
+    await open();
+  } finally {
+    spy.mockRestore();
+  }
+  expect(screen.getByRole("dialog")).toBeInTheDocument(); // positive control: it opened
+  expect(openerFaults(clicked.at(-1))).toEqual([]);
+});
 
 test("the opener check fails on a plain, primary or danger button, or none", () => {
   const button = (className: string) =>
@@ -540,6 +568,8 @@ test("the leading check fails on a form with no leading button and a dialog with
   // every form named as leading with danger is one of those checked
   const pages = [...PAGES, ...CHOICES].map(([page]) => page);
   for (const page of [...DESTRUCTIVE, ...DANGER_IN_PLACE]) expect(pages).toContain(page);
+  // and every form asked on the way is a destructive one
+  for (const page of ASKED_ON_THE_WAY) expect(DESTRUCTIVE).toContain(page);
 });
 
 // The inputs of a form whose refusal names a field: each carries the field's

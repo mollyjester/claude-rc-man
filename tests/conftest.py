@@ -489,6 +489,13 @@ CALLS = {
     ("POST", "/api/workspaces/{workspace}/stop"): {},
     ("POST", "/api/workspaces/{workspace}/start"): {},
     ("GET", "/api/workspaces/{workspace}/devcontainer"): {},
+    ("GET", "/api/workspaces/{workspace}/files"): {"params": {"path": "work"}},
+    ("GET", "/api/workspaces/{workspace}/files/download/check"): {"params": {"path": "work"}},
+    ("GET", "/api/workspaces/{workspace}/files/download"): {"params": {"path": "work"}},
+    ("PUT", "/api/workspaces/{workspace}/files"): {
+        "params": {"path": "work", "name": "x.txt"},
+        "content": b"x",
+    },
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
     ("POST", "/api/me/sign-out"): {"json": {"keep_sessions": True}},
     ("POST", "/api/git/stage"): {"json": {"workspace": 1, "files": ["README.md"]}},
@@ -537,6 +544,9 @@ CALLS = {
     ("GET", "/api/forwarding/settings"): {},
     # the forwarding defaults, from its settings model
     ("PUT", "/api/forwarding/settings"): {"json": forwarding_defaults.model_dump()},
+    ("GET", "/api/files/settings"): {},
+    # no limit on a folder's download, the default
+    ("PUT", "/api/files/settings"): {"json": {"folder_download_limit_mb": 0}},
     ("GET", "/api/microsoft/settings"): {},
     # Microsoft sign-in left off, with nothing configured
     ("PUT", "/api/microsoft/settings"): {

@@ -53,6 +53,8 @@ function api(extra: Routes = {}) {
     "GET /api/microsoft/settings": { settings: MICROSOFT },
     "PUT /api/monitor/settings": (call) => ({ settings: call.body }),
     "PUT /api/forwarding/settings": (call) => ({ settings: call.body }),
+    "GET /api/files/settings": { settings: { folder_download_limit_mb: 0 } },
+    "PUT /api/files/settings": (call) => ({ settings: call.body }),
     ...extra,
   });
 }
@@ -183,4 +185,27 @@ test("Save sends the three forwarding settings, shows Saving… while it is out,
   expect(fake.made("PUT", "/api/monitor/settings")).toHaveLength(0);
   await within(await monitoring()).findByRole("button", { name: m.monitorSave });
   expect(statusOf(await monitoring())).toBeEmptyDOMElement();
+});
+
+// --- files ---
+
+test("Save sends the files limit as a whole number and says it was saved; the card is third, after Port forwarding", async () => {
+  const fake = api();
+  renderApp(PATH);
+  const part = await card(m.filesTitle);
+  const titles = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+  expect(titles.indexOf(m.filesTitle)).toBe(titles.indexOf(m.forwardingTitle) + 1);
+  const limit = await field(card(m.filesTitle), m.filesFolderLimit);
+  expect(limit).toHaveValue("0");
+  expect(limit).toHaveAttribute("name", "folder_download_limit_mb");
+  expect(limit).toHaveAttribute("inputmode", "numeric");
+  expect(limit).toHaveAccessibleDescription(m.filesFolderLimitHelp);
+  await userEvent.clear(limit);
+  await userEvent.type(limit, "500");
+  await userEvent.click(within(part).getByRole("button", { name: m.filesSave }));
+  await waitFor(() => expect(fake.made("PUT", "/api/files/settings")).toHaveLength(1));
+  expect(fake.made("PUT", "/api/files/settings")[0].body).toEqual({
+    folder_download_limit_mb: 500,
+  });
+  await waitFor(() => expect(statusOf(part)).toHaveTextContent(m.filesSaved));
 });
