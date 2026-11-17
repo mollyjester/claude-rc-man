@@ -313,6 +313,7 @@ type Installed = {
   previous: boolean;
   in_use: number;
   failed: boolean;
+  delete_refused: { code: string; title: string; reason: string } | null;
 };
 type Drift = {
   workspace: number;
@@ -340,8 +341,16 @@ const installed = (version: string, extra: Partial<Installed> = {}): Installed =
   previous: false,
   in_use: 0,
   failed: false,
+  delete_refused: null,
   ...extra,
 });
+
+// Why the approved version is not deleted, as the report gives it.
+const KEPT_APPROVED = {
+  code: "claude_version_kept",
+  title: "The approved version is kept.",
+  reason: "approved",
+};
 
 // 2.2.0 is approved and runs on one server, 2.1.0 is the previous one and runs on two, and
 // the tested version is 2.1.0; one server runs the previous version.
@@ -350,8 +359,16 @@ const REPORT: Report = {
   previous: "2.1.0",
   tested: "2.1.0",
   installed: [
-    installed("2.2.0", { approved: true, in_use: 1 }),
-    installed("2.1.0", { previous: true, in_use: 2 }),
+    installed("2.2.0", { approved: true, in_use: 1, delete_refused: KEPT_APPROVED }),
+    installed("2.1.0", {
+      previous: true,
+      in_use: 2,
+      delete_refused: {
+        code: "claude_version_kept",
+        title: "A workspace's server uses it.",
+        reason: "in_use",
+      },
+    }),
     installed("2.0.0"),
   ],
   drift: [
@@ -379,6 +396,7 @@ function approving(report: Report, version: string): Report {
       ...i,
       approved: i.version === version,
       previous: i.version === report.approved,
+      delete_refused: i.version === version ? KEPT_APPROVED : null,
     })),
     drift: [],
   };
@@ -495,7 +513,10 @@ test("rolling out a version sends it, says it is working while the request lasts
 
   slow.give({
     ...approving(REPORT, "2.3.0"),
-    installed: [installed("2.3.0", { approved: true }), ...REPORT.installed],
+    installed: [
+      installed("2.3.0", { approved: true, delete_refused: KEPT_APPROVED }),
+      ...REPORT.installed,
+    ],
   });
   expect(await screen.findByText(m.versionsUpgraded("2.3.0"))).toBeInTheDocument();
   expect(screen.queryByText(m.versionsRolling("2.3.0"))).not.toBeInTheDocument();
@@ -670,7 +691,13 @@ test("Mark as failed opens the dialog with the row's version, and sends the vers
   expect(within(card).getByRole("row", { name: /2\.0\.0/ })).toHaveTextContent("Sessions hang");
   const row = within(region).getByRole("row", { name: /2\.0\.0/ });
   expect(within(row).getByText(m.versionsStandingFailed)).toBeInTheDocument();
-  expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+  expect(
+    within(row)
+      .getAllByRole("button")
+      .map((b) => b.textContent),
+  ).toEqual([
+    m.versionsDelete, // a marked version is neither used nor marked again, but may be deleted
+  ]);
 });
 
 test("Remove mark sends the version at once, and Use is offered for it again", async () => {
@@ -693,4 +720,29 @@ test("Remove mark sends the version at once, and Use is offered for it again", a
   ).toBeInTheDocument();
   expect(within(card).queryByRole("row", { name: /2\.0\.0/ })).not.toBeInTheDocument();
   expect(within(card).getByRole("row", { name: /1\.9\.0/ })).toBeInTheDocument();
+});
+
+test("Delete asks first, saying what is lost, then deletes the version and says so", async () => {
+  let report = REPORT;
+  const fake = versionsApi(
+    {
+      "DELETE /api/claude/versions/2.0.0": () =>
+        (report = { ...report, installed: report.installed.filter((i) => i.version !== "2.0.0") }),
+    },
+    () => report,
+  );
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const row = within(region).getByRole("row", { name: /2\.0\.0/ });
+  await userEvent.click(
+    within(row).getByRole("button", { name: m.versionsDeleteVersion("2.0.0") }),
+  );
+  const dialog = screen.getByRole("dialog", { name: m.versionsDeleteTitle("2.0.0") });
+  expect(within(dialog).getByText(m.versionsDeleteBody)).toBeInTheDocument();
+  expect(fake.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsDeleteConfirm }));
+  await waitFor(() => expect(fake.made("DELETE", "/api/claude/versions/2.0.0")).toHaveLength(1));
+  expect(await within(region).findByText(m.versionsDeleted("2.0.0"))).toBeInTheDocument();
+  expect(within(region).queryByRole("row", { name: /2\.0\.0/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });

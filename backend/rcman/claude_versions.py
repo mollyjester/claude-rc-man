@@ -29,6 +29,13 @@ cannot be had or fails leaves the store, and the approvals, exactly as they were
 staging folder is removed whatever happens. ``lock`` is held while the approved version is
 read and a server records it, while the store is changed and while it is pruned, so a server
 never starts on a version that is being removed.
+
+An administrator may delete a version from the store by hand (``delete``): any version but the
+approved one, the one ``current`` names and one a workspace's record names, which a server
+started with, even one that has ended on its own; the previous and the tested version too,
+going back to which then downloads it again and runs the canary. It holds the rollouts' lock
+for its whole run, as a rollout does, and decides under ``lock``, as ``prune`` does; the
+prune's grace period does not apply to it, and it leaves a version's mark as failed alone.
 """
 
 from __future__ import annotations
@@ -47,7 +54,13 @@ from pathlib import Path
 
 from helpers import claude_release, rules
 from rcman import db
-from rcman.problems import CLAUDE_INSTALL_MESSAGES, CLAUDE_INSTALL_STATUS, Problem
+from rcman.problems import (
+    CLAUDE_INSTALL_MESSAGES,
+    CLAUDE_INSTALL_STATUS,
+    VERSION_KEPT_MESSAGES,
+    Problem,
+)
+from rcman.problems import body as problem_body
 from rcman.runtime import CANARY_NAME, CANDIDATE, HELPERS_DIR, RuntimeFailed, RuntimeUnavailable
 from rcman.settings import Settings
 
@@ -185,7 +198,7 @@ class ClaudeVersions:
         version may be marked, in the store or not, also while a rollout or an upgrade of rcman
         runs: a rollout of the version that is under way is refused before it is approved
         (``_commit``). The version may then leave the store, by the prune that follows, which
-        does nothing while a rollout runs; the next prune after it does."""
+        does nothing while a rollout or a deletion runs; the next prune after it does."""
         with self.lock:
             if self.approved() is None:
                 self.reconcile()  # nothing is approved yet: adopt what the store names
@@ -308,8 +321,9 @@ class ClaudeVersions:
     def upgrade(self, version: str, by: str) -> dict:
         """Approve ``version``: a new one, one in the store, or an earlier one again (a
         rollback). The report of what is approved afterwards. ``claude_upgrade_busy`` while
-        another rollout runs, ``claude_version_failed`` where the version is marked as failed,
-        before anything is fetched or checked or once it is marked while it is checked,
+        another rollout or a deletion runs, ``claude_version_failed`` where the version is
+        marked as failed, before anything is fetched or checked or once it is marked while it
+        is checked,
         ``claude_install_failed`` where the version is not a version or cannot be had,
         ``claude_checks_failed`` where it fails the canary's checks, a RuntimeFailed where the
         canary could not run, and ``rcman_upgrading`` while an upgrade of rcman is under way;
@@ -332,7 +346,7 @@ class ClaudeVersions:
         return self.report()
 
     def rolling_out(self) -> bool:
-        """Whether a rollout, or the sweep of what one left, runs."""
+        """Whether a rollout, a deletion, or the sweep of what a rollout left, runs."""
         return self._upgrading.locked()
 
     @contextlib.contextmanager
@@ -454,6 +468,65 @@ class ClaudeVersions:
                         log.exception("the link %s could not be put back", self.store / CURRENT)
                 raise
 
+    # --- deleting a version by hand ----------------------------------------------------------
+
+    @staticmethod
+    def _kept_problem(reason: str) -> Problem:
+        """``claude_version_kept``, with why in plain words and as ``reason``, one of
+        problems.VERSION_KEPT_MESSAGES."""
+        return Problem("claude_version_kept", title=VERSION_KEPT_MESSAGES[reason], reason=reason)
+
+    def _kept_reason(self, version: str, approved: str | None, current: str | None, recorded):
+        """Why this version, of its own, is not deleted: it is approved, ``current`` names it,
+        or a workspace's record names it; None where nothing keeps it."""
+        if version == approved:
+            return "approved"
+        if version == current:
+            return "current"
+        if version in recorded:
+            return "in_use"
+        return None
+
+    def _kept_body(self, reason: str) -> dict:
+        problem = self._kept_problem(reason)
+        return problem_body(problem.code, problem.status, problem.title, **problem.extra)
+
+    def delete(self, version: str) -> dict:
+        """Remove ``version`` from the store, as an administrator asked; the report afterwards.
+        ``claude_version_kept`` with its reason while a rollout, another deletion or a sweep
+        runs (``rolling_out``) or an upgrade of rcman is under way (``rcman_upgrading``), and
+        for the approved version, the one ``current`` names and one a workspace's record names
+        (``in_use``); ``claude_version_not_installed`` where the store does not have it. The
+        rollouts' lock is held throughout, so no rollout and no admission of an upgrade of rcman
+        comes between the checks and the removal; the store and the records are read under
+        ``lock``, which a server's start pins its version under. A mark as failed stays."""
+        if not self._upgrading.acquire(blocking=False):
+            raise self._kept_problem("rolling_out")
+        try:
+            # outside ``lock``: it may ask systemd
+            if self.workspaces.upgrading():
+                raise self._kept_problem("rcman_upgrading")
+            with self.lock:
+                if not rules.VERSION.fullmatch(version) or not self._usable(
+                    self.versions_dir / version
+                ):
+                    raise Problem("claude_version_not_installed")
+                if self.approved() is None:
+                    self.reconcile()  # nothing is approved yet: adopt what the store names
+                why = self._kept_reason(
+                    version,
+                    self.approved(),
+                    self._current(),
+                    set(self.workspaces.recorded_versions().values()),
+                )
+                if why is not None:
+                    raise self._kept_problem(why)
+                (self.versions_dir / version).unlink(missing_ok=True)
+                log.info("Claude Code %s was removed from the store", version)
+        finally:
+            self._upgrading.release()
+        return self.report()
+
     # --- pruning and sweeping ------------------------------------------------------------------
 
     def prune_quietly(self) -> None:
@@ -486,7 +559,7 @@ class ClaudeVersions:
         otherwise hold up every start and approval. Then, under ``lock``, what is to go is
         decided again from the database, and a version is also kept if a workspace's record
         differs from what it was before the asking: a start may have pinned it meanwhile.
-        Nothing is done while a rollout runs."""
+        Nothing is done while a rollout or a deletion runs."""
         if not self.prunes or self._upgrading.locked():
             return
         candidates = set(self.installed()) - self._kept()
@@ -510,7 +583,8 @@ class ClaudeVersions:
 
     def sweep(self) -> None:
         """Remove what a rollout that was cut short left: staging folders, partial files in
-        the store, and a canary container. It does nothing while a rollout runs."""
+        the store, and a canary container. It does nothing while a rollout or a deletion
+        runs."""
         if not self._upgrading.acquire(blocking=False):
             return
         try:
@@ -537,14 +611,18 @@ class ClaudeVersions:
     def report(self) -> dict:
         """What the Versions page shows: the approved, previous and tested versions, each
         version in the store with whether it is approved, previous or marked failed and how
-        many servers use it, the servers that run another version than the approved one and
-        whether theirs is marked failed, the marks themselves (the newest first), whether a
-        rollout runs, and whether an upgrade of rcman is under way, which no rollout may start
-        in."""
+        many servers use it and why it may not be deleted, if it may not (the problem a
+        deletion would be refused with, for a reason of the version's own), the servers that
+        run another version than the approved one and whether theirs is marked failed, the
+        marks themselves (the newest first), whether a rollout or a deletion runs, and whether
+        an upgrade of rcman is under way, which no rollout may start in."""
         with self.lock:
             approved, previous = self.approved(), self.previous()
             installed = self.installed()
             failures = self.failures()
+            current = self._current()
+            recorded = set(self.workspaces.recorded_versions().values())
+        refused = {v: self._kept_reason(v, approved, current, recorded) for v in installed}
         failed = {f.version for f in failures}
         pinned = self.workspaces.pinned_servers()
         used: dict[str, int] = {}
@@ -562,6 +640,7 @@ class ClaudeVersions:
                     "previous": v == previous,
                     "in_use": used.get(v, 0),
                     "failed": v in failed,
+                    "delete_refused": None if refused[v] is None else self._kept_body(refused[v]),
                 }
                 for v in installed
             ],

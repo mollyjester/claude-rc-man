@@ -64,7 +64,16 @@ function api() {
       approved: "1.0.0",
       previous: null,
       tested: "1.0.0",
-      installed: [],
+      installed: [
+        {
+          version: "0.9.0",
+          approved: false,
+          previous: false,
+          in_use: 0,
+          failed: false,
+          delete_refused: null,
+        },
+      ],
       drift: [],
       failed: [],
       upgrading: false,
@@ -352,6 +361,16 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
   ],
   ["deleting a workspace", "/?workspace=1", () => openTrash("alpha")],
   [
+    "deleting a Claude Code version",
+    "/admin/claude",
+    async () => {
+      await userEvent.click(
+        await screen.findByRole("button", { name: m.versionsDeleteVersion("0.9.0") }),
+      );
+      await screen.findByRole("dialog", { name: m.versionsDeleteTitle("0.9.0") });
+    },
+  ],
+  [
     "rebuilding a workspace",
     "/?workspace=1",
     async () => {
@@ -472,6 +491,7 @@ function hierarchyFaults(root: ParentNode): string[] {
 const DESTRUCTIVE = [
   "removing someone",
   "deleting a workspace",
+  "deleting a Claude Code version",
   "removing the GitHub token",
   "replacing a file",
 ];

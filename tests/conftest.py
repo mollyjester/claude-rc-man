@@ -527,6 +527,7 @@ CALLS = {
     ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
     ("PUT", "/api/claude/failures"): {"json": {"version": "2.2.0", "reason": "It hangs."}},
     ("DELETE", "/api/claude/failures/{version}"): {},
+    ("DELETE", "/api/claude/versions/{version}"): {},
     ("GET", "/api/rcman/upgrade"): {},
     ("POST", "/api/rcman/upgrade"): {},
     ("GET", "/api/docs/{slug}"): {},

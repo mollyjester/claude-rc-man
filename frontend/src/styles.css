@@ -1022,6 +1022,16 @@ td.strong {
   gap: var(--space-1);
   margin: 0;
 }
+/* Why a row offers no action of a kind, in its actions cell: lined up with the buttons at the
+   cell's right end, under them where there are some. */
+.row-actions > .row-note {
+  display: block;
+  text-align: end;
+  font-size: var(--text-small);
+}
+.row-actions > .actions + .row-note {
+  margin-top: var(--space-1);
+}
 /* A row's actions behind one button, More actions, whose menu opens under it at its right:
    on a phone, where the rows are a list (below); wider, the row's own buttons are shown. */
 .person-menu {

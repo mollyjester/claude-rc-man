@@ -635,12 +635,12 @@ heading, asks first, then upgrades rcman to
 - where the upgrade changes rcman's site block, Caddy restarts, and every site it serves,
   your others too, stops for a moment (see [Caddy](#caddy));
 - no workspace is made, cloned, rebuilt, stopped or started and no Claude Code version is
-  rolled out, and the pages that offer them say why.
+  rolled out or deleted, and the pages that offer them say why.
 
 rcman does not take the request while a workspace is being made or rebuilt (a workspace a
 rebuild could not put back does not count: the upgrade's restart puts it back), a workspace is
 being stopped or started, a Claude Code
-version is being rolled out or what one left is being cleared away, rcman is
+version is being rolled out or deleted or what a roll-out left is being cleared away, rcman is
 clearing away images no workspace uses, or nothing watches the request file;
 the page says which. The page follows the upgrade
 through rcman's restart, and once it is done offers **Reload page**, which loads

@@ -6,7 +6,7 @@ import { m } from "./messages";
 const GUIDE = resolve(__dirname, "../../docs/claude-version.md");
 
 // The names the guide must give in bold, as the page shows them: where the page is, and the
-// controls that roll a version out and that mark a version as failed.
+// controls that roll a version out, that mark a version as failed and that delete one.
 const NAMED = [
   m.navAdmin,
   m.navVersions,
@@ -17,6 +17,7 @@ const NAMED = [
   m.versionsMarkFailed,
   m.versionsMarkAnyFailed,
   m.versionsClearFailed,
+  m.versionsDelete,
 ];
 
 // Every piece of text in the message catalogue that is not worked out from values.

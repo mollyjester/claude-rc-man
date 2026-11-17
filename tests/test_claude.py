@@ -1,5 +1,6 @@
 """The Claude account's state, and the Claude Code versions routes for administrators
-(backend/rcman/routers/claude.py): the report, the rollout and the suggestion of the latest.
+(backend/rcman/routers/claude.py): the report, the rollout, marks, deleting a version and the
+suggestion of the latest.
 The rollout's own behaviour is tests/test_claude_versions.py's; signing in and out:
 tests/test_accounts.py."""
 
@@ -10,7 +11,7 @@ from rcman import db
 
 from helpers import claude_checks
 from tests import claude_download
-from tests.conftest import ALICE, FAKE_VERSION, REPO, as_user, changing
+from tests.conftest import ALICE, FAKE_VERSION, REPO, as_user, changing, fake_claude
 
 NEW = "2.0.0"
 
@@ -43,9 +44,18 @@ def test_the_report_names_what_is_approved_installed_and_running(client, app):
     report = r.json()
     assert report["approved"] == FAKE_VERSION and report["previous"] is None
     assert report["tested"] == (REPO / "helpers" / "claude-version").read_text().strip()
-    assert report["installed"] == [
-        {"version": FAKE_VERSION, "approved": True, "previous": False, "in_use": 0, "failed": False}
-    ]
+    [entry] = report["installed"]
+    assert {k: v for k, v in entry.items() if k != "delete_refused"} == {
+        "version": FAKE_VERSION,
+        "approved": True,
+        "previous": False,
+        "in_use": 0,
+        "failed": False,
+    }
+    assert (entry["delete_refused"]["code"], entry["delete_refused"]["reason"]) == (
+        "claude_version_kept",
+        "approved",
+    )
     assert report["drift"] == [] and report["upgrading"] is False
     assert report["failed"] == []
 
@@ -101,7 +111,10 @@ def unmark(client):
     return client.delete(f"/api/claude/failures/{NEW}", headers=changing(ALICE))
 
 
-def test_a_mark_and_its_removal_answer_the_report_and_are_audited(client, settings):
+def test_a_mark_outlives_its_versions_deletion_and_each_is_audited(client, settings):
+    store = settings.claude_store
+    fake_claude(store, version=NEW)
+    fake_claude(store)  # current names the approved one again
     r = mark(client, reason="  it hangs  ")
     assert r.status_code == 200, r.text
     [failed] = r.json()["failed"]
@@ -112,12 +125,19 @@ def test_a_mark_and_its_removal_answer_the_report_and_are_audited(client, settin
     }
     assert r.json()["approved"] == FAKE_VERSION  # the report, whole
     assert client.get("/api/claude/versions", headers=as_user(ALICE)).json()["failed"] == [failed]
+    assert (store / "versions" / NEW).is_file()  # positive control: the file is there
+    r = client.delete(f"/api/claude/versions/{NEW}", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    assert NEW not in [i["version"] for i in r.json()["installed"]]
+    assert not (store / "versions" / NEW).exists()
+    assert [f["version"] for f in r.json()["failed"]] == [NEW]  # the mark stays
     r = unmark(client)
     assert r.status_code == 200, r.text
     assert r.json()["failed"] == [] and r.json()["approved"] == FAKE_VERSION
-    recorded = [(r["action"], r["target"], r["result"], r["email"]) for r in rows(settings)[-2:]]
+    recorded = [(r["action"], r["target"], r["result"], r["email"]) for r in rows(settings)[-3:]]
     assert recorded == [
         ("claude.mark_failed", '{"version": "2.0.0", "reason": "it hangs"}', "ok", ALICE),
+        ("claude.delete_version", NEW, "ok", ALICE),
         ("claude.clear_failed", NEW, "ok", ALICE),
     ]
 

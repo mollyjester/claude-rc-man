@@ -44,7 +44,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
 | `gitaccount.py` | A person's commit author and GitHub token, kept in SQLite and written into their volume's git folder (see [git in workspaces](#git-in-workspaces)) |
 | `routers/git.py`, `routers/github.py` | The git routes, by workspace id, and the person's GitHub token (see [git in workspaces](#git-in-workspaces)) |
-| `claude_versions.py` | `ClaudeVersions`: the approvals, the versions marked as failed, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
+| `claude_versions.py` | `ClaudeVersions`: the approvals, the versions marked as failed, the store, rolling out a version, deleting one by hand, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `forwards.py` | What relays to a workspace's forwarded ports leave behind, ended by the sweep (see [runtime.md](runtime.md#forwarded-ports)) |
 | `forward.py`, `routers/forward.py` | The forwarding server on `RCMAN_FORWARD_SOCKET`, its sessions, the ways in the hand-off hands out, the hosts marked as wanted, Caddy's ask and the caps on relays; and the hand-off, `GET /api/forward/hand-off` (see [Port forwarding](#port-forwarding)) |
@@ -619,7 +619,7 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   Nothing restarts a running server.
 - **Rolling out.** `POST /api/claude/upgrade {version}` (administrators, audited as
   `claude.upgrade` with the version as target) is `upgrade`: synchronous, one at a time
-  (`claude_upgrade_busy`), and none while an upgrade of rcman is under way (`rcman_upgrading`,
+  (`claude_upgrade_busy`, also while a version is being deleted), and none while an upgrade of rcman is under way (`rcman_upgrading`,
   see [Upgrading rcman](#upgrading-rcman)). The candidate is staged outside the store, in a folder of its own
   in `STAGING_FOLDER` beside the database, fetched by `helpers/claude_release.py` (streamed,
   hashed, size-capped, renamed into place only whole; the installer fetches the tested version
@@ -655,13 +655,28 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   `reconcile` adopts first); one marked already is `claude_version_failed`, and removing a
   mark that is not there `claude_version_not_failed`. Marking is allowed while a roll-out or
   an upgrade of rcman runs, and is followed by `prune_quietly`, which does nothing while a
-  roll-out runs. A roll-out of a marked version is `claude_version_failed` before anything
+  roll-out or a deletion runs. A roll-out of a marked version is `claude_version_failed` before anything
   else, the shortcut for a version approved before among it, and `_commit` asks again under
   `lock`, so a mark made while the canary runs stops the approval and the store and the
   approvals stay as they were. A marked version is never the previous one: the previous is
   the last good one, which pruning keeps while it is in the store; one that left the store
   before is downloaded and run through the canary again when an administrator goes back to
   it. Nothing marks a version by itself: a canary that fails marks nothing.
+- **Deleting a version.** `DELETE /api/claude/versions/{version}` (administrators, audited as
+  `claude.delete_version` with the version as target) is `delete`, which answers the report. It
+  holds `_upgrading`, the roll-outs' lock, for its whole run, taken without waiting, so no
+  roll-out and no admission of an upgrade of rcman comes between its checks and the removal;
+  with the lock taken elsewhere it is `claude_version_kept` with the reason `rolling_out`, and
+  while an upgrade of rcman is under way `rcman_upgrading` (asked outside `lock`, as it may ask
+  systemd). Then, under `lock`, which `Workspaces._pin` records a server's version under, a
+  version not in the store is `claude_version_not_installed`, and `claude_version_kept` is
+  given for the approved version (`approved`; with nothing approved yet `reconcile` adopts
+  first), the one `current` names (`current`) and one any workspace's record names, read again
+  by `recorded_versions` (`in_use`): a record outlives a server that ended on its own until a
+  stop clears it. Every problem's title is its reason's words, by
+  `problems.VERSION_KEPT_MESSAGES`. The previous and the tested version may be deleted; rolling
+  either out again then downloads it and runs the canary. `PRUNE_GRACE_SECONDS` does not apply,
+  and `claude_failures` is not touched: a mark outlives the file.
 - **Pruning.** `prune` removes the versions that are neither approved, previous, tested
   (`helpers/claude-version`) nor the one `current` names and that no server in
   `Workspaces.pinned_servers` uses (a server that runs, cannot be read, or is being started;
@@ -672,7 +687,7 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   than `PRUNE_GRACE_SECONDS` ago stays: an upgrade of rcman puts its tested version there while
   the release before it runs, which does not know it. It asks the servers for their status without holding
   `lock`, then decides again under it, also keeping a version whose workspace record changed
-  meanwhile; it does nothing while a roll-out runs. It runs after a roll-out, after a version
+  meanwhile; it does nothing while a roll-out or a deletion runs. It runs after a roll-out, after a version
   is marked as failed, after a server is stopped or forgotten (`Workspaces._stopped`) and in
   the restore, with `sweep`,
   which removes what a roll-out cut short left: staging folders, partial files and a canary.
@@ -680,8 +695,12 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   (`helpers/claude-version`) versions, the installed ones with whether each is approved or
   previous, whether it is marked failed (`failed`) and how many servers use it, the drift
   (running servers on another version, each with whether its version is marked failed), the
-  marks (`failed`: version, at, by and reason, the newest first) and whether a roll-out runs
-  (`upgrading`) or an upgrade of rcman is under way (`rcman_upgrading`).
+  marks (`failed`: version, at, by and reason, the newest first) and whether a roll-out or a
+  deletion runs (`upgrading`) or an upgrade of rcman is under way (`rcman_upgrading`). Each
+  installed version's `delete_refused` is null, or the `claude_version_kept` problem a deletion
+  would be refused with for a reason of the version's own (`approved`, then `current`, then
+  `in_use`); the reasons of the moment, a roll-out or an upgrade of rcman, are the report's
+  `upgrading` and `rcman_upgrading`.
   `GET /api/claude/latest` is the release site's newest version, only
   a suggestion (`null` where the site does not say). Both are for administrators.
   `GET /api/workspaces` and `everyone` carry each workspace's `claude_version`.
@@ -736,7 +755,8 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   holds `Workspaces.recording_held`, the images' lock, which every workspace is recorded
   under, waiting at most `ADMISSION_WAIT` (`images` otherwise), then
   `ClaudeVersions.rollouts_held`, the roll-outs' lock, without waiting (`rolling_out`: a
-  roll-out, or the `sweep` of what one left, holds it); holding both,
+  roll-out, a deletion of a version, or the `sweep` of what a roll-out left, holds it); holding
+  both,
   it refuses while systemd cannot be read (`units_unreadable`), the path unit is not loaded and
   active (`path_inactive`), an upgrade is under way (`under_way`), a workspace is being made
   (`creating`), one is being rebuilt (`rebuilding`, `Workspaces.any_rebuilding`; see
