@@ -1,7 +1,8 @@
 """What relays to forwarded ports leave behind (backend/rcman/forwards.py), on the host runtime:
 a real relay through ``HostRuntime.port_argv`` to a listener that holds every connection open,
 its client holding its input open, so that only a sweep ends it; each place a workspace sweeps
-(a deletion, a rebuild, a restore that finds it running) ends it.
+(a deletion, a rebuild, a restore that finds it running) ends it. And the relay's own end: once
+its client is killed it ends by itself, and its ``kill 0`` takes only its own process group.
 
 The host runtime's relays are the host's processes, so these tests look for them in the host's
 ``/proc``.
@@ -159,3 +160,23 @@ def test_restoring_a_workspace_that_kept_running_ends_the_relays_left_in_it(
     with TestClient(create_app(settings, runtime=runtime)) as second:
         assert second.app.state.workspaces.restored.wait(HANG_GUARD)
         assert_swept(relay)
+
+
+def test_a_relay_whose_client_is_killed_ends_and_its_kill_takes_only_its_own_group(
+    client, holder, relays
+):
+    """The relay's client gone, as a killed client's pipes close, while the listener holds its
+    side open: the relay ends by itself and removes its pidfile, and its ``kill 0`` takes only
+    the process group its ``setsid`` gave it, so a process of the group that started it lives."""
+    workspace = made_workspace(client, ALICE, "alpha")
+    bystander = subprocess.Popen(["sleep", f"{3 * HANG_GUARD:g}"])  # in this process's group
+    try:
+        relay = left(client.app.state.workspaces, workspace, holder, relays)
+        assert os.getpgid(relay.shell) != os.getpgid(bystander.pid)  # a group of its own
+        relay.proc.stdin.close()
+        relay.proc.stdout.close()
+        assert_swept(relay)
+        assert bystander.poll() is None and alive(bystander.pid)
+    finally:
+        bystander.kill()
+        bystander.wait()

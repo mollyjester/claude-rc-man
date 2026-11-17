@@ -1,6 +1,6 @@
 # No target runs beside another under make -j: make test-container and make benchmark each start
-# an engine of their own and build the same images, which side by side would only compete for
-# the machine.
+# an engine of their own and build or load the same images, which side by side would only compete
+# for the machine.
 .NOTPARALLEL:
 
 .PHONY: setup test test-container benchmark lint format frontend-setup frontend-test frontend-build screenshot check
@@ -17,8 +17,8 @@ test:  ## every Python test that runs on the host, in parallel
 	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not container and not real_claude and not benchmark"
 
 test-container: export RCMAN_REQUIRE_CONTAINER = 1
-# In one process, as the container tests share the images their session fixtures build,
-# which each pytest-xdist worker would build again.
+# In one process, as the container tests share the images their session fixtures build or load,
+# which each pytest-xdist worker would build or load again.
 test-container:  ## on demand: the Python tests that need a container; they fail rather than skip; when the working rules require them, and before the live reinstall
 	uv run pytest -m "container and not real_claude and not benchmark"
 

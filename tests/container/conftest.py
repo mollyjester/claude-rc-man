@@ -9,7 +9,8 @@ descriptions, tmux's configuration, the Podman tools and the workspaces' seccomp
 ``ensure_podman_tools``, the instructions for Claude of ``ensure_instructions``, and the tools
 the installer builds (tmux and bsdtar), each built on the engine with the installer's own
 argument list from its pinned source in the toolchain (the ``toolchain`` fixture), as the
-installer builds it through rcman's own Podman.
+installer builds it through rcman's own Podman, and kept in the user's cache
+(tests/container/cache.py), as the two images are.
 They are in held folders under /tmp, readable by everyone, as the installer's are: a
 container's ids are none of the user's, and pytest's own folders are the user's alone.
 """
@@ -28,7 +29,7 @@ from rcman import runtime as rt
 from devtools import held_folders as hf
 from installer import install as ins
 from tests import podman_service as ps
-from tests.container import sizes
+from tests.container import cache, sizes
 from tests.hang_guard import CONTAINER_HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -58,11 +59,13 @@ def engine_tools(podman_service, toolchain):
     with hf.held("rctools-") as folder:
         os.chmod(folder, 0o755)
         (folder / "bin").mkdir()
-        for name, argv in (
-            ("tmux", ins.tmux_build_argv(ins.tmux_tarball(toolchain))),
-            ("bsdtar", ins.bsdtar_build_argv(ins.libarchive_tarball(toolchain))),
+        for name, tarball, build_argv in (
+            ("tmux", ins.tmux_tarball(toolchain), ins.tmux_build_argv),
+            ("bsdtar", ins.libarchive_tarball(toolchain), ins.bsdtar_build_argv),
         ):
-            (folder / "bin" / name).write_bytes(built_tool(podman_service, argv))
+            argv = build_argv(tarball)
+            program = cache.tool(name, argv, tarball, lambda a=argv: built_tool(podman_service, a))
+            (folder / "bin" / name).write_bytes(program)
             os.chmod(folder / "bin" / name, 0o755)
             assert ins.is_static(folder / "bin" / name), name
         shutil.copyfile(ins.BUSYBOX, folder / "bin" / "busybox")
@@ -126,25 +129,32 @@ def engine_scratch():
 @pytest.fixture(scope="session")
 def default_image(podman_service, tmp_path_factory) -> str:
     """The default workspace image, built on the engine from the build context the installer
-    makes for it, with the installer's own arguments."""
+    makes for it, with the installer's own arguments, or loaded from the user's cache
+    (tests/container/cache.py), which keeps it by the installer's content-hashed name."""
     name = ins.workspace_image()  # the installer's own name for it
-    context = tmp_path_factory.mktemp("default-image")
-    ins.image_context(context)
-    built = podman_service.cli(*ins.build_argv(name, context), timeout=CONTAINER_HANG_GUARD)
-    assert built.returncode == 0, built.stdout + built.stderr
-    return ps.hold(podman_service, name)
+
+    def build() -> None:
+        context = tmp_path_factory.mktemp("default-image")
+        ins.image_context(context)
+        built = podman_service.cli(*ins.build_argv(name, context), timeout=CONTAINER_HANG_GUARD)
+        assert built.returncode == 0, built.stdout + built.stderr
+
+    return ps.hold(podman_service, cache.image(podman_service, name, build))
 
 
 @pytest.fixture(scope="session")
 def builder_image(podman_service, tmp_path_factory) -> str:
     """The builder image, built on the engine from the installer's own folder, with the
-    installer's own arguments."""
-    context = tmp_path_factory.mktemp("builder-image")
-    shutil.copytree(ins.BUILDER_DIR, context, dirs_exist_ok=True)
+    installer's own arguments, or loaded from the user's cache as the default image is."""
     name = ins.devcontainer_builder_image()
-    built = podman_service.cli(*ins.build_argv(name, context), timeout=CONTAINER_HANG_GUARD)
-    assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
-    return ps.hold(podman_service, name)
+
+    def build() -> None:
+        context = tmp_path_factory.mktemp("builder-image")
+        shutil.copytree(ins.BUILDER_DIR, context, dirs_exist_ok=True)
+        built = podman_service.cli(*ins.build_argv(name, context), timeout=CONTAINER_HANG_GUARD)
+        assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
+
+    return ps.hold(podman_service, cache.image(podman_service, name, build))
 
 
 def engine_runtime(

@@ -76,7 +76,8 @@ Forwarded ports' relays on the host runtime, whose relays are the host's process
 `tests/test_forwards.py`'s: a real relay through `HostRuntime.port_argv` to a listener that
 holds every connection open, its client holding its input open, ended by each place a
 workspace sweeps (a deletion, the start of a rebuild's switch, a restore that finds the
-container running).
+container running); and a relay whose client is killed, which ends by itself and
+removes its pidfile while a process of the group that started it lives on.
 
 The tools' `podman` and `docker` wrapper's reading of a published port,
 `backend/rcman/podman/publish.sh`, is tested on the host by `tests/test_podman_wrapper.py`,
@@ -158,12 +159,10 @@ with Node) and, for a service that stops, through real uvicorn running the scree
 (`devtools/world.py`) with the options of the unit's `ExecStart`.
 `tests/container/test_terminal_in_podman.py` runs on the tests' engine, with the default
 workspace image built from the installer's build file and workspaces made through the app: what
-is typed reaching the shell through `podman --remote exec` and coming back. A remote exec's
-record stays after it ends until Podman's own cleanup removes it, once the exit delay conmon is
-given has passed, so whether an exec runs is read from Podman's API. The runtime contract's
-terminal case (`tests/runtime_contract.py`) runs on the host runtime. No test opens the tab in a
-real browser ([What the tests no longer check](#what-the-tests-no-longer-check)). The page's
-side of the protocol, its states and its fakes are in [frontend.md](frontend.md).
+is typed reaching the shell through `podman --remote exec` and coming back. The runtime
+contract's terminal case (`tests/runtime_contract.py`) runs on the host runtime. No test opens
+the tab in a real browser ([What the tests no longer check](#what-the-tests-no-longer-check)).
+The page's side of the protocol, its states and its fakes are in [frontend.md](frontend.md).
 
 What needs a real Claude account, and what needs systemd, the kernel's limits or a real
 machine, is checked by hand: [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default
@@ -457,6 +456,11 @@ given up:
   command line exercises, by hand;
 - how the real `claude` treats an answer typed before its question, which the `trust_too_fast`
   replay holds on the fake's side only ([fake-claude.md](fake-claude.md)).
+
+A relay to a forwarded port ending when its client is killed, and its `kill 0` reaching only
+its own process group, are checked on the host runtime only (`tests/test_forwards.py`), where
+the group is the one the relay's `setsid` gives it; on Podman, where crun gives the exec's
+process a session of its own, they are given up, and so is whether an exec of the relay is left.
 
 No test drives the page in a real browser. `make screenshot` shows a page for someone to look
 at, and asserts nothing. What only a browser could check is given up:
@@ -801,15 +805,16 @@ What a machine needs to run them: rootless Podman for the user, with subordinate
 slot the suites use (`tests/container/sizes.py`), a `newuidmap` and `newgidmap` that work for
 the user, `catatonit`, the init the workspaces' shared configuration names, and `passt` with
 `/dev/net/tun`, which the test of the product's network and the containers it nests need (a
-workspace of rcman's has both); the images come from their registries, so the network;
-and a `/tmp` that is not overlay, since the engine's storage is native overlay (`driver="overlay"`,
-no mount program) in a folder under `/tmp`, and overlay over overlayfs is refused. A workspace of
-rcman's has its own `/tmp`, a volume off its overlay root ([runtime.md](runtime.md#the-runtime));
-the repository's `.devcontainer` has the rest of it
-(`tests/test_repository_devcontainer.py` holds its pins). In such a workspace, `make check` runs
-`TEST_WORKERS` workers (the `Makefile`), each starting tmux servers, git and the fake `claude`,
-and `make screenshot` runs Chromium: a workspace whose limits on processes or memory are below
-what those take fails them, and its limits are an administrator's
+workspace of rcman's has both); the network, for the first run and the first after a build
+file, a tool's pinned source or a lockfile changes, which fill the cache (below), and for the
+builder test's own pull of its base image; and a `/tmp` that is not overlay, since the engine's
+storage is native overlay (`driver="overlay"`, no mount program) in a folder under `/tmp`, and
+overlay over overlayfs is refused. A workspace of rcman's has its own `/tmp`, a volume off its
+overlay root ([runtime.md](runtime.md#the-runtime)); the repository's `.devcontainer` has the
+rest of it (`tests/test_repository_devcontainer.py` holds its pins). In such a workspace,
+`make check` runs `TEST_WORKERS` workers (the `Makefile`), each starting tmux servers, git and
+the fake `claude`, and `make screenshot` runs Chromium: a workspace whose limits on processes
+or memory are below what those take fails them, and its limits are an administrator's
 ([users.md](../docs/users.md)).
 
 The runtime on the engine is made with the sizes of `tests/container/sizes.py`, given as
@@ -828,13 +833,28 @@ shared fixtures: the tools as the installer writes them, those it builds built o
 with the installer's own argument lists from its pinned source in the toolchain (the user's cache, filled
 with the installer's own download code by the `toolchain` fixture), an empty store and one
 holding the fake `claude`, the default image and the builder image built on the engine from the
-installer's own files, and the helpers that make a runtime, rcman's settings and the stand-ins
-on the engine. The settings never keep a path of an installation's (`/var/lib/rcman`). Every
-image a session's fixture builds or pulls (the default, the builder and the system image, and
-the default image's base) is held there
-for the session by a container that never starts (`hold` in `tests/podman_service.py`): a
-service deleting a workspace collects the images nothing refers to, and a later module would
-find one gone.
+installer's own files, or loaded from the cache (below), and the helpers that make a runtime,
+rcman's settings and the stand-ins on the engine. The settings never keep a path of an
+installation's (`/var/lib/rcman`).
+
+The engine is new each session, so what would need the network every session is kept between
+runs in the user's cache, `~/.cache/rcman-test/`, beside the toolchain, by
+`tests/container/cache.py`: the default, the builder and the system image, as the archive
+`podman save` writes, named by the image's own name, which is tagged after its build files'
+content (`images/`); tmux and bsdtar, named by the build's argument list and the sha256 of the
+source it builds from, and by the program's own sha256 (`tools/`); and the install test's npm
+and uv caches, named by `frontend/package-lock.json`, `uv.lock`, `pyproject.toml`, the system
+image and the script that fills them (`offline/`), of which the installation gets a copy, taken
+under the lock, since npm and uv write in a cache they use. The first session fills an entry,
+and every later one loads it, so a broken package or mirror shows only when a name changes.
+Every entry is filled or loaded under one lock, `cache.lock` there; it is written as
+`<name>.part` and renamed into place, and filling one removes the other entries of its kind,
+which a changed name left, and every `.part` there; an archive Podman cannot load, a program
+whose bytes are not those it was stored with, or a folder without the mark its fill ends with,
+is removed and filled again. Every image a session's fixture builds or loads (the default, the
+builder and the system image) is held on the engine for the session by a container that never
+starts (`hold` in `tests/podman_service.py`): a service deleting a workspace collects the images
+nothing refers to, and a later module would find one gone.
 Every run of an image built or imported on the engine, and every build from one, says
 `--pull=never`: a pull of a `localhost/` name would ask the machine's own `https://localhost`
 for it, which may be another service's.
@@ -863,7 +883,9 @@ nothing else (no variants, refusals, edge cases or timing).
 - `tests/container/test_nest_in_podman.py`: a container running inside a workspace.
 - `tests/container/test_terminal_in_podman.py`: what is typed reaching the Terminal tab's shell and
   coming back.
-- `tests/container/test_forward_in_podman.py`: a forwarded port answering through the relay.
+- `tests/container/test_forward_in_podman.py`: one payload through the relay both ways, then its
+  input closed, which reaches the listener as its end of file, and the relay ending and removing
+  its pidfile.
 - `tests/container/test_install_in_container.py`: the first installation putting rcman in Caddy
   and restarting it.
 
@@ -871,27 +893,28 @@ nothing else (no variants, refusals, edge cases or timing).
 
 `tests/container/test_install_in_container.py` runs rcman's real installer, through
 `install.sh`, as root in a container of the system image (`tests/container/system/`, built on the
-engine by `tests/container/system.py`), with no network: real accounts made by `useradd`, real
-files, owners and modes, and `runuser`; and `systemctl`, `loginctl` and rcman's `podman` the
-stand-ins of `tests/container/stand_ins.py`, mounted over the programs. They record every call,
-and answer as the real programs answer what the installer asks: a unit the installer starts is
-run as its `User=`, with its environment, folder and umask, so rcman and oauth2-proxy really run
-and the installer's own health check is the real one; rcman's Podman reports the runtime the
-installer checks, notes the images it builds, and hands the installer the tools built on the
-engine. A path unit started, as `rcman-upgrade.path` is, is only noted active and runs no
-service, since nothing changes its path; `tests/test_stand_ins.py` holds that, with a folder of
-planted units the stand-in reads in place of `/etc/systemd/system`, named by
-`RCMAN_STAND_IN_UNITS`. A unit that is not there, such as `caddy.service`, is only noted active
-when it is restarted, and one never started, such as `caddy-api.service`, is neither active nor
-enabled: the installation's Caddy configuration is the package's Caddyfile, which the installer edits and
-checks with the real `caddy validate`, and a restart of Caddy is a recorded call. The checkout's files are at `/src` (see the snapshot, below); `tests/container/clone.py`
+engine, or loaded from the cache, by `tests/container/system.py`), with no network: real
+accounts made by `useradd`, real files, owners and modes, and `runuser`; and `systemctl`,
+`loginctl` and rcman's `podman` the stand-ins of `tests/container/stand_ins.py`, mounted over the
+programs. They record every call, and answer as the real programs answer what the installer asks:
+a unit the installer starts is run as its `User=`, with its environment, folder and umask, so
+rcman and oauth2-proxy really run and the installer's own health check is the real one; rcman's
+Podman reports the runtime the installer checks, notes the images it builds, and hands the
+installer the tools built on the engine. A path unit started, as `rcman-upgrade.path` is, is only
+noted active and runs no service, since nothing changes its path; `tests/test_stand_ins.py` holds
+that, with a folder of planted units the stand-in reads in place of `/etc/systemd/system`, named
+by `RCMAN_STAND_IN_UNITS`. A unit that is not there, such as `caddy.service`, is only noted
+active when it is restarted, and one never started, such as `caddy-api.service`, is neither
+active nor enabled: the installation's Caddy configuration is the package's Caddyfile, which the
+installer edits and checks with the real `caddy validate`, and a restart of Caddy is a recorded
+call. The checkout's files are at `/src` (see the snapshot, below); `tests/container/clone.py`
 makes them a git origin and a clone of the user `dev`'s, and `tests/container/installed.py` runs
 the installation with the fake `claude` as the release it downloads. The frontend's and the
-backend's packages come from caches filled beforehand in a container of the same image with the
-network (`offline_caches`), so npm and uv run offline; the toolchain is a copy of the user's
-cache, which the installer, as root there, takes its lock in. The first installation is made once; the
-one test runs its check of `tests/container/install_checks.py` of the same name, as root in the
-container (see [installer.md](installer.md#tests)).
+backend's packages come from caches filled in a container of the same image with the network and
+kept in the user's cache (`offline_caches`), so npm and uv run offline; the toolchain is a copy
+of the user's cache, which the installer, as root there, takes its lock in. The first
+installation is made once; the one test runs its check of `tests/container/install_checks.py` of
+the same name, as root in the container (see [installer.md](installer.md#tests)).
 
 #### What the container suite holds of its own
 
@@ -972,7 +995,9 @@ a test makes depends on its own run to remove it:
 - Every removal refuses, and raises, for a path that is not absolute or holds
   `.` or `..`, for the repository, the home folder, the working folder and
   anything holding them or inside the first two, and for anything outside
-  `/tmp`, or outside the root its caller names.
+  `/tmp`, or outside the root its caller names. The container suites' cache under
+  `~/.cache/rcman-test/` is removed by none of these but by its own code
+  ([The container suites](#the-container-suites)).
 - An engine a killed run left is removed by the next run that starts one, with
   every container and volume in it and whatever is still mounted in its storage (see
   [The container suites](#the-container-suites)); the processes of the engine
@@ -1001,6 +1026,11 @@ take, or in `/tmp` under the test's stem, a held folder whose name and `-`
 begin everything the test makes beside it, so tests that run at the same time
 never clear each other's; and its `scrub` refuses anything else, as every
 removal does.
+
+An entry of the container suites' cache in `~/.cache/rcman-test/` is written as a `.part` and
+renamed into place, so a killed run leaves at most a `.part`, which the next fill of its kind
+removes (see [The container suites](#the-container-suites)); no test kills a run while it
+fills one.
 
 ## Repository guards
 
