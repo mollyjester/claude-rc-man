@@ -8,9 +8,10 @@ The checkout's files are at /src (tests/snapshot.py); a user ``dev`` clones them
 ``install.sh`` through the real path, with the fake claude as the Claude Code release it downloads
 (tests/container/installed.py). The toolchain comes from the user's cache, filled with the
 installer's own download code (the ``toolchain`` fixture); the frontend's and the backend's
-packages from caches filled beforehand in a container of the same image with the network
-(``offline_caches``); tmux is the one built on the engine with the installer's own argument list,
-which the stand-in podman hands the installer. The first installation is made once; the one
+packages from caches filled in a container of the same image with the network, once for each
+change of the lockfiles, and kept in the user's cache (``offline_caches``); tmux is the one built
+on the engine with the installer's own argument list, or kept from such a build, which the
+stand-in podman hands the installer. The first installation is made once; the one
 test then runs its check of tests/container/install_checks.py, of the same name, as root in the
 container, on that installation. What needs systemd, rcman's own rootless Podman, the kernel's
 limits or the journal is checked by hand (project-knowledge/real-claude-checklist.md).
@@ -27,6 +28,7 @@ import pytest
 
 from devtools import held_folders as hf
 from installer import install as ins
+from tests.container import cache
 from tests.hang_guard import CONTAINER_HANG_GUARD, EXEC_GUARD, GUARD_VARIABLE
 
 # The installer's toolchain, where the container has it.
@@ -45,23 +47,32 @@ def ran(done, what: str) -> str:
 @pytest.fixture(scope="session")
 def offline_caches(podman_service, system_image, source, toolchain, labelled):
     """npm's cache of the frontend's packages and uv's of the backend's, filled in a container of
-    the system image with the engine's own network, as the installer would fetch them: so that
-    the installation, which has no network, installs them from the caches alone."""
-    with hf.held("rccache-") as folder:
-        os.chmod(folder, 0o755)
-        node, uv = ins.node_bin(TOOLCHAIN), ins.uv_binary(TOOLCHAIN)
-        script = (
-            "set -e; cp -a /src /tmp/s; cd /tmp/s/frontend; "
-            f"PATH={node}:$PATH npm ci --no-audit --no-fund --cache /cache/npm; cd /tmp/s; "
-            f"UV_CACHE_DIR=/cache/uv {uv} sync --frozen --no-dev --no-editable "
-            "--python /usr/bin/python3; chmod -R a+rwX /cache"
-        )
+    the system image with the engine's own network, as the installer would fetch them, and kept
+    in the user's cache (tests/container/cache.py) by the lockfiles, pyproject.toml (its build
+    backend is in no lockfile), the system image and the script that fills them: so that the
+    installation, which has no network, installs them from the caches alone. The installation
+    is given a copy, since npm and uv write in a cache they use."""
+    node, uv = ins.node_bin(TOOLCHAIN), ins.uv_binary(TOOLCHAIN)
+    script = (
+        "set -e; cp -a /src /tmp/s; cd /tmp/s/frontend; "
+        f"PATH={node}:$PATH npm ci --no-audit --no-fund --cache /cache/npm; cd /tmp/s; "
+        f"UV_CACHE_DIR=/cache/uv {uv} sync --frozen --no-dev --no-editable "
+        "--python /usr/bin/python3; chmod -R a+rwX /cache"
+    )
+
+    def fill(folder: Path) -> None:
         done = podman_service.cli(
             "run", "--rm", "--pull=never", "--network=host", *labelled, "-v", f"{source}:/src:ro",
             "-v", f"{toolchain}:{TOOLCHAIN}:ro", "-v", f"{folder}:/cache", system_image,
             "sh", "-c", script, timeout=CONTAINER_HANG_GUARD,
         )  # fmt: skip
         ran(done, "the caches were not filled")
+
+    named = ("frontend/package-lock.json", "uv.lock", "pyproject.toml")
+    entry_key = cache.key(*[(source / name).read_bytes() for name in named], system_image, script)
+    with hf.held("rccache-") as folder:
+        os.chmod(folder, 0o755)
+        cache.folder("install", entry_key, fill, folder)
         yield folder
 
 
