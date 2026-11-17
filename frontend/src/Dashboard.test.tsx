@@ -497,7 +497,8 @@ test("deleting the selected workspace selects none and says it was deleted, unti
   await userEvent.click(confirm);
   expect(await screen.findByRole("status")).toHaveTextContent(m.workspaceDeleted("alpha"));
   expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(1);
-  expect(selectedOf(location().search)).toBeNull();
+  // the status is shown at once; the router drops ?workspace= in a transition, which can come after it
+  await waitFor(() => expect(selectedOf(location().search)).toBeNull());
   await waitFor(() =>
     expect(
       within(screen.getByRole("region", { name: m.navDashboard })).queryByRole("button", {
@@ -509,7 +510,7 @@ test("deleting the selected workspace selects none and says it was deleted, unti
   // the notice goes once another workspace is selected
   await userEvent.click(await entry("beta"));
   await panel("beta");
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
 });
 
 test("the question names the work that is not committed or not pushed, which it asks git for itself", async () => {
