@@ -1978,17 +1978,19 @@ button.split-toggle {
   color: var(--muted);
 }
 
-/* The Terminal tab, a card: a slim bar of how its connection stands, with Reconnect, over its
-   screen, edge to edge, which xterm.js fills and fits to; the screen's height follows the
-   window's. */
-.terminal {
+/* The Terminal tab, a card: a slim bar of how its connection stands, with Reconnect and the
+   special keys, over its screen, edge to edge, which xterm.js fills and fits to; the screen's
+   height follows the window's. The card is .terminal-card: xterm.js puts the class terminal on
+   its own element, and no rule here names a class xterm.js uses. The screen, not the card,
+   clips, so that the special keys' pop-up hangs over the screen whole. */
+.terminal-card {
   margin-top: var(--space-4);
 }
-.terminal.card {
+.terminal-card.card {
   padding: 0;
-  overflow: hidden;
 }
 .terminal-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -2008,6 +2010,94 @@ button.split-toggle {
 .terminal-problem {
   padding: 0 var(--space-3);
 }
+/* The special keys: the bar's button, which shows in the accent's tint what is held, and its
+   pop-up, hanging from the bar's right over the top of the screen; on a phone, the card's
+   width. */
+.terminal-keys-button {
+  flex: none;
+  padding: 0 var(--space-2);
+}
+.terminal-keys-button.holding {
+  background: var(--accent-soft);
+  border-color: var(--accent-stroke);
+  color: var(--accent-text);
+}
+.popover.terminal-keys-panel {
+  right: var(--space-2);
+  top: calc(100% + var(--space-1));
+  width: 20rem;
+  max-width: calc(100% - 2 * var(--space-2));
+  padding: var(--space-3);
+}
+/* Esc and Tab over Shift, Ctrl and Alt, and beside them the arrows as an inverted T. */
+.terminal-key-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) var(--space-2) repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    "esc tab . . . up ."
+    "shift ctrl alt . left down right";
+  gap: var(--space-1);
+}
+.terminal-key-grid > button {
+  padding: 0 var(--space-1);
+  /* a key pressed again at once is two keys, not a zoom */
+  touch-action: manipulation;
+}
+.terminal-key-grid > .key-esc {
+  grid-area: esc;
+}
+.terminal-key-grid > .key-tab {
+  grid-area: tab;
+}
+.terminal-key-grid > .key-shift {
+  grid-area: shift;
+}
+.terminal-key-grid > .key-ctrl {
+  grid-area: ctrl;
+}
+.terminal-key-grid > .key-alt {
+  grid-area: alt;
+}
+.terminal-key-grid > .key-up {
+  grid-area: up;
+}
+.terminal-key-grid > .key-left {
+  grid-area: left;
+}
+.terminal-key-grid > .key-down {
+  grid-area: down;
+}
+.terminal-key-grid > .key-right {
+  grid-area: right;
+}
+/* the arrows' glyphs, as large as a key's word */
+.terminal-key-grid > .key-up,
+.terminal-key-grid > .key-left,
+.terminal-key-grid > .key-down,
+.terminal-key-grid > .key-right {
+  font-size: var(--text-title-3);
+}
+.terminal-key-grid > button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.terminal-keys-panel > .terminal-keys-label {
+  display: block;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.terminal-send {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+.terminal-send > input[type="text"] {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
 /* xterm.js takes the outline off its own element, so the screen shows where focus is. */
 .terminal-screen:focus-within {
   outline: 2px solid var(--focus);
@@ -2022,6 +2112,7 @@ button.split-toggle {
   background: var(--terminal-bg);
   font-family: var(--font-mono);
   overflow: hidden;
+  border-radius: 0 0 calc(var(--radius-card) - 1px) calc(var(--radius-card) - 1px);
 }
 
 /* What xterm.js needs of a stylesheet, from its own xterm.css (MIT licence, copyright the
@@ -2739,6 +2830,10 @@ td.result-failed {
   .menu-popover button:not(:disabled):hover {
     background: var(--subtle-hover);
   }
+  /* the special keys' button keeps the tint of what is held */
+  button.subtle.terminal-keys-button.holding:hover {
+    background: var(--accent-soft);
+  }
 }
 
 /* With a mouse a row's trash button is shown on the row pointed at, the selected row and the row
@@ -2750,9 +2845,10 @@ td.result-failed {
 }
 
 /* With forced colours the accent's bar, a background, is not drawn: an outline marks the page
-   where you are instead. */
+   where you are instead, and a special key held. */
 @media (forced-colors: active) {
-  nav.sidebar a[aria-current="page"] {
+  nav.sidebar a[aria-current="page"],
+  .terminal-key-grid > button[aria-pressed="true"] {
     outline: 2px solid;
     outline-offset: -2px;
   }
@@ -2769,6 +2865,11 @@ td.result-failed {
    the screen's foot; the list and the selected workspace's panel take turns, the way back to
    the list over the panel; a help page is one column; and the page has less margin. */
 @media (max-width: 48rem) {
+  .popover.terminal-keys-panel {
+    left: var(--space-2);
+    width: auto;
+    max-width: none;
+  }
   .shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: var(--topbar-phone) 1fr;

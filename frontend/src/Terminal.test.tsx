@@ -193,3 +193,38 @@ test("leaving the workspace closes its socket and ends its screen", async () => 
   expect(schemeListening()).toBe(0);
   expect(sockets()).toHaveLength(1); // beta's Terminal is not opened by itself
 });
+
+// --- special keys ------------------------------------------------------------------------
+
+test("the special keys send what xterm sends for them, a held modifier going with the next key from the panel or the device's own keyboard", async () => {
+  page();
+  const { socket, view } = await connected();
+  const typed = () => socket.typed();
+  const keys = () => screen.getByRole("button", { name: m.terminalKeys });
+  const key = (name: string) => screen.getByRole("button", { name });
+  const ctrl = () => key(m.terminalModifiers.ctrl);
+  await userEvent.click(keys());
+  expect(key(m.terminalKeyNames.esc)).toHaveFocus();
+  await userEvent.click(ctrl());
+  expect(ctrl()).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(key(m.terminalArrows.up.name));
+  expect(typed()).toBe("\x1b[1;5A");
+  expect(ctrl()).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(key(m.terminalKeyNames.esc));
+  expect(typed()).toBe("\x1b[1;5A\x1b");
+  await userEvent.type(screen.getByRole("textbox", { name: m.terminalKeysField }), "ctrl+c");
+  await userEvent.click(key(m.terminalKeysSend));
+  expect(typed()).toBe("\x1b[1;5A\x1b\x03");
+  expect(screen.queryByRole("textbox", { name: m.terminalKeysField })).not.toBeInTheDocument();
+
+  await userEvent.click(keys());
+  await userEvent.click(ctrl());
+  await userEvent.click(document.body); // a press outside closes it, sending nothing
+  expect(screen.queryByRole("textbox", { name: m.terminalKeysField })).not.toBeInTheDocument();
+  expect(typed()).toBe("\x1b[1;5A\x1b\x03");
+  const held = screen.getByRole("button", { name: m.terminalKeysHeld(m.terminalModifiers.ctrl) });
+  expect(held).toHaveTextContent(m.terminalModifiers.ctrl);
+  act(() => view.type("c"));
+  expect(typed()).toBe("\x1b[1;5A\x1b\x03\x03");
+  expect(keys()).toBeInTheDocument(); // Ctrl went with the c
+});

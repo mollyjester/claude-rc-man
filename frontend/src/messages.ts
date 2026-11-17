@@ -241,6 +241,20 @@ export const m = {
     service_closing: "rcman is restarting, which closed the terminal.",
   } as Record<string, string>,
   terminalClosedOther: (reason: string) => `The terminal was closed: ${reason}.`,
+  // Its special keys: the bar's button, which says what is held, and the panel it opens.
+  terminalKeys: "Special keys",
+  terminalKeysHeld: (names: string) => `Special keys, ${names} held`,
+  terminalKeyNames: { esc: "Esc", tab: "Tab" },
+  terminalModifiers: { shift: "Shift", ctrl: "Ctrl", alt: "Alt" },
+  terminalArrows: {
+    up: { glyph: "↑", name: "Up" },
+    down: { glyph: "↓", name: "Down" },
+    left: { glyph: "←", name: "Left" },
+    right: { glyph: "→", name: "Right" },
+  },
+  terminalKeysField: "Key or text",
+  terminalKeysHint: "A key, as ctrl+c, shift+tab or f5, or text to type.",
+  terminalKeysSend: "Send",
 
   serverTitle: "Claude server",
   noServer: "No Claude server runs in this workspace.",

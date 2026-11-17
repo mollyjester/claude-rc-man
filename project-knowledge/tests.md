@@ -486,7 +486,10 @@ at, and asserts nothing. What only a browser could check is given up:
   versions page and marking one failed, adding and removing people with the audit trail, limits
   refused and kept, the attention banner, a stranger refused, and the favicon;
 - the Terminal tab: the real shell and its size following the window, a takeover from a second
-  page, and a tab left and shown again fitted to its screen;
+  page, and a tab left and shown again fitted to its screen; its last row whole above the
+  card's border, and the special keys' pop-up, where it is placed, that nothing clips it, that
+  it is drawn over the screen and how it takes a touch, which only `make screenshot`'s
+  `terminal` and `terminal-keys` states show;
 - the workspaces in a browser against the real backend: a workspace made and ready, its device
   name in its row and its panel and its address opening it again; one made from a repository's
   address, named after it, showing its branch; New workspace as a modal dialog, focus in its
@@ -537,7 +540,9 @@ author or a token among them; focus, Escape, outside presses and the keyboard an
 the drawer, the tabs, the switcher and after each action among them; what a page shows but does
 not do, its layout, classes but which button leads, a button busy, and the drawer open; headers,
 help lines, pills, dots and live regions; how often a page polls and an older answer dropped;
-the terminal's other close reasons, its fitting, colours and strict mode; the formats but sizes
+the terminal's other close reasons, its fitting, colours and strict mode; the special keys'
+other keys and combinations, a held modifier let go by a second press or by the connection
+ending, and a paste or a report passing one by; the formats but sizes
 and moments; and the tests of the tests' own helpers, the fake dialog, the stylesheet's reader
 and the guides' table reader among them.
 
