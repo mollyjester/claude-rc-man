@@ -1,4 +1,4 @@
-"""The tmux driver used to record the real `claude` and to drive the fake."""
+"""The tmux driver the tests drive the fake `claude` with."""
 
 import os
 import signal

@@ -7,8 +7,9 @@ and the rest on a pseudo-terminal of the size rcman gives Claude's screens
 rcman relies on: the version, ``auth status`` JSON, the logged-out refusal of
 ``remote-control``, the sign-in screen, the options rcman passes to
 ``auth login``, and ``auth logout``. What needs a signed-in account — the
-trust question and the server screens — is covered by the recorded tests
-only.
+trust question and the server screens — is not checked here: a version that
+changes them is found by a server rcman cannot read, and the by-hand run
+(tests/test_claude_real_account.py).
 
 Python standard library and the helpers' own modules only. The canary
 (claude_canary.py) runs them against a candidate in a throwaway container, before the

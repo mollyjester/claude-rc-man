@@ -58,7 +58,7 @@ Implemented and tested:
   end-to-end checks.
 
 How to install it: [docs/installation.md](docs/installation.md). Screens of
-Claude Code that rcman has no recording of yet are listed in
+Claude Code that rcman has not seen yet are listed in
 [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md). The design
 decisions and the implementation steps are
 [GitHub issues](https://github.com/mollyjester/claude-rc-man/issues).

@@ -63,7 +63,6 @@ function api() {
     "GET /api/claude/versions": {
       approved: "1.0.0",
       previous: null,
-      tested: "1.0.0",
       installed: [
         {
           version: "0.9.0",

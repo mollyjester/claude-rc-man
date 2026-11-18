@@ -1,4 +1,4 @@
-"""Drive one program in a private tmux server, for recording and testing.
+"""Drive one program in a private tmux server, for testing.
 
 Each :class:`Pane` owns its own tmux server (a socket file under
 ``socket_dir``), runs exactly one program in it with exactly the environment it
@@ -7,15 +7,13 @@ directly, never through a shell. When the program exits the pane stays, so its
 final screen and exit status can still be read.
 
 Its waits look at the screen every POLL_SECONDS. Each gives up only when its caller passes a
-``timeout``, as the recorder's command line does against the real `claude` (RealWatch in
-devtools/record_claude.py); with none it waits until what it waits for comes about. A test passes
-its tier's hang guard, so that a hang fails there with the screen in the TimeoutError's message;
+``timeout``; with none it waits until what it waits for comes about. A test passes its tier's
+hang guard, so that a hang fails there with the screen in the TimeoutError's message;
 ``timeout=0`` gives up after one look.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import time
@@ -92,10 +90,6 @@ class Pane:
     def interrupt(self) -> None:
         self._tmux("send-keys", "-t", "p", "C-c")
 
-    def signal(self, signum: int) -> None:
-        """Send ``signum`` to the program itself, as ``kill`` would."""
-        os.kill(int(self._tmux("display-message", "-p", "-t", "p", "#{pane_pid}")), signum)
-
     def exit_status(self) -> int | None:
         fmt = "#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}:#{pane_pid}"
         fields = self._tmux("display-message", "-p", "-t", "p", fmt).strip().split(":")
@@ -120,20 +114,6 @@ class Pane:
                 raise TimeoutError(f"program still running; screen:\n{self.text()}")
             time.sleep(POLL_SECONDS)
         return status
-
-    def wait_stable(self, quiet: float, timeout: float | None = None) -> list[str]:
-        """Wait until the screen has not changed for ``quiet`` seconds: the recorder's settle
-        against the real `claude` (RealWatch), which tells nothing of when it has drawn."""
-        deadline = None if timeout is None else time.monotonic() + timeout
-        last, since = self.screen(), time.monotonic()
-        while time.monotonic() - since < quiet:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError(f"screen kept changing; last:\n{chr(10).join(last)}")
-            time.sleep(POLL_SECONDS)
-            now = self.screen()
-            if now != last:
-                last, since = now, time.monotonic()
-        return last
 
     def close(self) -> None:
         """Kill the tmux server and wait until it is gone, so the socket can be reused."""

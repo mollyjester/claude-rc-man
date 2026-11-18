@@ -171,7 +171,7 @@ UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
 # site of the same text in the same function, or at module level, is flagged.
 EXEMPT = {
     (
-        "tests/test_record_claude.py",
+        "tests/test_fake_claude.py",
         "",
         f'"{TMP}/"',
     ): "a leak mark the kept screens are searched for; nothing is made there",
@@ -426,8 +426,7 @@ def flagged(rel: str, source: str) -> list[str]:
 
 
 def scanned() -> list[Path]:
-    """The tests but the container suite, and every devtools module, which the tests and
-    the recorder run."""
+    """The tests but the container suite, and every devtools module, which the tests run."""
     tests = [
         p
         for p in sorted(TESTS.rglob("*.py"))
@@ -438,7 +437,7 @@ def scanned() -> list[Path]:
 
 def test_no_test_holds_a_fixed_tmp_path_or_port():
     """The tests, tests/container/ among them but for the files that run inside containers,
-    and every devtools module, which the tests and the recorder run."""
+    and every devtools module, which the tests run."""
     rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
     assert {f"devtools/{p.name}" for p in DEVTOOLS.glob("*.py")} <= rels
     assert "tests/conftest.py" in rels and "tests/container/network.py" in rels

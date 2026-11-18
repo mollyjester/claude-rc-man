@@ -630,7 +630,6 @@ export const m = {
   versionsFactsTitle: "Versions",
   versionsApproved: "Approved version",
   versionsPrevious: "Previous version",
-  versionsTested: "Tested version",
   versionsNone: "None",
   versionsInstalledTitle: "Installed versions",
   versionsVersion: "Version",
@@ -693,8 +692,6 @@ export const m = {
     "Its file leaves the store. Rolling it out, or going back to it, later downloads it again and runs the checks on it first.",
   versionsDeletePrevious:
     "It is the previous version, the one to go back to if the approved version fails.",
-  versionsDeleteTested:
-    "It is the tested version: the installer puts it back in the store the next time it runs.",
   versionsDeleteFailed: "Its mark as failed stays, under Failed versions.",
   versionsDeleteConfirm: "Delete version",
   versionsDeleteBusy: "Deleting…",

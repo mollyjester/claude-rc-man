@@ -41,7 +41,6 @@ type Failure = { version: string; at: string; by: string; reason: string | null 
 type Report = {
   approved: string | null;
   previous: string | null;
-  tested: string;
   installed: Installed[];
   drift: Drift[];
   // The marks, the newest first; a version marked may no longer be installed.
@@ -73,6 +72,7 @@ const isFailed = (report: Report, version: string) =>
 // running, the servers on another version, the versions marked as failed, and the roll-out of a
 // version. A roll-out is one request that lasts as long as the checks do, so the page says it is
 // working, and offers no second one meanwhile; the server refuses a second one regardless. A
+// version that fails the checks is offered below the refusal to be marked as failed. A
 // mark, and its removal, may be made at any time, a roll-out under way included: the server
 // stops the approval of a version marked while it is checked. Deleting a version asks first, and
 // shuts every roll-out while it runs, as the server does.
@@ -247,6 +247,11 @@ export function Versions() {
     deleting !== null ||
     report?.upgrading === true ||
     report?.rcman_upgrading === true;
+  // The version a roll-out's checks failed on, offered to be marked as failed.
+  const failedVersion =
+    error?.code === "claude_checks_failed" && typeof error.extra.version === "string"
+      ? error.extra.version
+      : null;
   const status =
     rolling !== null
       ? m.versionsRolling(rolling)
@@ -276,8 +281,6 @@ export function Versions() {
               <dd>{report.approved ?? m.versionsNone}</dd>
               <dt>{m.versionsPrevious}</dt>
               <dd>{report.previous ?? m.versionsNone}</dd>
-              <dt>{m.versionsTested}</dt>
-              <dd>{report.tested}</dd>
             </dl>
           </section>
         )}
@@ -331,6 +334,18 @@ export function Versions() {
             </form>
             <p role="status">{status}</p>
             <ProblemView error={error} labels={{ version: m.versionsUpgrade }} inline />
+            {failedVersion && (
+              <div className="actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-label={m.versionsMarkFailedVersion(failedVersion)}
+                  onClick={() => setMarking(failedVersion)}
+                >
+                  {m.versionsMarkFailed}
+                </button>
+              </div>
+            )}
           </section>
         </div>
       </div>
@@ -363,6 +378,8 @@ export function Versions() {
           version={marking}
           onMarked={(answer, which) => {
             setMarking(null);
+            // the roll-out's refusal that offered this mark is done with
+            if (which === failedVersion) setError(null);
             marked(answer, m.versionsMarked(which));
           }}
           onStale={load}
@@ -373,7 +390,6 @@ export function Versions() {
         <DeleteVersionDialog
           version={asking}
           previous={report.previous === asking}
-          tested={report.tested === asking}
           failed={isFailed(report, asking)}
           busy={deleting !== null}
           onConfirm={() => deleteVersion(asking)}
@@ -755,12 +771,11 @@ function MarkFailedDialog({
 
 // Asks before a version is deleted, naming it and saying what is lost: its file, so that rolling
 // it out or going back to it later downloads it again and runs the checks; and, where it is so,
-// that it is the previous version, the tested one, or marked as failed. The deletion is the
+// that it is the previous version, or marked as failed. The deletion is the
 // page's, which says what came of it once the dialog has closed.
 function DeleteVersionDialog({
   version,
   previous,
-  tested,
   failed,
   busy,
   onConfirm,
@@ -768,7 +783,6 @@ function DeleteVersionDialog({
 }: {
   version: string;
   previous: boolean;
-  tested: boolean;
   failed: boolean;
   busy: boolean;
   onConfirm: () => void;
@@ -789,7 +803,6 @@ function DeleteVersionDialog({
       <form noValidate onSubmit={confirm}>
         <p>{m.versionsDeleteBody}</p>
         {previous && <p>{m.versionsDeletePrevious}</p>}
-        {tested && <p>{m.versionsDeleteTested}</p>}
         {failed && <p>{m.versionsDeleteFailed}</p>}
         <div className="actions footer">
           <button type="submit" className="danger" disabled={busy}>

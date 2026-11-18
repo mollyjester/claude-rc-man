@@ -13,7 +13,6 @@ from rcman import claude_server as cs
 from rcman import runtime as rt
 
 from devtools import fake_claude as fake
-from devtools import record_claude as rec
 from devtools.held_folders import tmux_sockets
 from tests.conftest import fake_claude
 from tests.hang_guard import HANG_GUARD
@@ -147,7 +146,7 @@ def test_start_trust_confirm_ready_stop_resume_forget(world):
     assert confirmed["server"]["state"] in ("connected", "ready")
     ready = wait_ready(world)
     assert ready["session_name"].startswith("pfx-")
-    assert ready["environment_url"].startswith(rec.ENVIRONMENT_URL_PREFIX)
+    assert ready["environment_url"].startswith(fake.ENVIRONMENT_URL_PREFIX)
 
     stopped = world.server.stop()["server"]
     assert (stopped["state"], stopped["exit_code"]) == ("stopped", 0)
@@ -216,7 +215,7 @@ def two_questions(world):
     log_in(world)
     world.binary.write_text(
         "#!/bin/sh\n"
-        f'[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
+        f'[ "$1" = remote-control ] || exec {fake.FAKE_CLAUDE} "$@"\n'
         "printf 'Trust /x? [y/N] '\n"
         "read answer\n"
         "printf 'Enable Remote Control? (y/n)\\n'\n"
@@ -337,12 +336,6 @@ def test_the_server_command_is_fixed_shell_free_and_its_environment_the_allowlis
     assert env["CLAUDE_CONFIG_DIR"] == world.layout.config
     assert env["HOME"] == world.layout.home
     assert env["SHELL"] == world.layout.shell
-
-
-def test_the_server_is_started_as_the_recorder_records_one(world):
-    """So the contract tests check every option rcman starts a server with."""
-    argv = cs.server_command(world.layout, rec.PROBE_PREFIX)
-    assert argv[argv.index(world.layout.claude) + 1 :] == rec.RC_ARGS
 
 
 def test_signed_in_is_what_claude_says(world):

@@ -1,8 +1,13 @@
-"""A fake `claude` that replays the recorded screens in ``tests/fakes/fixtures/``.
+"""A fake `claude` that shows the screens in ``tests/fakes/fixtures/``.
 
 It implements only the invocations rcman makes, as a state machine whose every
-screen is a recorded fixture, or a screen observed on a live server, with its
-placeholders filled in; any other invocation fails loudly. Its configuration folder
+screen is a fixture, or a screen observed on a live server, with its placeholders
+filled in; any other invocation fails loudly. The screens are plain test data: what
+the real `claude` showed when they were taken, with paths, URLs, times, session
+names, session IDs, account details and the version made ``{placeholders}``
+(:data:`PLACEHOLDERS`), which the fake fills in. What holds rcman to the real `claude` is
+rcman's own checks (helpers/claude_checks.py), not these screens. The fake reports
+:data:`FAKE_VERSION` unless told another. Its configuration folder
 is ``CLAUDE_CONFIG_DIR``, or ``~/.claude-fake`` when that is unset, so it never
 touches a real Claude configuration. Whether it is signed in is its credentials
 file there, CREDENTIALS, as the real one's is: signed in while it holds
@@ -18,10 +23,10 @@ and leaves one it cannot remove (EBUSY). A sign-in also writes ``oauthAccount``
 into ``.claude.json`` there, keeping every other key.
 
 Setting ``FAKE_CLAUDE_SCENARIO=unrecognised`` makes ``remote-control`` and
-``auth login`` show a synthetic screen that no recording contains, for testing
+``auth login`` show a synthetic screen that no fixture contains, for testing
 how unrecognised output is handled. ``FAKE_CLAUDE_SCENARIO=reconnected_without_status``
 makes ``remote-control`` show the screen of that name in ``tests/fakes/observed/``,
-seen on a live server (:func:`record_claude.load_observed`), and so does every
+seen on a live server (:func:`load_observed`), and so does every
 observed screen's name; what follows Ctrl+C there was not seen, so it ends as
 the ``unrecognised`` scenario does. In both,
 Ctrl+C ends it with exit status 1. ``FAKE_CLAUDE_VERSION`` replaces the version it
@@ -36,7 +41,7 @@ exits 1), and how soon after the question an answer may come (the fake takes any
 Nothing shows it unless asked: the default scenario never does.
 
 An answer to the folder-trust prompt that arrives sooner than
-:data:`MIN_ANSWER_SECONDS` after the prompt is refused with the recorded
+:data:`MIN_ANSWER_SECONDS` after the prompt is refused with the
 "too quickly" screen and asked again, as the real `claude` does. The real
 threshold has not been measured exactly; an instant answer is refused and one
 a fraction of a second later is accepted.
@@ -44,16 +49,16 @@ a fraction of a second later is accepted.
 ``FAKE_CLAUDE_MIN_ANSWER_SECONDS`` replaces that threshold: at 0 no answer is too
 quick, and at more than a test can last every answer is, at any speed.
 
-A server shows the recorded *connected* screen (no session yet) for
+A server shows the *connected* screen (no session yet) for
 :data:`READY_SECONDS` — overridable with ``FAKE_CLAUDE_READY_SECONDS`` — then
-the *ready* screen. Interrupting a server before it is ready has not been
-recorded, so the fake finishes becoming ready before it handles the interrupt.
+the *ready* screen. Interrupting a server before it is ready has no screen of its
+own, so the fake finishes becoming ready before it handles the interrupt.
 
-Signing in succeeds for ACCEPTED_CODE and fails for any other, each with the
-recorded screens. Tests that need a logged-in fake call :func:`write_state`.
+Signing in succeeds for ACCEPTED_CODE and fails for any other, each with its
+screens. Tests that need a logged-in fake call :func:`write_state`.
 
 Two variables let a test see what the fake has done instead of waiting for it to
-have done it (TraceWatch in tests/claude_watches.py). With ``FAKE_CLAUDE_TRACE``
+have done it (tests/claude_watches.py). With ``FAKE_CLAUDE_TRACE``
 naming a file, the fake appends one JSON line to it for each screen it has just
 written whole, the event ``drawn`` with its lines as a terminal shows them
 (:func:`shown_lines`).
@@ -78,6 +83,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -85,9 +91,125 @@ import sys
 import tempfile
 import termios
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from devtools import record_claude as rec
+from helpers.claude_checks import SESSION_ID
+
+REPO = Path(__file__).resolve().parent.parent
+FIXTURES = REPO / "tests" / "fakes" / "fixtures"
+# Screens seen on a live server; see load_observed.
+OBSERVED = REPO / "tests" / "fakes" / "observed"
+MANIFEST = "manifest.json"
+FAKE_CLAUDE = REPO / "tests" / "fakes" / "claude"
+# The version the fake reports unless FAKE_CLAUDE_VERSION names another, and the one the
+# fake store holds unless a test asks for another (devtools/fake_store.py).
+FAKE_VERSION = "2.1.322"
+
+LOGIN_URL_PREFIX = "https://claude.com/cai/oauth/authorize?"
+ENVIRONMENT_URL_PREFIX = "https://claude.ai/code?environment="
+
+PLACEHOLDERS = (
+    "version",
+    "cwd",
+    "config_dir",
+    "folder",
+    "login_url",
+    "environment_url",
+    "time",
+    "session_name",
+    "email",
+    "org_id",
+    "org_name",
+    "subscription_type",
+    "login_expires_at",
+    "plan_tier",
+    "branch",
+    "session_id",
+)
+
+
+@dataclass(frozen=True)
+class Context:
+    cwd: str
+    config_dir: str
+    version: str
+
+
+@dataclass(frozen=True)
+class Fixture:
+    lines: list[str]
+    exit_code: int | None  # None: still running when taken
+
+
+def sanitise(text: str, ctx: Context) -> str:
+    """``text`` with what an observed screen holds that differs from run to run - the paths,
+    clock times, session IDs and the version - made the placeholders it is kept with."""
+    paths = sorted([(ctx.cwd, "{cwd}"), (ctx.config_dir, "{config_dir}")], key=lambda p: -len(p[0]))
+    for path, placeholder in paths:
+        text = text.replace(path, placeholder)
+    text = re.sub(r"\[\d\d:\d\d:\d\d\]", "[{time}]", text)
+    text = SESSION_ID.sub("{session_id}", text)
+    return text.replace(ctx.version, "{version}")
+
+
+def placeholder_values(ctx: Context, **values: str) -> dict[str, str]:
+    return {
+        "version": ctx.version,
+        "cwd": ctx.cwd,
+        "config_dir": ctx.config_dir,
+        "folder": os.path.basename(ctx.cwd),
+        **values,
+    }
+
+
+def fill(template: str, values: dict[str, str]) -> str:
+    def replace(match: re.Match) -> str:
+        return values[match.group(1)]
+
+    return re.sub(r"\{(" + "|".join(PLACEHOLDERS) + r"|[a-z_]+)\}", replace, template)
+
+
+ANY_VALUES = {name: f"<{name}>" for name in PLACEHOLDERS}
+
+
+def load_manifest(directory: Path = FIXTURES) -> dict:
+    return json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
+
+
+def load_fixtures(directory: Path = FIXTURES) -> dict[str, Fixture]:
+    """The fixtures, ``<name>.txt`` each, as ``manifest.json`` beside them lists them with
+    the exit status each ended with."""
+    manifest = load_manifest(directory)
+    return {
+        name: Fixture(
+            lines=(directory / f"{name}.txt").read_text(encoding="utf-8").split("\n"),
+            exit_code=entry["exit_code"],
+        )
+        for name, entry in manifest["captures"].items()
+    }
+
+
+@dataclass(frozen=True)
+class Observed:
+    """A screen seen on a live server, kept because no fixture shows it."""
+
+    lines: list[str]
+    exit_code: int | None  # None: still running when seen
+
+
+def load_observed(directory: Path = OBSERVED) -> dict[str, Observed]:
+    """The observed screens, ``<name>.txt`` each, as ``manifest.json`` beside them lists
+    them, sanitised as the fixtures are. The manifest also says how each was seen."""
+    manifest = load_manifest(directory)
+    return {
+        name: Observed(
+            lines=(directory / f"{name}.txt").read_text(encoding="utf-8").split("\n"),
+            exit_code=entry["exit_code"],
+        )
+        for name, entry in manifest["screens"].items()
+    }
+
 
 STATE_FILE = "fake-state.json"
 CREDENTIALS = ".credentials.json"
@@ -106,11 +228,10 @@ FAKE_ACCOUNT = {
 }
 # The one observed screen that takes an answer.
 REMOTE_CONTROL_PROMPT = "remote_control_prompt"
-UNRECOGNISED_SCREEN = "fake claude: a synthetic screen that matches no recording"
+UNRECOGNISED_SCREEN = "fake claude: a synthetic screen that matches no fixture"
 CLEAR = "\x1b[H\x1b[2J"
 MIN_ANSWER_SECONDS = 0.25
-# How long a server shows the connected stage before its session is ready. Longer
-# than the recorder's settling time, so a recording of the fake captures it.
+# How long a server shows the connected stage before its session is ready.
 READY_SECONDS = 2.0
 # What a test drives the fake with (the module docstring).
 TRACE = "FAKE_CLAUDE_TRACE"
@@ -288,8 +409,8 @@ class Fake:
     def __init__(self, args: list[str], env: dict[str, str]):
         self.args = args
         self.env = env
-        self.fixtures = rec.load_fixtures()
-        self.version = env.get("FAKE_CLAUDE_VERSION") or rec.load_manifest()["claude_version"]
+        self.fixtures = load_fixtures()
+        self.version = env.get("FAKE_CLAUDE_VERSION") or FAKE_VERSION
         self.cwd = os.getcwd()
         self.config_dir = env.get("CLAUDE_CONFIG_DIR") or os.path.join(
             env.get("HOME", "/"), ".claude"
@@ -299,9 +420,9 @@ class Fake:
         self.trace = env.get(TRACE)
         self.gate = env.get(GATE)
         self.min_answer = float(env.get(MIN_ANSWER, MIN_ANSWER_SECONDS))
-        self.values = rec.placeholder_values(
-            rec.Context(self.cwd, self.config_dir, self.version),
-            environment_url=rec.ENVIRONMENT_URL_PREFIX
+        self.values = placeholder_values(
+            Context(self.cwd, self.config_dir, self.version),
+            environment_url=ENVIRONMENT_URL_PREFIX
             + "env_fake"
             + hashlib.sha256(self.cwd.encode()).hexdigest()[:12],
             session_name="",
@@ -328,7 +449,7 @@ class Fake:
 
     def show_lines(self, lines: list[str], exit_code: int | None, prompt: bool = False):
         self.values["time"] = datetime.datetime.now().strftime("%H:%M:%S")
-        text = rec.fill("\n".join(lines), self.values)
+        text = fill("\n".join(lines), self.values)
         clear = CLEAR if sys.stdout.isatty() else ""
         sys.stdout.write(clear + text + ("" if prompt else "\n"))
         sys.stdout.flush()
@@ -397,7 +518,7 @@ class Fake:
             return 1
         email = _option(self.args, "--email") or ""
         self.values["login_url"] = (
-            rec.LOGIN_URL_PREFIX + "fake=1&login_hint=" + email.replace("@", "%40")
+            LOGIN_URL_PREFIX + "fake=1&login_hint=" + email.replace("@", "%40")
         )
         self.show("login_prompt", prompt=True)
         code = self.read_line().strip()
@@ -430,12 +551,12 @@ class Fake:
 
     def remote_control(self) -> int:
         if "--help" in self.args:
-            return self.unsupported()  # not recorded; the real one prints help, signed in or not
+            return self.unsupported()  # no screen of it; the real one prints help, signed in or not
         if not signed_in(Path(self.state_dir)):
             return self.show("rc_logged_out")
         if not isinstance(self.config().get("oauthAccount"), dict):
             refusal = self.fixtures["rc_no_oauth_account"]
-            text = rec.fill("\n".join(refusal.lines), self.values)
+            text = fill("\n".join(refusal.lines), self.values)
             sys.stderr.write(text + "\n")
             sys.stderr.flush()
             self.drawn(text)
@@ -449,7 +570,7 @@ class Fake:
         if self.env.get("FAKE_CLAUDE_SCENARIO") == REMOTE_CONTROL_PROMPT:
             return self.remote_control_prompt()
         # Every other observed screen is a scenario of its own name.
-        if screen := rec.load_observed().get(self.env.get("FAKE_CLAUDE_SCENARIO", "")):
+        if screen := load_observed().get(self.env.get("FAKE_CLAUDE_SCENARIO", "")):
             self.show_lines(screen.lines, screen.exit_code)
             self.wait_for_interrupt()
             return 1
@@ -462,7 +583,7 @@ class Fake:
         asks_spawn = branch is not None and spawn is None
         after_trust = self.cwd not in self.state["trusted"]
         if asks_spawn and not after_trust:
-            return self.unsupported()  # whether Claude asks again has no recording
+            return self.unsupported()  # whether Claude asks again has no screen here
         if after_trust:
             self.show("git_trust_prompt" if branch is not None else "trust_prompt", prompt=True)
             if self.paced_answer("trust_answer_too_fast").strip().lower() != "y":
@@ -489,7 +610,7 @@ class Fake:
         spawn = _option(self.args, "--spawn")
         if spawn not in (None, "same-dir"):
             return self.unsupported()
-        screen = rec.load_observed()[REMOTE_CONTROL_PROMPT]
+        screen = load_observed()[REMOTE_CONTROL_PROMPT]
         self.show_lines(screen.lines, screen.exit_code, prompt=True)
         try:
             answer = self.read_line().strip().lower()
@@ -530,7 +651,7 @@ class Fake:
         opened.unlink()
 
     def spawn_question(self) -> str | None:
-        """The spawn-mode answer, or None for Ctrl+C, which is not recorded there and ends it
+        """The spawn-mode answer, or None for Ctrl+C, which has no screen there and ends it
         with exit status 1, as at an observed screen. SIGTERM ends it, as it ends any
         process."""
         self.show("spawn_prompt", prompt=True)

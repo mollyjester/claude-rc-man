@@ -32,10 +32,10 @@ never starts on a version that is being removed.
 
 An administrator may delete a version from the store by hand (``delete``): any version but the
 approved one, the one ``current`` names and one a workspace's record names, which a server
-started with, even one that has ended on its own; the previous and the tested version too,
-going back to which then downloads it again and runs the canary. It holds the rollouts' lock
-for its whole run, as a rollout does, and decides under ``lock``, as ``prune`` does; the
-prune's grace period does not apply to it, and it leaves a version's mark as failed alone.
+started with, even one that has ended on its own; the previous version too, going back to
+which then downloads it again and runs the canary. It holds the rollouts' lock for its whole
+run, as a rollout does, and decides under ``lock``, as ``prune`` does, and it leaves a
+version's mark as failed alone.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ import os
 import shutil
 import sqlite3
 import threading
-import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,13 +54,14 @@ from pathlib import Path
 from helpers import claude_release, rules
 from rcman import db
 from rcman.problems import (
+    CHECKS_FAILED_MESSAGES,
     CLAUDE_INSTALL_MESSAGES,
     CLAUDE_INSTALL_STATUS,
     VERSION_KEPT_MESSAGES,
     Problem,
 )
 from rcman.problems import body as problem_body
-from rcman.runtime import CANARY_NAME, CANDIDATE, HELPERS_DIR, RuntimeFailed, RuntimeUnavailable
+from rcman.runtime import CANARY_NAME, CANDIDATE, RuntimeFailed, RuntimeUnavailable
 from rcman.settings import Settings
 
 log = logging.getLogger("rcman.claude_versions")
@@ -71,13 +71,10 @@ log.setLevel(logging.INFO)
 STAGING_FOLDER = "claude-staging"
 # Who an approval is by when rcman made it itself: adopting what the installer left.
 ADOPTED_BY = "rcman"
-# How long a version just put in the store is left alone by pruning.
-PRUNE_GRACE_SECONDS = 3600.0
 # The store's files and folders are readable by every uid range (the workspaces') and
 # writable by their owner alone.
 MODE = 0o755
 VERSIONS, CURRENT = "versions", "current"
-TESTED_FILE = "claude-version"
 
 
 @dataclass(frozen=True)
@@ -234,10 +231,6 @@ class ClaudeVersions:
             raise Problem("claude_version_not_failed")
         return self.report()
 
-    def tested(self) -> str:
-        """The version rcman's recorded tests were made with."""
-        return (HELPERS_DIR / TESTED_FILE).read_text(encoding="utf-8").strip()
-
     # --- the store -------------------------------------------------------------------------
 
     def _usable(self, path: Path) -> bool:
@@ -325,11 +318,12 @@ class ClaudeVersions:
         marked as failed, before anything is fetched or checked or once it is marked while it
         is checked,
         ``claude_install_failed`` where the version is not a version or cannot be had,
-        ``claude_checks_failed`` where it fails the canary's checks, a RuntimeFailed where the
-        canary could not run, and ``rcman_upgrading`` while an upgrade of rcman is under way;
-        in each the store is as it was. A version that was approved before and is still in the
-        store is approved again at once: it passed the checks then, so a rollback needs neither
-        a download nor a canary."""
+        ``claude_checks_failed`` where it fails the canary's checks, naming it and the approved
+        version the workspaces stay on, if one is (``_checks_failed``), a RuntimeFailed where
+        the canary could not run, and ``rcman_upgrading`` while an upgrade of rcman is under
+        way; in each the store and the approvals are as they were. A version that was approved
+        before and is still in the store is approved again at once: it passed the checks then,
+        so a rollback needs neither a download nor a canary."""
         if not rules.VERSION.fullmatch(version):
             raise self._install_failed("no_such_version")
         if not self._upgrading.acquire(blocking=False):
@@ -390,12 +384,28 @@ class ClaudeVersions:
                 folder, CANARY_NAME, version, slot=self.workspaces.builder_slot
             )
             if failed:
-                raise Problem("claude_checks_failed", failed=sorted(failed), report=failed)
+                raise self._checks_failed(version, failed)
             self._install(candidate, version, partial)
             self._commit(version, by, partial)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
             partial.unlink(missing_ok=True)
+
+    def _checks_failed(self, version: str, failed: dict[str, dict]) -> Problem:
+        """``claude_checks_failed`` for ``version``: the checks it failed and their reports, and
+        the version that failed and the approved one, which the workspaces stay on (None where
+        none is approved), in its title and of their own. It reads the approvals and writes
+        none."""
+        approved = self.approved()
+        title = CHECKS_FAILED_MESSAGES["none" if approved is None else "approved"]
+        return Problem(
+            "claude_checks_failed",
+            title=title.format(version=version, approved=approved),
+            failed=sorted(failed),
+            report=failed,
+            version=version,
+            approved=approved,
+        )
 
     def _approved_before(self, version: str) -> bool:
         return any(a.version == version for a in self.approvals())
@@ -536,24 +546,16 @@ class ClaudeVersions:
         except Exception:  # noqa: BLE001 - what it would remove is removed by the next one
             log.exception("the Claude Code store could not be pruned")
 
-    def _new(self, version: str) -> bool:
-        """Whether the version was put in the store within ``PRUNE_GRACE_SECONDS``: an upgrade
-        of rcman puts its tested version there while this service, which does not know it, runs."""
-        try:
-            return time.time() - (self.versions_dir / version).stat().st_mtime < PRUNE_GRACE_SECONDS
-        except OSError:
-            return False
-
     def _kept(self) -> set[str | None]:
         """The versions pruning never removes: the approved, the previous (never one marked
-        failed, so a marked version goes once nothing else keeps it), the one the link
-        names and the tested one, which an administrator can go back to from the page."""
-        return {self.approved(), self.previous(), self._current(), self.tested()}
+        failed, so a marked version goes once nothing else keeps it), which an administrator
+        can go back to from the page, and the one the link names."""
+        return {self.approved(), self.previous(), self._current()}
 
     def prune(self) -> None:
-        """Remove the versions in the store that are neither the approved, the previous, the
-        tested nor the one the link names, and that no server which runs, cannot be read or is
-        starting started with.
+        """Remove the versions in the store that are neither the approved, the previous nor
+        the one the link names, and that no server which runs, cannot be read or is starting
+        started with.
 
         What the servers say is asked without ``lock``, since a server that hangs would
         otherwise hold up every start and approval. Then, under ``lock``, what is to go is
@@ -576,8 +578,6 @@ class ClaudeVersions:
                 version for workspace, version in now.items() if before.get(workspace) != version
             }
             for version in sorted(set(self.installed()) - keep - in_use - changed):
-                if self._new(version):
-                    continue
                 (self.versions_dir / version).unlink(missing_ok=True)
                 log.info("Claude Code %s was removed from the store", version)
 
@@ -609,7 +609,7 @@ class ClaudeVersions:
     # --- reporting ----------------------------------------------------------------------------
 
     def report(self) -> dict:
-        """What the Versions page shows: the approved, previous and tested versions, each
+        """What the Versions page shows: the approved and previous versions, each
         version in the store with whether it is approved, previous or marked failed and how
         many servers use it and why it may not be deleted, if it may not (the problem a
         deletion would be refused with, for a reason of the version's own), the servers that
@@ -632,7 +632,6 @@ class ClaudeVersions:
         return {
             "approved": approved,
             "previous": previous,
-            "tested": self.tested(),
             "installed": [
                 {
                     "version": v,

@@ -13,6 +13,7 @@ from rcman import workspaces as ws
 from tests.conftest import (
     ALICE,
     BOB,
+    FAKE_VERSION,
     as_user,
     changing,
     host_runtime,
@@ -312,7 +313,7 @@ def test_every_route_taking_a_workspace_answers_anothers_as_not_found(client, ap
 
 # --- a server pins the Claude Code version it starts with -------------------------------------
 
-FIRST, SECOND = "1.0.0", "1.1.0"  # the versions in the store; the first is conftest's FAKE_VERSION
+FIRST, SECOND = FAKE_VERSION, "1.1.0"  # the versions in the store
 
 
 @pytest.fixture

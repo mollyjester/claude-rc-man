@@ -29,7 +29,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # The fake's own program, and what the bundle holds beside its Python: the launcher it runs and
-# the recordings.
+# the screens.
 FAKE = "devtools/fake_claude.py"
 DATA = ("tests/fakes/claude", "tests/fakes/fixtures", "tests/fakes/observed")
 
@@ -92,7 +92,8 @@ def _archive() -> bytes:
 
 def bundle(version: str | None = None) -> bytes:
     """The fake claude as one self-unpacking program, reporting ``version`` if one is given
-    (``FAKE_CLAUDE_VERSION``, baked into the program) and the recorded one otherwise."""
+    (``FAKE_CLAUDE_VERSION``, baked into the program) and the fake's own FAKE_VERSION
+    otherwise."""
     archive = _archive()
     digest = hashlib.sha256(archive).hexdigest()[:16]
     label = f"export FAKE_CLAUDE_VERSION={version}\n" if version else ""

@@ -146,8 +146,8 @@ MESSAGES = {
     "claude_signing_out": "Your Claude account is being signed out: connect it again on the "
     "Claude page to start servers.",
     "claude_install_failed": "rcman could not get that Claude Code version.",
-    "claude_checks_failed": "That Claude Code version failed the checks every version is held "
-    "to before it is approved, so it was not approved. The checks it failed are below.",
+    "claude_checks_failed": "That Claude Code version failed rcman's checks, so nothing was "
+    "changed. The checks it failed are below.",
     "claude_canary_failed": "rcman could not run the checks on that Claude Code version, so it "
     "was not approved and nothing was changed. Try again in a moment.",
     "claude_upgrade_busy": "Another Claude Code version is being rolled out, or a version is "
@@ -246,6 +246,20 @@ CLAUDE_INSTALL_MESSAGES = {
     "network": (
         "rcman could not download it: the release site did not answer, or the download "
         "stopped part way. Try again."
+    ),
+}
+# The title of ``claude_checks_failed``, filled with the version that failed and the approved
+# one the workspaces stay on: by whether one is approved.
+CHECKS_FAILED_MESSAGES = {
+    "approved": (
+        "Claude Code {version} failed rcman's checks, so nothing was changed: workspaces stay "
+        "on Claude Code {approved}. rcman needs an update to work with {version}. Mark "
+        "{version} as failed so that it is not rolled out again. The checks it failed are below."
+    ),
+    "none": (
+        "Claude Code {version} failed rcman's checks, so nothing was changed, and no Claude "
+        "Code version is approved yet. rcman needs an update to work with {version}. Mark "
+        "{version} as failed so that it is not rolled out again. The checks it failed are below."
     ),
 }
 # Why an upgrade of rcman cannot be asked for now, in plain words, by the reason

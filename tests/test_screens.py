@@ -1,13 +1,13 @@
-"""What Claude Code shows, read as a server's state: held to every recorded fixture and
+"""What Claude Code shows, read as a server's state: held to every fixture and
 every screen observed on a live server (tests/fakes/)."""
 
 import json
 import re
 
-from devtools import record_claude as rec
+from devtools import fake_claude as fake
 from helpers import screens as h
 
-# --- classification against every recorded fixture ---------------------------------
+# --- classification against every fixture ------------------------------------------
 
 SERVER_STATES = {
     "rc_logged_out": "logged_out",
@@ -52,11 +52,11 @@ NOT_READ_AS_SCREENS = {
     "auth_status_logged_out": "parsed as JSON by the sign-in check (servers.py)",
 }
 VALUES = {
-    **rec.ANY_VALUES,
+    **fake.ANY_VALUES,
     "cwd": "/home/u/projects/x",
     "folder": "x",
-    "login_url": rec.LOGIN_URL_PREFIX + "code=true&state=abc",
-    "environment_url": rec.ENVIRONMENT_URL_PREFIX + "env_abc",
+    "login_url": fake.LOGIN_URL_PREFIX + "code=true&state=abc",
+    "environment_url": fake.ENVIRONMENT_URL_PREFIX + "env_abc",
     "session_name": "pfx-quiet-otter",
     "time": "01:02:03",
     "branch": "feature-x",
@@ -64,27 +64,27 @@ VALUES = {
 
 
 def filled(name):
-    fixture = rec.load_fixtures()[name]
-    return rec.fill("\n".join(fixture.lines), VALUES).split("\n"), fixture.exit_code
+    fixture = fake.load_fixtures()[name]
+    return fake.fill("\n".join(fixture.lines), VALUES).split("\n"), fixture.exit_code
 
 
 def unaccounted_fixtures(names) -> list[str]:
     """The fixtures the tables above do not account for, those they account for that are not
-    recorded, and those they account for more than once."""
+    fixtures, and those they account for more than once."""
     accounted = [*SERVER_STATES, *LOGIN_STATES, *NOT_READ_AS_SCREENS]
     twice = sorted({name for name in accounted if accounted.count(name) > 1})
     return sorted(set(names) ^ set(accounted)) + twice
 
 
 def test_every_fixture_is_accounted_for_exactly_once():
-    names = rec.load_fixtures()
+    names = fake.load_fixtures()
     assert names, "no fixtures at all"
     assert unaccounted_fixtures(names) == []
 
 
 def test_a_fixture_not_accounted_for_is_found():
-    """Planted twin: a recorded fixture that no table names fails the accounting."""
-    assert unaccounted_fixtures([*rec.load_fixtures(), "planted_capture"]) == ["planted_capture"]
+    """Planted twin: a fixture that no table names fails the accounting."""
+    assert unaccounted_fixtures([*fake.load_fixtures(), "planted_capture"]) == ["planted_capture"]
 
 
 def test_a_ready_screen_yields_its_url_and_session_name_and_a_sign_in_its_url():
@@ -103,7 +103,7 @@ def test_a_screen_rcman_does_not_know_is_unrecognised_with_its_lines():
 
 # --- classification against every screen observed on a live server -------------------
 
-# Screens no recording can bring about, seen on a live server (rec.load_observed).
+# Screens no fixture shows, seen on a live server (fake.load_observed).
 OBSERVED_STATES = {
     # Claude stopped drawing its status block after a Remote Control error, and then
     # reconnected; it draws the block again on its own tick, if at all.
@@ -118,8 +118,8 @@ OBSERVED_STATES = {
 
 
 def observed(name):
-    screen = rec.load_observed()[name]
-    return rec.fill("\n".join(screen.lines), VALUES).split("\n"), screen.exit_code
+    screen = fake.load_observed()[name]
+    return fake.fill("\n".join(screen.lines), VALUES).split("\n"), screen.exit_code
 
 
 def unaccounted(observed_names) -> list[str]:
@@ -129,10 +129,10 @@ def unaccounted(observed_names) -> list[str]:
 
 
 def test_every_observed_screen_is_accounted_for_exactly_once():
-    names = rec.load_observed()
+    names = fake.load_observed()
     assert names, "no observed screens at all"
     assert unaccounted(names) == []
-    assert set(OBSERVED_STATES).isdisjoint(rec.load_fixtures())
+    assert set(OBSERVED_STATES).isdisjoint(fake.load_fixtures())
 
 
 def test_an_observed_screen_not_accounted_for_is_found(tmp_path):
@@ -140,17 +140,17 @@ def test_an_observed_screen_not_accounted_for_is_found(tmp_path):
     import shutil
 
     copy = tmp_path / "observed"
-    shutil.copytree(rec.OBSERVED, copy)
-    manifest = json.loads((copy / rec.MANIFEST).read_text(encoding="utf-8"))
+    shutil.copytree(fake.OBSERVED, copy)
+    manifest = json.loads((copy / fake.MANIFEST).read_text(encoding="utf-8"))
     [(name, entry)] = list(manifest["screens"].items())[:1]
     manifest["screens"]["planted_screen"] = entry
-    (copy / rec.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    (copy / fake.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
     shutil.copy(copy / f"{name}.txt", copy / "planted_screen.txt")
-    assert "planted_screen" in rec.load_observed(copy)  # the plant took effect
-    assert unaccounted(rec.load_observed(copy)) == ["planted_screen"]
+    assert "planted_screen" in fake.load_observed(copy)  # the plant took effect
+    assert unaccounted(fake.load_observed(copy)) == ["planted_screen"]
 
 
-def test_every_recorded_and_observed_screen_reads_as_its_state():
+def test_every_fixture_and_observed_screen_reads_as_its_state():
     wrong = {}
     for name, state in SERVER_STATES.items():
         if (found := h.classify(*filled(name))["state"]) != state:
@@ -216,8 +216,8 @@ def reconnect_appended(screens: dict[str, tuple[list[str], int | None]]) -> dict
 
 def live_screens() -> dict[str, tuple[list[str], int | None]]:
     return {
-        **{f"fixture {name}": filled(name) for name in rec.load_fixtures()},
-        **{f"observed {name}": observed(name) for name in rec.load_observed()},
+        **{f"fixture {name}": filled(name) for name in fake.load_fixtures()},
+        **{f"observed {name}": observed(name) for name in fake.load_observed()},
     }
 
 

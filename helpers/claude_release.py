@@ -3,8 +3,8 @@ checked against its checksum.
 
 A release is ``<download>/<version>/manifest.json``, which names a checksum for each
 platform, and ``<download>/<version>/<platform>/claude``, one program; ``<download>/latest``
-names the newest version. The installer fetches the version rcman was tested with, and rcman
-fetches the version an administrator rolls out, with this one code.
+names the newest version. A fresh install fetches the newest version, and rcman fetches the
+version an administrator rolls out, with this one code.
 
 A download is streamed to a partial file next to where it will be, hashed as it arrives and
 held to a size, and only a whole file whose checksum is the manifest's is renamed into place;

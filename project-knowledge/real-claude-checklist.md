@@ -3,7 +3,7 @@
 Everything automated runs against the fake `claude` or, without an account,
 against the real binary — see [fake-claude.md](fake-claude.md). What needs a
 signed-in Claude subscription is checked by hand, with this list: before
-approving a new Claude Code version, once on a newly installed server, and again
+rolling out a new Claude Code version, once on a newly installed server, and again
 after a live reinstall.
 
 Use a Claude account set aside for testing where there is one. Every server
@@ -15,11 +15,15 @@ claude.ai/code list; archive them afterwards.
 1. Sign your own account on the development machine in to the test Claude
    account (`claude`, then `/login`).
 2. Run `uv run pytest -m real_claude`; what it checks, and the account it uses, are in
-   [fake-claude.md](fake-claude.md#how-the-fake-is-checked-against-the-real-binary).
-   It creates a session for each sequence that brings a server to ready
-   (see the docstring of `devtools/record_claude.py`).
-3. When a Claude Code version is being approved, follow
-   [Approving a new Claude Code version](fake-claude.md#approving-a-new-claude-code-version).
+   [fake-claude.md](fake-claude.md#what-holds-rcman-to-the-real-binary).
+   It creates one session, its name starting with `PREFIX` in
+   `tests/test_claude_real_account.py`. The host runtime's `PATH` (`Layout.path` in
+   `backend/rcman/runtime.py`) holds only the system's folders, so a `claude` whose node
+   lives elsewhere (nvm) does not start there. After the run, check that the account is still signed in
+   (`claude auth status`): a refresh during the run may have replaced the workspace's link
+   rather than the account's own file.
+3. When a check fails on a new Claude Code version, follow
+   [When a check fails on a new version](fake-claude.md#when-a-check-fails-on-a-new-version).
 
 ## On an installed server
 
@@ -57,10 +61,9 @@ With a person added for the test (`sudo rcman-admin add`):
     runtime.
 
 Write down what differed from this list. A screen rcman shows as
-**Unrecognised screen** is recorded as a new fixture, or, where no sequence
-can bring it about, kept as an
-[observed screen](fake-claude.md#observed-screens), and handled before the
-version is approved.
+**Unrecognised screen** is kept as an
+[observed screen](fake-claude.md#observed-screens), or as a fixture where it
+replaces one, and handled before the version is rolled out.
 
 ## After a fresh install or a reinstall
 
@@ -82,7 +85,11 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
 2. **The runtime.** `podman info --format '{{.Host.OCIRuntime.Name}}'` run as `rcman` prints
    `crun`.
 3. **A first workspace.** The first administrator signs in with the address given to the
-   installer and makes a workspace, which reaches ready.
+   installer and makes a workspace, which reaches ready. The **Claude Code versions** page
+   shows the newest release of Claude Code installed and approved. The installer ran no
+   checks on it, and rolling the approved version out again changes nothing and runs no
+   checks: it is checked by [On an installed server](#on-an-installed-server). Where it fails
+   there, roll out an older version on that page, which runs rcman's checks against it.
 4. **An address that is not listed.** Sign in to Google with an account that is not on the
    **People** page: oauth2-proxy refuses it and no page of rcman opens. Add a person for the
    test, sign in as them, then remove them (`sudo rcman-admin delete`) while their page is
@@ -383,8 +390,8 @@ engine has no user manager of rcman's, so this is checked here.
 
 What Claude Code does with one credentials file bound into several workspaces,
 each with its own `CLAUDE_CONFIG_DIR`, as seen with a real account on the version
-in `tests/fakes/fixtures/manifest.json`. rcman and the fake follow it; check it
-again when a version is approved, in an installed rcman with the test account
+`FAKE_VERSION` in `devtools/fake_claude.py` names. rcman and the fake follow it; check it
+again when a version is rolled out, in an installed rcman with the test account
 connected on the **Claude** page.
 
 1. **What a sign-in writes.** The credentials file holds `claudeAiOauth`, whose
@@ -393,8 +400,9 @@ connected on the **Claude** page.
    file, owner-only.
 2. **No `oauthAccount`.** `claude remote-control` in a configuration whose
    `.claude.json` holds none refuses on stderr with exit status 1: the fixture
-   `rc_no_oauth_account`, which `uv run pytest -m real_claude` records again.
-   rcman seeds `oauthAccount` before every start.
+   `rc_no_oauth_account`. Check it in a configuration folder of its own holding
+   only a link to the account's credentials file. rcman seeds `oauthAccount`
+   before every start.
 3. **A session's commands.** The sessions Remote Control spawns stay in the
    pane's process group; the commands a session runs are in a session of their
    own (setsid). The stop collects every process the server started, by parent,
@@ -517,15 +525,17 @@ archive tools of other systems, are checked here.
    folder inside it and a link, and open the zip in macOS's Archive Utility and in Windows
    Explorer: each lists and extracts every file with its name, and the folder with its files.
 
-## Screens with no recording yet
+## Screens not seen yet
 
-Some screens rcman has no recording of, and has not kept as observed, and so
-does not recognise, and some it has seen but not what follows them; the full
-list, and how rcman shows them, is under *Not recorded* in
-[fake-claude.md](fake-claude.md). Some of them need particular conditions.
-Whenever those conditions come up, record the screen: add a sequence for it to
-`SEQUENCES` in `devtools/record_claude.py`, record it with
-`uv run python devtools/record_claude.py --with-account --sequence <name>`,
+Some screens rcman has not seen, and so does not recognise, and some it has
+seen but not what follows them; the full list, and how rcman shows them, is
+under *Not seen* in [fake-claude.md](fake-claude.md). Some of them need
+particular conditions. Whenever those conditions come up, keep the screen: the
+whole pane, read with `tmux capture-pane` as rcman reads it, with its paths, clock
+times, session IDs and version made placeholders by `sanitise` in
+`devtools/fake_claude.py`, and anything else that differs from run to run, or is a
+secret, replaced by hand with the fixtures' placeholders, as an
+[observed screen](fake-claude.md#observed-screens),
 and teach rcman and the fake to recognise it, tests first.
 
 1. **Enabling Remote Control.** The question itself is kept as an observed
