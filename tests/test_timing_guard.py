@@ -2418,18 +2418,12 @@ NAMED = (
     Named("guard tests", "tests/test_hang_guard.py",
           ("test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread",),
           frozenset({"TIER"}), "the hang guard's own test of each tier's value, in a host test"),
-    Named("recorder's watch", "devtools/tmuxctl.py",
-          ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
+    Named("tmux pane", "devtools/tmuxctl.py",
+          ("", "Pane.wait_for", "Pane.wait_exit", "Pane.close"),
           frozenset({"P1", "P2", "P3"}),
           "tmuxctl's look at the screen every POLL_SECONDS, and its give-up at the timeout a "
-          "caller passes: RealWatch's, or a test's, which passes its tier's guard, which only "
-          "ends a hang, or 0 (rule (a))"),
-    Named("recorder's watch", "devtools/record_claude.py", ("RealWatch",),
-          frozenset({"P1", "P2", "P3"}),
-          "the recorder's command line's watch, against the real claude with a person at hand: "
-          "no test reaches it but a module marked real_claude, which is run by hand against the "
-          "real claude as the command line is, and is exempt (test_record_claude.py's "
-          "test_no_test_reaches_the_command_lines_watch)"),
+          "caller passes: a test's, which passes its tier's guard, which only ends a hang, or 0 "
+          "(rule (a))"),
     Named("killed run", "tests/killed_runs.py", ("hold", "shell_hold"),
           frozenset({"P1", "P2", "P2s"}),
           "a killed run's own hang bound: hold() and shell_hold() give up at the deadline the run "

@@ -413,8 +413,7 @@ test, and a child's wait loop. The only other exemptions are its named patterns,
 with its reason and a stale check that fails once its subject holds no site: `until`'s own pace
 and bound, the doubles' hang bound, the hang guard with `runs_out` and `pace`, the short bounds
 the tests of these hand them, tmuxctl's give-up, at the timeout its caller passes, which a test
-gives as its tier's guard, and the recorder's command-line watch, which no test reaches but a
-module marked `real_claude`, run by hand, a killed run's own hang bound in
+gives as its tier's guard, a killed run's own hang bound in
 `tests/killed_runs.py`, `hold` and `shell_hold`, derived from the tier's guard, the sweep of
 held folders and the pre-test hook, whose deadlines are their behaviour, the tests of
 `tier_guard` and of each tier's value, which name the container tier's guard in a host test, and
@@ -451,11 +450,8 @@ given up:
 - "promptly": where a test asserted that something ended within a time, its result is still
   asserted and the cause that must not act is pushed past the guard, so that a defect fails
   the test, but an ending that is slow without being a hang passes;
-- the timing of `RealWatch` (`devtools/record_claude.py`), its quiet windows against the real
-  `claude` and its `TIMEOUT`, after which the pane's waits give up, which only the recorder's
-  command line exercises, by hand;
-- how the real `claude` treats an answer typed before its question, which the `trust_too_fast`
-  replay holds on the fake's side only ([fake-claude.md](fake-claude.md)).
+- how the real `claude` treats an answer typed before its question, which the fake's
+  threshold holds on the fake's side only ([fake-claude.md](fake-claude.md)).
 
 A relay to a forwarded port ending when its client is killed, and its `kill 0` reaching only
 its own process group, are checked on the host runtime only (`tests/test_forwards.py`), where
@@ -623,34 +619,30 @@ rows; malformed limits, pidfiles, process-table entries and terminal frames; the
 image collection; threads of one process kept apart by the file lock; and whether the Terminal
 tab's shell holds no file of rcman's.
 
-Claude Code's versions, the fake `claude`, its recordings, the screens rcman reads and a
+Claude Code's versions, the fake `claude`, its screens, the screens rcman reads and a
 workspace's server are held to one test for each thing a person or an administrator relies on,
-on the path where it works, to the round trip and the contract tests that hold the fake to the
-real program ([fake-claude.md](fake-claude.md#how-the-fake-is-checked-against-the-real-binary)),
-and to their guards, each with one planted twin: the fixtures' manifest against their files and
-the recorder's sequences, the tested version against the recorded one, the kept screens against
-every kind of leak and each leak mark against a sample of it, the observed screens' manifest and
-their `kept_for`, the round trip's case for every sequence, every fixture and observed screen
-accounted for by a state, the questions and the reconnected screens held to every screen, no
-test reaching the command line's watch, and every use of Claude's path through the command
-builder. The failure paths kept are those that are the behaviour: a candidate the canary's
+on the path where it works, to the contract tests that hold the installed real `claude` to
+rcman's checks and to the options rcman passes it
+([fake-claude.md](fake-claude.md#what-holds-rcman-to-the-real-binary)), and to their guards,
+each with one planted twin: the kept screens against every kind of leak and each leak mark
+against a sample of it, every fixture and observed screen accounted for by a state, the
+questions and the reconnected screens held to every screen, and every use of Claude's path
+through the command builder. The failure paths kept are those that are the behaviour: a candidate the canary's
 checks fail, refused with the checks and their reports and the approved version left as it was;
 a rollback to a version approved before, with neither a download nor a canary; a version marked
 as failed, refused for a rollout; a download whose checksum differs, refused with nothing left;
 a server that ignores Ctrl+C, ended with its process group after its grace; a screen rcman does
 not know, read as unrecognised, audited, logged once without its text and named to
-administrators; a wait on a pane that gives up with the screen it last showed; and the home the
-run was started from, refused as a recorded `claude`'s home. Given up: every other refusal of a
+administrators; and a wait on a pane that gives up with the screen it last showed. Given up: every other refusal of a
 route, a rule, a verb or a mark, and every other failure to get, check, store or switch to a
 version, the canary's environment and a candidate that is not there among them, and the release
 bundle's derivation from the fake's imports; the link's repair and adoption of an empty or
-missing version; approvals append-only; the grace that keeps a version an upgrade of rcman has
-just stored; every order of a rollout, a sweep, a prune, a start and a mark; a stop's prune and
+missing version; approvals append-only; every order of a rollout, a sweep, a prune, a start and a mark; a stop's prune and
 a prune that fails; each check's judging of a program's streams, its timeouts, a candidate's
 children, a report's limits, tail and cuts, and each kind of secret through a whole report
 rather than the redaction alone, its other spellings, wrapped or written over on a terminal
-among them; every terminal escape but those of the recorded logout, and the real `claude` with a
-long configuration path; what the fake does that the round trip does not replay, its answers at
+among them; every terminal escape but those of the kept logout, and the real `claude` with a
+long configuration path; what the fake does that no test drives, its answers at
 the Remote Control question but `y`, its spawn-mode question, a credentials file it cannot
 remove or rename, and its refusals but that of an answer too early; a server's own refusals and
 timeouts, a workspace that cannot be reached listed with why, a declined trust, a server that
@@ -658,10 +650,8 @@ died or was signed out, the reconnected screens through a server's verbs, its au
 and the administrators' warnings, a stop of a session of its own or of a server that ignores
 SIGTERM, the workspace's folder and environment read from `/proc`, the window's pinned size and
 `tmux.conf`'s global options, and a status read across a server's end; every variant of the
-reconnected, answered and question screens; sanitising each placeholder alone, the recorder's
-held folders, a killed version reading, the hand-over of a sign-in code, a capture that changes
-while it settles, the choice of sequences and the environment of a sequence that needs the
-account; tmuxctl's trimming, its rerun, a death by signal and the exit status of an unreaped
+reconnected, answered and question screens; sanitising each placeholder; tmuxctl's trimming,
+its rerun, a death by signal and the exit status of an unreaped
 process read from `/proc`; and the journal's forgetting, its bound on the calls it remembers and
 the people it keeps apart.
 
@@ -936,7 +926,7 @@ snapshot is removed when the session ends.
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` derives the workspaces' profile from; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, `container inspect`, `podman info` and `system df --format json`'s summary), which `tests/test_monitor.py` reads; `podman images -a --format json` of a plain build's leaf, its nameless step image and its base, recorded from Podman on the tests' engine (`podman-images/images-a.json`), which `tests/test_runtime.py` reads, these and the seccomp profile copies of one point in time, recorded again when the product starts failing against real Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
+| `tests/fakes/` | The fake `claude`, its fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` derives the workspaces' profile from; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, `container inspect`, `podman info` and `system df --format json`'s summary), which `tests/test_monitor.py` reads; `podman images -a --format json` of a plain build's leaf, its nameless step image and its base, recorded from Podman on the tests' engine (`podman-images/images-a.json`), which `tests/test_runtime.py` reads, these and the seccomp profile copies of one point in time, recorded again when the product starts failing against real Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and the screenshot capture — see [frontend.md](frontend.md) |
@@ -960,7 +950,7 @@ a test makes depends on its own run to remove it:
   that does not exist, so nothing is made for it.
 - What has to be in `/tmp` is a held folder, made by `held` in
   `devtools/held_folders.py`: `tmux_sockets` there for a test's tmux
-  sockets, and every other folder the tests and the recorder make in `/tmp`.
+  sockets, and every other folder the tests make in `/tmp`.
   A held folder is named with its prefix and the characters `mkdtemp` adds,
   and holds a lock file, `.lock`, locked for as long as the folder is used;
   the lock is taken under another name and then renamed, so a lock file is
@@ -1115,8 +1105,7 @@ it can fail, and a positive control that keeps an empty input from passing.
   but for the files that run only inside a container of the suites' own, whose `/tmp` and
   ports are that container's (`IN_CONTAINERS` in the test, each with its reason), every Python
   module in
-  `devtools/`, which the tests and
-  the recorder run, and every TypeScript and JavaScript file in `frontend/`
+  `devtools/`, which the tests run, and every TypeScript and JavaScript file in `frontend/`
   that git does not ignore, of the kinds `SOURCES` in `tests/typescript.py` names — the
   component tests, their config, the screenshot capture and the rest — parsed with Vite's parser from
   the frontend's packages, so a file that does not parse, or packages that

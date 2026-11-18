@@ -27,9 +27,7 @@ else; this file is the full list. Rules are referred to by their bold name.
 - **Probe assumptions against reality, not against tests written alongside
   them.** Tests written with a mechanism encode its assumptions. Name the
   load-bearing assumptions; each one is a test case that must be able to
-  contradict it. Reproduce through the product's own invocation path. A fake
-  of an external program is recorded from the real one and checked against it
-  by contract tests, never written from memory.
+  contradict it. Reproduce through the product's own invocation path.
 
 ## Scope
 

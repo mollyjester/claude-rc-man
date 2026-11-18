@@ -622,8 +622,8 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   (`claude_upgrade_busy`, also while a version is being deleted), and none while an upgrade of rcman is under way (`rcman_upgrading`,
   see [Upgrading rcman](#upgrading-rcman)). The candidate is staged outside the store, in a folder of its own
   in `STAGING_FOLDER` beside the database, fetched by `helpers/claude_release.py` (streamed,
-  hashed, size-capped, renamed into place only whole; the installer fetches the tested version
-  with the same code) or copied from the store; run through the canary
+  hashed, size-capped, renamed into place only whole; the installer fetches with the same
+  code) or copied from the store; run through the canary
   (`Runtime.run_canary`, see [runtime.md](runtime.md#the-canary)); and only on a pass copied into
   the store under a partial name and renamed. A version that was approved before and is still in
   the store needs neither download nor canary, since it passed then: a rollback or re-approval
@@ -638,7 +638,10 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   `claude_version_failed` (the version is marked as failed, below), `claude_install_failed`
   (whose title says why, by `problems.CLAUDE_INSTALL_MESSAGES`; status 502 for the kind
   `network`, 409 for the others, by `CLAUDE_INSTALL_STATUS`), `claude_checks_failed` (the
-  failing checks with their reports in the problem's extra) and `claude_canary_failed` (the
+  failing checks with their reports in the problem's extra, and `version`, the one that failed,
+  and `approved`, the one the workspaces stay on, there and in its title, by
+  `problems.CHECKS_FAILED_MESSAGES`; `approved` is null, with a wording of its own, where
+  nothing is approved, and nothing is adopted for it) and `claude_canary_failed` (the
   canary could not run).
   The checksum comes from the release site with the program: it protects against corruption,
   not against a compromised source, and nothing checks a signature.
@@ -674,25 +677,23 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   first), the one `current` names (`current`) and one any workspace's record names, read again
   by `recorded_versions` (`in_use`): a record outlives a server that ended on its own until a
   stop clears it. Every problem's title is its reason's words, by
-  `problems.VERSION_KEPT_MESSAGES`. The previous and the tested version may be deleted; rolling
-  either out again then downloads it and runs the canary. `PRUNE_GRACE_SECONDS` does not apply,
-  and `claude_failures` is not touched: a mark outlives the file.
-- **Pruning.** `prune` removes the versions that are neither approved, previous, tested
-  (`helpers/claude-version`) nor the one `current` names and that no server in
+  `problems.VERSION_KEPT_MESSAGES`. The previous version may be deleted; rolling it out again
+  then downloads it and runs the canary. `claude_failures` is not touched: a mark outlives the
+  file.
+- **Pruning.** `prune` removes the versions that are neither approved, previous nor the one
+  `current` names and that no server in
   `Workspaces.pinned_servers` uses (a server that runs, cannot be read, or is being started;
   tmux is asked whatever the row's `server` flag says, since the record of a version and the
   flag are two writes, and only tmux saying there is none frees the version). `rcman-admin`
   does not prune or collect images (`Workspaces(prunes=False)`): its locks are not the
-  service's, which does at the next stop, roll-out or start. A version put in the store less
-  than `PRUNE_GRACE_SECONDS` ago stays: an upgrade of rcman puts its tested version there while
-  the release before it runs, which does not know it. It asks the servers for their status without holding
+  service's, which does at the next stop, roll-out or start. It asks the servers for their status without holding
   `lock`, then decides again under it, also keeping a version whose workspace record changed
   meanwhile; it does nothing while a roll-out or a deletion runs. It runs after a roll-out, after a version
   is marked as failed, after a server is stopped or forgotten (`Workspaces._stopped`) and in
   the restore, with `sweep`,
   which removes what a roll-out cut short left: staging folders, partial files and a canary.
-- **Reading.** `GET /api/claude/versions` is `report`: approved, previous and tested
-  (`helpers/claude-version`) versions, the installed ones with whether each is approved or
+- **Reading.** `GET /api/claude/versions` is `report`: the approved and previous versions,
+  the installed ones with whether each is approved or
   previous, whether it is marked failed (`failed`) and how many servers use it, the drift
   (running servers on another version, each with whether its version is marked failed), the
   marks (`failed`: version, at, by and reason, the newest first) and whether a roll-out or a

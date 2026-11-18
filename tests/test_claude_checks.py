@@ -2,19 +2,16 @@
 
 import json
 import os
-import shutil
 import sys
 import threading
 import time
 
 import pytest
 
-from devtools import record_claude as rec
+from devtools import fake_claude as fake
 from helpers import claude_checks as cc
 from helpers import screens
 from tests.hang_guard import HANG_GUARD
-
-REAL = shutil.which("claude")
 
 
 def runner_for(binary, tmp_path):
@@ -40,11 +37,11 @@ def said(entry):
 
 
 def test_the_fake_passes_every_check_each_run_once(tmp_path):
-    version = rec.load_manifest()["claude_version"]
+    version = fake.FAKE_VERSION
     names = [name for name, _ in cc.CHECKS]
     assert len(names) == len(set(names)) and names  # non-vacuity
     seen = []
-    run = runner_for(rec.FAKE_CLAUDE, tmp_path)
+    run = runner_for(fake.FAKE_CLAUDE, tmp_path)
     assert cc.candidate_failures(run, version, on_check=seen.append) == {}
     assert seen == names
 
@@ -174,7 +171,7 @@ def test_how_long_redacting_a_screen_takes_by_its_size(record_property):
         print(f"redacting {name}: {size} bytes in {took:.3f}s, {took / size * 1e6:.3f} s per MB")
 
 
-def test_the_recorded_logouts_terminal_output_read_in_pieces_renders_as_it_does_whole():
+def test_the_logouts_terminal_output_read_in_pieces_renders_as_it_does_whole():
     raw = "\x1b7\x1b[r\x1b8\x1b[?25hSuccessfully\x1b[14Glogged\x1b[21Gout\r\r\n"
     screen = cc.Screen()
     for ch in raw:  # every escape split at every point
@@ -183,8 +180,8 @@ def test_the_recorded_logouts_terminal_output_read_in_pieces_renders_as_it_does_
     assert screen.text() == render(raw) == "Successfully logged out\n"
 
 
-def test_the_logout_marker_is_in_the_recorded_logout():
-    assert cc.LOGGED_OUT_MESSAGE in "\n".join(rec.load_fixtures()["auth_logout"].lines).lower()
+def test_the_logout_marker_is_in_the_logout_fixture():
+    assert cc.LOGGED_OUT_MESSAGE in "\n".join(fake.load_fixtures()["auth_logout"].lines).lower()
 
 
 def test_the_pty_runner_stops_at_its_pattern_with_no_exit_code(tmp_path):
@@ -232,12 +229,3 @@ def test_auth_status_is_read_through_pipes_as_rcman_reads_it(tmp_path):
     assert "auth_status" not in cc.candidate_failures(recording, "1.2.3")
     assert (["auth", "status"], False) in seen
     assert all(terminal for args, terminal in seen if args != ["auth", "status"])
-
-
-@pytest.mark.skipif(
-    REAL is None and os.environ.get("RCMAN_REQUIRE_REAL_CLAUDE") != "1",
-    reason="claude not installed",
-)
-def test_the_installed_real_claude_passes(tmp_path):
-    version = rec.installed_version(REAL)
-    assert cc.candidate_failures(runner_for(REAL, tmp_path), version) == {}

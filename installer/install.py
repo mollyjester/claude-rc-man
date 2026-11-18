@@ -1583,12 +1583,6 @@ def claude_platform() -> str:
     return f"linux-{_arch()}"
 
 
-def claude_version() -> str:
-    """The Claude Code version the store holds: the tested one, which the recorded
-    fixtures of the fake claude come from."""
-    return (REPO / "helpers" / "claude-version").read_text(encoding="utf-8").strip()
-
-
 def _release_failed(error: claude_release.ReleaseError, version: str) -> InstallError:
     """What went wrong fetching Claude Code ``version``, as the installer says it."""
     if error.kind == "no_such_version":
@@ -1598,26 +1592,28 @@ def _release_failed(error: claude_release.ReleaseError, version: str) -> Install
     return InstallError(str(error))
 
 
-def ensure_claude_store(
-    store: Path = CLAUDE_STORE,
-    download: str = CLAUDE_DOWNLOAD,
-    version: str | None = None,
-) -> list[str]:
-    """The Claude Code store: ``versions/<version>`` for the tested version, downloaded from
-    ``download`` and checked against its release's manifest (helpers/claude_release.py);
-    ``current`` naming a version, which is set only where there is none, since rcman switches
-    it to the version an administrator approves; and ``bin/claude`` leading to ``current``.
-    Readable by everyone.
+def ensure_claude_store(store: Path = CLAUDE_STORE, download: str = CLAUDE_DOWNLOAD) -> list[str]:
+    """The Claude Code store: on a fresh install, where there is no ``current`` (or one naming a
+    version that is not there), the newest release, which ``download`` names, in
+    ``versions/<version>``, checked against its release's manifest (helpers/claude_release.py),
+    and ``current`` naming it; and ``bin/claude`` leading to ``current``. Readable by everyone.
+    Where there is a ``current``, a later run or an upgrade, no version is installed: rcman
+    switches ``current`` to the version an administrator approves, and an administrator rolls
+    out another on the Versions page.
 
     The store is rcman's, which writes it at run time and can put a link anywhere in it, so
     rcman makes all of it: root downloads and checks the program in a folder of its own, and
     rcman copies the checked file in and sets the links."""
-    version = version or claude_version()
     versions, bin_dir = store / "versions", store / "bin"
-    target = versions / version
     changes = []
     rcman_do("mkdir", "-p", "-m", "755", "--", str(versions), str(bin_dir))
-    if not rcman_has("-e", str(target)):
+    # none, or one naming a version not there
+    if not rcman_has("-e", str(store / "current")):
+        try:
+            version = claude_release.latest(download)
+        except claude_release.ReleaseError as error:
+            raise InstallError(str(error)) from None
+        target = versions / version
         with tempfile.TemporaryDirectory(prefix="rcman-claude.") as staging:
             os.chmod(staging, 0o755)  # rcman reads the file from here
             staged = Path(staging) / version
@@ -1632,7 +1628,6 @@ def ensure_claude_store(
             finally:
                 rcman_do("rm", "-f", "--", str(partial), check=False)
         changes.append(f"claude {version}")
-    if not rcman_has("-e", str(store / "current")):  # none, or one naming a version not there
         rcman_set_link(store, "current", f"versions/{version}")
     if rcman_link(bin_dir / "claude") != "../current":
         rcman_set_link(bin_dir, "claude", "../current")

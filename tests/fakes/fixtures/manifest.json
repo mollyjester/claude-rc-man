@@ -1,165 +1,100 @@
 {
   "captures": {
     "auth_login_help": {
-      "sequence": "auth_login_help",
-      "exit_code": 0,
-      "needs_account": false
+      "exit_code": 0
     },
     "auth_logout": {
-      "sequence": "auth_logout",
-      "exit_code": 0,
-      "needs_account": false
+      "exit_code": 0
     },
     "auth_status_logged_in": {
-      "sequence": "auth_status_logged_in",
-      "exit_code": 0,
-      "needs_account": true
+      "exit_code": 0
     },
     "auth_status_logged_out": {
-      "sequence": "auth_status_logged_out",
-      "exit_code": 1,
-      "needs_account": false
+      "exit_code": 1
     },
     "git_server_connected_after_trust": {
-      "sequence": "git_server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "git_server_connected_resumed": {
-      "sequence": "git_server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "git_server_ready_after_trust": {
-      "sequence": "git_server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "git_server_ready_resumed": {
-      "sequence": "git_server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "git_server_stopped_after_trust": {
-      "sequence": "git_server",
-      "exit_code": 0,
-      "needs_account": true
+      "exit_code": 0
     },
     "git_server_stopped_resumed": {
-      "sequence": "git_server",
-      "exit_code": 0,
-      "needs_account": true
+      "exit_code": 0
     },
     "git_trust_prompt": {
-      "sequence": "git_server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "login_failed": {
-      "sequence": "login_failed",
-      "exit_code": 1,
-      "needs_account": false
+      "exit_code": 1
     },
     "login_prompt": {
-      "sequence": "login_prompt",
-      "exit_code": null,
-      "needs_account": false
+      "exit_code": null
     },
     "login_succeeded": {
-      "sequence": "login_succeeded",
-      "exit_code": null,
-      "needs_account": false
+      "exit_code": null
     },
     "login_succeeded_done": {
-      "sequence": "login_succeeded",
-      "exit_code": 0,
-      "needs_account": false
+      "exit_code": 0
     },
     "rc_logged_out": {
-      "sequence": "rc_logged_out",
-      "exit_code": 1,
-      "needs_account": false
+      "exit_code": 1
     },
     "rc_no_oauth_account": {
-      "sequence": "rc_no_oauth_account",
-      "exit_code": 1,
-      "needs_account": true
+      "exit_code": 1
     },
     "server_connected_after_trust": {
-      "sequence": "server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "server_connected_resumed": {
-      "sequence": "server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "server_ready_after_trust": {
-      "sequence": "server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "server_ready_resumed": {
-      "sequence": "server",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "server_stopped_after_trust": {
-      "sequence": "server",
-      "exit_code": 0,
-      "needs_account": true
+      "exit_code": 0
     },
     "server_stopped_resumed": {
-      "sequence": "server",
-      "exit_code": 0,
-      "needs_account": true
+      "exit_code": 0
     },
     "spawn_connected_same_dir": {
-      "sequence": "spawn_answered",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "spawn_prompt": {
-      "sequence": "spawn_prompt",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "spawn_prompt_killed": {
-      "sequence": "spawn_prompt",
-      "exit_code": 143,
-      "needs_account": true
+      "exit_code": 143
     },
     "spawn_ready_same_dir": {
-      "sequence": "spawn_answered",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "spawn_stopped_same_dir": {
-      "sequence": "spawn_answered",
-      "exit_code": 0,
-      "needs_account": true
+      "exit_code": 0
     },
     "trust_answer_too_fast": {
-      "sequence": "trust_too_fast",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "trust_declined": {
-      "sequence": "trust_declined",
-      "exit_code": 1,
-      "needs_account": true
+      "exit_code": 1
     },
     "trust_prompt": {
-      "sequence": "trust_declined",
-      "exit_code": null,
-      "needs_account": true
+      "exit_code": null
     },
     "version": {
-      "sequence": "version",
-      "exit_code": 0,
-      "needs_account": false
+      "exit_code": 0
     }
-  },
-  "claude_version": "2.1.322"
+  }
 }

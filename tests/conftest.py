@@ -293,7 +293,8 @@ def github_stand_in(tmp_path_factory):
         yield base
 
 
-from devtools.fake_store import FAKE_VERSION, fake_claude  # noqa: E402,F401 - for the tests
+from devtools.fake_claude import FAKE_VERSION  # noqa: E402,F401 - for the tests
+from devtools.fake_store import fake_claude  # noqa: E402,F401 - for the tests
 
 
 @contextlib.contextmanager

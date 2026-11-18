@@ -1,8 +1,8 @@
 """What Claude Code shows on a server's screen, and the state rcman reads from it.
 
-Pure functions of a screen's lines and the exit status, held to every recorded
-fixture and observed screen by tests/test_screens.py. Shared by the backend,
-the upgrade checks (claude_checks.py) and the recorder. Python standard library
+Pure functions of a screen's lines and the exit status, held to every fixture
+and observed screen of the fake's by tests/test_screens.py. Shared by the backend,
+the upgrade checks (claude_checks.py) and the tests. Python standard library
 only.
 """
 
@@ -18,7 +18,7 @@ WIDTH, HEIGHT = 200, 50
 # States a server can be resumed from: stopped when asked, or stopped by itself.
 RESUMABLE = ("stopped", "exited")
 
-# What Claude Code shows; held to the recorded fixtures by tests/test_screens.py.
+# What Claude Code shows; held to the fixtures by tests/test_screens.py.
 TRUST_PROMPT = re.compile(r"^Trust .+\? \[y/N\]$")
 # The one-time confirmation of an account that has never used Remote Control, asked after
 # the folder-trust question (tests/fakes/observed/).

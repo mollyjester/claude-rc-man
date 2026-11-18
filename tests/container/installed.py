@@ -48,13 +48,13 @@ CACHE = Path("/cache")
 
 
 def serve_releases() -> str:
-    """The fake claude, as the tested version's release, served on a free loopback port by a
-    process of its own; its address."""
+    """The fake claude, as the newest release, at its version, served on a free loopback port
+    by a process of its own; its address."""
     sys.path.insert(0, str(SRC))
+    from devtools.fake_claude import FAKE_VERSION
     from tests import claude_download
 
-    version = (SRC / "helpers" / "claude-version").read_text().strip()
-    claude_download.release(RELEASES, version)
+    claude_download.release(RELEASES, FAKE_VERSION)
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]

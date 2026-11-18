@@ -17,9 +17,9 @@ the installer's.
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
 The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION`, and those of the tools it
-builds (`TMUX_VERSION`, `LIBARCHIVE_VERSION`) in `installer/install.py`, `frontend/.nvmrc` for Node.js, the CLI in
-`installer/builder/package.json` and its lock, and `helpers/claude-version` for
-Claude Code. Every base image the installer builds from is named by tag and digest:
+builds (`TMUX_VERSION`, `LIBARCHIVE_VERSION`) in `installer/install.py`, `frontend/.nvmrc` for Node.js, and the CLI in
+`installer/builder/package.json` and its lock. Claude Code is not pinned: a fresh
+install takes the newest release (`ensure_claude_store`). Every base image the installer builds from is named by tag and digest:
 `TOOLS_BUILD_REFERENCE` (the tag `TOOLS_BUILD_IMAGE` and `TOOLS_BUILD_DIGEST`) and the
 `FROM` of each Containerfile under `installer/`; a test reads every Containerfile it
 finds there and fails on a `FROM` without both (a stage of the same file is pinned
@@ -288,13 +288,16 @@ back by `read_status`, which takes only a JSON object with exactly `FIELDS`:
   The installer builds the new one beside it and leaves the others alone (`ensure_devcontainer_builder`).
   What runs in it is in [runtime.md](runtime.md#building-an-image).
 - **The Claude Code store**, `CLAUDE_STORE` (`ensure_claude_store`):
-  `versions/<version>` for the tested version, downloaded from the
+  where the store has no `current`, or one naming a version that is not there,
+  `versions/<version>` for the newest release, the version
+  `<CLAUDE_DOWNLOAD>/latest` names, downloaded from the
   `CLAUDE_DOWNLOAD` setting's address — `<version>/manifest.json`, whose
   checksum for the platform (`claude_platform`) the binary,
   `<version>/<platform>/claude`, must have, fetched by `helpers/claude_release.py`, which
-  rcman fetches a rolled-out version with too; `current`, set to it in one step only
-  where the store has none (afterwards rcman switches it to the version an administrator
-  approves, and a run of the installer leaves it); and `bin/claude` leading to `current`.
+  rcman fetches a rolled-out version with too; `current`, set to it in one step
+  (afterwards rcman switches it to the version an administrator approves); and `bin/claude`
+  leading to `current`. Where there is a `current`, a later run or an upgrade, no version is
+  installed; if rcman cannot work with the newest release, an administrator rolls out an older one on the Claude Code versions page.
   The store is rcman's and readable by every workspace: rcman makes all of it, root only
   fetching and checking the program in a folder of its own. `CLAUDE_DOWNLOAD` is written to the app's environment as
   `RCMAN_CLAUDE_DOWNLOAD`. How rcman changes the store is

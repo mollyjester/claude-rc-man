@@ -27,7 +27,7 @@ def test_the_installer_puts_the_fake_release_in_the_store_and_it_runs(tmp_path, 
     claude_download.release(releases, "9.8.7")
     store = tmp_path / "store"
     with claude_download.served(releases) as url:
-        assert ins.ensure_claude_store(store, url, "9.8.7") == ["claude 9.8.7"]
+        assert ins.ensure_claude_store(store, url) == ["claude 9.8.7"]
     unpacked = tmp_path / "tmp"
     unpacked.mkdir()
     ran = subprocess.run(

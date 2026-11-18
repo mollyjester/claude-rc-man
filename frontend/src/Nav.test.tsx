@@ -19,7 +19,6 @@ function api(me: Reply) {
     "GET /api/claude/versions": {
       approved: "1.0.0",
       previous: null,
-      tested: "1.0.0",
       installed: [],
       drift: [],
       failed: [],

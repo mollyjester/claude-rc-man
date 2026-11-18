@@ -230,7 +230,7 @@ const EVERYONE_MIX: Record<string, unknown>[] = [
   {
     stoppable: true,
     server: { state: "ready", session_name: "shot-widget-quiet-otter", exit_code: null },
-    claude_version: "1.0.0",
+    claude_version: "2.1.322",
   },
   { state: "halted", stoppable: false, server: null, claude_version: null },
   {

@@ -794,42 +794,35 @@ def account(monkeypatch):
     monkeypatch.setattr(ins, "app_uid", lambda: 990)
 
 
-def test_the_claude_store_holds_the_version_checked_against_its_release(
+def test_a_fresh_claude_store_holds_the_newest_release_checked_against_it(
     tmp_path, releases, account
 ):
     url, put, folder = releases
     put("2.1.0")
+    put("2.2.0")  # the newest
     store = tmp_path / "claude"
-    changed = ins.ensure_claude_store(store, url, "2.1.0")
-    assert changed == ["claude 2.1.0"]
-    expected = (folder / "2.1.0" / ins.claude_platform() / "claude").read_bytes()
-    assert (store / "versions" / "2.1.0").read_bytes() == expected
-    assert os.readlink(store / "current") == "versions/2.1.0"
+    changed = ins.ensure_claude_store(store, url)
+    assert changed == ["claude 2.2.0"]
+    expected = (folder / "2.2.0" / ins.claude_platform() / "claude").read_bytes()
+    assert (store / "versions" / "2.2.0").read_bytes() == expected
+    assert os.readlink(store / "current") == "versions/2.2.0"
     assert os.readlink(store / "bin" / "claude") == "../current"
     assert (store / "bin" / "claude").read_bytes() == expected
-    assert stat.S_IMODE((store / "versions" / "2.1.0").stat().st_mode) == 0o755
-    assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.1.0"]  # no partial file
-    (folder / "2.1.0" / "manifest.json").unlink()
-    assert ins.ensure_claude_store(store, url, "2.1.0") == []  # nothing fetched again
-    # the version the installer puts there is the tested one
-    assert ins.claude_version() == (REPO / "helpers" / "claude-version").read_text().strip()
+    assert stat.S_IMODE((store / "versions" / "2.2.0").stat().st_mode) == 0o755
+    assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.2.0"]  # no partial file
 
 
-def test_the_store_keeps_the_version_current_names_and_only_adds_the_tested_one(
-    tmp_path, releases, account
-):
-    """current is rcman's to switch once it runs (an approval in its database): the installer
-    sets it only where there is none."""
+def test_a_later_run_installs_no_claude_code_version(tmp_path, releases, account):
+    """current is rcman's to switch once it runs (an approval in its database): where there is
+    one, the installer leaves the store as it is, a newer release or not."""
     url, put, _ = releases
-    put("2.0.0")
     put("2.1.0")
     store = tmp_path / "claude"
-    ins.ensure_claude_store(store, url, "2.0.0")
-    assert ins.ensure_claude_store(store, url, "2.1.0") == ["claude 2.1.0"]
-    assert os.readlink(store / "current") == "versions/2.0.0"  # not reset to the tested one
-    assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.0.0", "2.1.0"]
-    assert ins.ensure_claude_store(store, url, "2.1.0") == []
-    assert os.readlink(store / "current") == "versions/2.0.0"
+    ins.ensure_claude_store(store, url)
+    put("2.2.0")
+    assert ins.ensure_claude_store(store, url) == []
+    assert os.readlink(store / "current") == "versions/2.1.0"
+    assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.1.0"]  # nothing fetched
 
 
 def imports_urllib(source: str) -> bool:

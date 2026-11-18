@@ -243,15 +243,17 @@ does not work.
      end, once rcman has restarted with the new one's name, and only those
      nothing runs from. It is built as the default image is, with the network.
      Neither build keeps an image of each of its steps;
-   - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
-     tested with (`helpers/claude-version`), downloaded and checked against its
-     release's checksum (see [Claude Code versions](claude-version.md)). The store
-     belongs to rcman, which writes it when an administrator rolls out another
-     version, and every workspace has it, read-only. The installer checks the
-     download in a folder of its own, outside the store, and has `rcman` copy
-     the checked file in and set the links. It sets the
-     version `current` names only when there is none, so running it again never
-     changes the approved version.
+   - the Claude Code store, `/var/lib/rcman/claude`: on a fresh install, the
+     newest release of Claude Code, downloaded and checked against its
+     release's checksum, which `current` then names (see
+     [Claude Code versions](claude-version.md)). The store belongs to rcman,
+     which writes it when an administrator rolls out another version, and every
+     workspace has it, read-only. The installer checks the download in a folder
+     of its own, outside the store, and has `rcman` copy the checked file in and
+     set the links. A later run, an upgrade among them, installs no Claude Code
+     version and leaves the approved one as it is. If rcman cannot work with the
+     newest release, roll out an older one on the
+     [versions page](claude-version.md#the-versions-page).
 9. **Writes the configuration** in `/etc/rcman`, rcman's secret key among it in
    `/etc/rcman/secret.env`, which only root may read and without which `rcman.service` does not
    start, and the two systemd services, `rcman` and `rcman-oauth2-proxy`; and, when upgrading from the web interface

@@ -1,7 +1,7 @@
 """Folders a run makes under /tmp and holds while it uses them, and the clearing of those
 a run killed by a signal left behind.
 
-Shared by the tests and by devtools/record_claude.py, so it lives here: devtools never
+Shared by the tests and by the devtools they run, so it lives here: devtools never
 imports the tests. The rules it keeps — how a folder is held, what a later run clears
 and what it leaves alone — are in project-knowledge/tests.md, "What a killed run
 leaves". Every removal here refuses anything but a path strictly inside /tmp, or

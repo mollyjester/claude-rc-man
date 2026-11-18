@@ -8,13 +8,11 @@ chooses it on the versions page.
 ## The store and the approved version
 
 The store holds the versions rcman has installed, and `current` names the
-approved one. rcman owns the store and writes it; the installer makes it and
-fills it with the tested version, the one rcman's recorded tests were made
-with, named in `helpers/claude-version`. The installer sets `current` only
-when the store has none; on any later run, and when rcman is upgraded, the
-approved version stays as it is. Changing the tested version in a new release
-of rcman puts that version in the store, and an administrator decides whether
-to approve it.
+approved one. rcman owns the store and writes it; the installer makes it and,
+on a fresh install, fills it with the newest release of Claude Code, which
+`current` names. A later run of the installer, and an upgrade of rcman,
+installs no version: the approved version stays as it is. If rcman cannot work
+with the newest release, roll out an older one on the versions page.
 
 Approvals are kept in rcman's database. The latest is the approved version;
 the latest before it that names another version and is not marked as failed
@@ -41,9 +39,8 @@ workspace, which says to stop the server and start it again to use the approved
 one.
 
 rcman removes a version from the store by itself only when it is neither the
-approved nor the previous version, nor the tested one, nor the one `current` names, no running server
-uses it, and it was not put in the store within `PRUNE_GRACE_SECONDS`
-(`backend/rcman/claude_versions.py`); rcman removes such versions
+approved nor the previous version, nor the one `current` names, and no running server
+uses it (`backend/rcman/claude_versions.py`); rcman removes such versions
 after a roll-out, after a version is marked as failed, when servers stop and
 when it starts. A server whose state rcman cannot read counts as running.
 `rcman-admin` removes none. A version marked as failed is never the previous
@@ -58,8 +55,7 @@ also delete a version from the store by hand (see
 In the **Administration** group of the sidebar, the **Claude Code versions**
 page shows:
 
-- the **Approved version**, the **Previous version** and the **Tested
-  version**;
+- the **Approved version** and the **Previous version**;
 - the **Installed versions**, with how many running servers use each,
   **Failed** beside one marked as failed, and beside each one that is neither
   approved nor marked as failed **Use**, which approves it again, and **Mark as
@@ -120,15 +116,18 @@ is not counted as installed.
 
 A version that cannot be downloaded, does not match its checksum, is not
 there, or fails a check leaves the store, the approvals and every server
-exactly as they were. The page says why in plain words, and for failed checks
-shows what each ran and what it got back. If the checks themselves cannot be
+exactly as they were. The page says why in plain words. For failed checks it
+names the version that failed and the approved version the workspaces stay on, if any,
+says that rcman needs an update to work with the version that failed, offers
+**Mark as failed** for that version below the answer, and shows what each check
+ran and what it got back. If the checks themselves cannot be
 run, for example because the container could not start, nothing is changed
 either, and trying again is the remedy.
 
 The checks do not look at what Claude makes of the instructions rcman gives it in every
 workspace (see
-[What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)). The
-version rcman is tested with has been checked by hand for that. After rolling out another
+[What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)). After
+rolling out another
 version, start a server in a workspace of the default image and, in a new session, check that
 Claude knows what it was told, for instance that work in `/rcman` is kept without a push, and
 that the text Remote Control adds to its system prompt still has a section headed "Your
@@ -164,7 +163,7 @@ listed under **Servers on another version**, with **Failed** beside it.
 ## Marking a version as failed
 
 Any administrator can mark any version but the approved one as failed:
-installed or not, the newest release and the tested version among them. Use
+installed or not, the newest release among them. Use
 **Mark as failed** beside an installed version, or **Mark a version as
 failed** in the **Failed versions** card, which asks for the version's number.
 A reason is optional: one line, trimmed of spaces at either end, of at most
@@ -186,8 +185,8 @@ While a version is marked as failed:
   any version does, and its mark stays.
 
 rcman marks no version by itself: a roll-out whose checks fail changes nothing
-and marks nothing. Mark such a version yourself if you do not want it rolled
-out again.
+and marks nothing. Mark such a version yourself, with **Mark as failed** below
+the roll-out's answer or here, if you do not want it rolled out again.
 
 The only way to roll out a version marked as failed is to remove its mark
 first: **Remove mark** beside it in the **Failed versions** card removes the
@@ -213,15 +212,13 @@ No version is deleted while a roll-out, another deletion or an upgrade of rcman
 runs, and the page then offers no **Delete** and says why; none is rolled out, nor an upgrade of rcman asked for, while a
 deletion runs. rcman reads what workspaces' records name again as it deletes,
 under the lock a server's start records its version under, so a server starting
-meanwhile keeps its version. The grace period that pruning gives a version just
-put in the store does not apply to a deletion asked for by hand.
+meanwhile keeps its version.
 
-The previous and the tested version may be deleted. Going back to the previous
-version afterwards, or rolling either out again, downloads it and runs it
-through the canary, as any roll-out of a version not in the store does (see
-[Going back to the previous version](#going-back-to-the-previous-version)); the
-installer puts the tested version back in the store the next time it runs. The
-dialog says so for each. A version marked as failed may be deleted too, and its
+The previous version may be deleted. Going back to it afterwards downloads it
+and runs it through the canary, as any roll-out of a version not in the store
+does (see
+[Going back to the previous version](#going-back-to-the-previous-version)). The
+dialog says so. A version marked as failed may be deleted too, and its
 mark stays under **Failed versions**.
 
 ## Audit and journal

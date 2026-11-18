@@ -327,7 +327,6 @@ type Failure = { version: string; at: string; by: string; reason: string | null 
 type Report = {
   approved: string | null;
   previous: string | null;
-  tested: string;
   installed: Installed[];
   drift: Drift[];
   failed: Failure[];
@@ -352,12 +351,11 @@ const KEPT_APPROVED = {
   reason: "approved",
 };
 
-// 2.2.0 is approved and runs on one server, 2.1.0 is the previous one and runs on two, and
-// the tested version is 2.1.0; one server runs the previous version.
+// 2.2.0 is approved and runs on one server, 2.1.0 is the previous one and runs on two; one
+// server runs the previous version.
 const REPORT: Report = {
   approved: "2.2.0",
   previous: "2.1.0",
-  tested: "2.1.0",
   installed: [
     installed("2.2.0", { approved: true, in_use: 1, delete_refused: KEPT_APPROVED }),
     installed("2.1.0", {
@@ -425,13 +423,12 @@ const versionsPage = async () => {
 };
 const definition = (term: string) => screen.getByText(term, { selector: "dt" }).nextElementSibling;
 
-test("the page shows the approved, previous and tested versions", async () => {
+test("the page shows the approved and previous versions", async () => {
   versionsApi();
   renderApp("/admin/claude");
   await versionsPage();
   expect(definition(m.versionsApproved)).toHaveTextContent("2.2.0");
   expect(definition(m.versionsPrevious)).toHaveTextContent("2.1.0");
-  expect(definition(m.versionsTested)).toHaveTextContent("2.1.0");
 });
 
 test("the installed versions are listed with their standing and how many running servers use each", async () => {
@@ -525,8 +522,14 @@ test("rolling out a version sends it, says it is working while the request lasts
   expect(input).toHaveValue("");
 });
 
-test("failed checks are shown as the server named them, with what each ran and got back, and the form is free again", async () => {
+test("failed checks are shown as the server named them, with what each ran and got back, and the form is free again, with the version that failed offered to be marked", async () => {
   const fake = versionsApi({
+    "PUT /api/claude/failures": marking(REPORT, {
+      version: "2.3.0",
+      at: "2026-10-24T10:00:00+00:00",
+      by: "alice@example.com",
+      reason: null,
+    }),
     "POST /api/claude/upgrade": problem(
       409,
       "claude_checks_failed",
@@ -537,6 +540,8 @@ test("failed checks are shown as the server named them, with what each ran and g
           sign_in_screen: { lines: ["ran: claude auth login", "planted sign-in screen"], more: 2 },
           logout: { lines: ["ran: claude auth logout", "planted logout"], more: 0 },
         },
+        version: "2.3.0",
+        approved: "2.2.0",
       },
     ),
   });
@@ -558,6 +563,13 @@ test("failed checks are shown as the server named them, with what each ran and g
   expect(screen.queryByText(m.versionsUpgraded("2.3.0"))).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: m.versionsUpgradeGo })).toBeEnabled();
   expect(definition(m.versionsApproved)).toHaveTextContent("2.2.0"); // nothing changed
+  const dialog = await openMark(
+    screen.getByRole("button", { name: m.versionsMarkFailedVersion("2.3.0") }),
+  );
+  expect(within(dialog).getByLabelText(m.versionsVersion)).toHaveValue("2.3.0");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  expect(await screen.findByText(m.versionsMarked("2.3.0"))).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument(); // the roll-out's refusal is done with
 });
 
 test("the newest release is suggested, and rolled out only when asked", async () => {

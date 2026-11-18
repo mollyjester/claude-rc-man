@@ -603,9 +603,9 @@ since Claude would otherwise install a version of its own into the workspace,
 the read-only store notwithstanding. A server keeps the environment it started with: a
 change to `child_env` reaches it when it is next started or resumed, with no restart of its
 container, and a terminal at its next start. rcman sets no `GH_TOKEN` or `GITHUB_TOKEN`; one a plan sets
-comes first, and gh then takes it over `hosts.yml`. Its options are `server_command`, which a
-test holds to the recorder's, so the contract tests check each is in its command's
-`--help` (see [How the fake is checked](fake-claude.md#how-the-fake-is-checked-against-the-real-binary)).
+comes first, and gh then takes it over `hosts.yml`. Its options are `server_command`'s, which
+the contract tests read from the backend's source and check each is in its command's
+`--help` (see [What holds rcman to the real binary](fake-claude.md#what-holds-rcman-to-the-real-binary)).
 
 - **Signed in.** `start` asks Claude with `auth status`, and refuses with
   `claude_not_logged_in` when no account is. `Workspaces.start_server` refuses
@@ -703,7 +703,7 @@ command line (see "Starting again" above).
 ### Server states
 
 `classify` in `helpers/screens.py` turns a server's screen and exit status into
-one of these states. Its screen patterns are held to every recorded fixture and
+one of these states. Its screen patterns are held to every fixture and
 every observed screen (see [fake-claude.md](fake-claude.md)) by
 `tests/test_screens.py`.
 
@@ -807,7 +807,7 @@ this is the transport, and what cleans up after it.
 `Runtime.run_canary(directory, name, version)` tries a candidate Claude Code version: the file
 `CANDIDATE` in `directory`. It runs the checks of `helpers/claude_canary.py` (which are
 `helpers/claude_checks.py`'s) and returns the ones the candidate fails, each with its report;
-empty means it passes them all. `ClaudeVersions` runs it for a version never approved before and for one approved before that left the store (an earlier approved one still in the store is approved again without it), and never for a version marked as failed, which is refused before it (see [backend.md](backend.md#claude-code-versions)); a candidate that fails it is not marked as failed. A canary that could not report (it did not start, did not
+empty means it passes them all. `ClaudeVersions` runs it for a version never approved before and for one approved before that left the store (an earlier approved one still in the store is approved again without it), and never for a version marked as failed, which is refused before it (see [backend.md](backend.md#claude-code-versions)); a candidate that fails it is refused with `claude_checks_failed`, which names it and the approved version the workspaces stay on, if any, and is not marked as failed. These are the checks that hold rcman to the real `claude`: the contract tests run them against the installed one ([fake-claude.md](fake-claude.md#what-holds-rcman-to-the-real-binary)). A canary that could not report (it did not start, did not
 finish in `CANARY_SECONDS`, or printed something else) is a `RuntimeFailed`, which says nothing
 about the candidate. `end_canary` removes the container.
 

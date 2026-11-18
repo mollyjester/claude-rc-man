@@ -16,7 +16,6 @@ from rcman.problems import MESSAGES, Problem
 from helpers import claude_release
 from tests import claude_download
 from tests.conftest import ALICE, BOB, FAKE_VERSION, fake_claude
-from tests.hang_guard import runs_out
 
 NEW = "2.0.0"
 
@@ -32,8 +31,7 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path, settings, runtime, monkeypatch):
-    runs_out(monkeypatch, cv, "PRUNE_GRACE_SECONDS")  # what the tests prune ages nothing
+def world(tmp_path, settings, runtime):
     releases = tmp_path / "releases"
     releases.mkdir()
     with claude_download.served(releases) as url:
@@ -211,7 +209,7 @@ def test_a_rollback_is_a_new_approval_that_needs_neither_a_download_nor_a_canary
 
 
 def test_a_version_in_the_store_that_was_never_approved_is_approved_after_the_canary(world):
-    """The tested version the installer put in the store beside the approved one."""
+    """A version put in the store beside the approved one, as a deletion leaves it to go back to."""
     fake_claude(world.store, version="1.9.0")
     fake_claude(world.store, version=FAKE_VERSION)
     seen = canary_says(world)
@@ -273,9 +271,8 @@ def test_restore_sweeps_what_a_rollout_that_was_cut_short_left_and_prunes(world)
     assert present(world) == [FAKE_VERSION]  # the unapproved 1.1.0 is pruned
 
 
-def test_prune_keeps_the_approved_the_previous_the_tested_and_what_servers_may_run(world):
-    tested = world.versions.tested()
-    install(world, tested, "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0")
+def test_prune_keeps_the_approved_the_previous_and_what_servers_may_run(world):
+    install(world, "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0")
     approve_rows(world, "1.4.0", "1.5.0")
     world.versions.reconcile()
     running = insert_workspace(world, 1, "running", "1.3.0")
@@ -286,11 +283,11 @@ def test_prune_keeps_the_approved_the_previous_the_tested_and_what_servers_may_r
         world, {running: "running", unreadable: "unreadable", ended: "ended", nothing: "ended"}
     )
     assert present(world) == sorted(
-        [FAKE_VERSION, tested, "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"]
+        [FAKE_VERSION, "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"]
     )
     world.versions.prune()
-    # the approved 1.5.0, the previous 1.4.0 and the tested one; 1.3.0 runs; 1.2.0 cannot be read
-    assert present(world) == sorted([tested, "1.2.0", "1.3.0", "1.4.0", "1.5.0"])
+    # the approved 1.5.0 and the previous 1.4.0; 1.3.0 runs; 1.2.0 cannot be read
+    assert present(world) == sorted(["1.2.0", "1.3.0", "1.4.0", "1.5.0"])
     assert link(world) == "versions/1.5.0"
 
 
@@ -312,17 +309,13 @@ def test_a_version_a_workspace_record_pins_is_not_deleted_until_the_record_is_cl
 # --- the report -------------------------------------------------------------------------------
 
 
-def test_the_report_names_the_approved_the_previous_the_tested_the_installed_and_drift(world):
+def test_the_report_names_the_approved_the_previous_the_installed_and_drift(world):
     install(world, "1.1.0")
     approve_rows(world, "1.1.0")
     running = insert_workspace(world, 1, "mine", FAKE_VERSION)
     statuses(world, {running: "running"})
     report = world.versions.report()
     assert (report["approved"], report["previous"]) == ("1.1.0", FAKE_VERSION)
-    tested = (
-        (Path(cv.__file__).resolve().parents[2] / "helpers" / "claude-version").read_text().strip()
-    )
-    assert report["tested"] == tested
     by_version = {entry["version"]: entry for entry in report["installed"]}
     assert set(by_version) == {FAKE_VERSION, "1.1.0"}
     assert by_version["1.1.0"]["approved"] is True

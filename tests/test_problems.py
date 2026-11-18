@@ -230,6 +230,7 @@ def test_library_text_is_recognised():
         *problems.MESSAGES.values(),
         *problems.CLONE_MESSAGES.values(),
         *problems.CLAUDE_INSTALL_MESSAGES.values(),
+        *problems.CHECKS_FAILED_MESSAGES.values(),
         *problems.DEVCONTAINER_MESSAGES.values(),
         *problems.REBUILD_MESSAGES.values(),
         *problems.POWER_MESSAGES.values(),
