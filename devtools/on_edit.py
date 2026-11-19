@@ -9,10 +9,17 @@ The pairing is a convention, not a table, so nothing has to be kept in step:
 - ``frontend/src/<name>.ts`` or ``.tsx`` is tested by ``<name>.test.ts(x)`` beside
   it, run with Vitest.
 
+A Python test runs with the selection ``make test`` gives pytest, read from the
+checkout's ``Makefile`` as the pre-test hook reads it, so a test ``make test``
+leaves out is not run at an edit; a checkout whose Makefile gives none runs the
+whole paired test.
+
 A Python file outside ``tests/`` with no paired test is reported rather than
 skipped; a frontend file without one is not, because components are covered
 through the screens that use them. Silent on success. On failure the message
 reaches the operator through ``systemMessage`` and the agent through
+``additionalContext``. A file the selection leaves with no test to run, every
+one of its tests deselected, is not a failure: the agent alone is told, through
 ``additionalContext``.
 """
 
@@ -21,14 +28,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tomllib
+from itertools import pairwise
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS_GUARD_TEST = Path("tests") / "test_docs_guard.py"
 OUTPUT_TAIL_LINES = 60
+MAKEFILE = "Makefile"
+HOST_TARGET = "test"  # the target of ``make test``
+# pytest's exit status when it ran no test: none collected, or every one deselected, which
+# its summary line then says.
+NO_TESTS_RAN = 5
+DESELECTED = re.compile(r"\b[0-9]+ deselected\b")
 
 
 FRONTEND = Path("frontend")
@@ -68,6 +84,34 @@ def _report(summary: str, detail: str) -> dict:
         "systemMessage": summary,
         "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": detail},
     }
+
+
+def _tell_agent(detail: str) -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": detail}}
+
+
+def host_selection(root: Path) -> str | None:
+    """The selection ``make test`` gives pytest, the last ``-m`` of the ``test`` rule's
+    pytest call, as pytest takes it; the checkout's Makefile is read as the pre-test hook
+    reads it, as text and never run. None without a Makefile, a ``test`` rule or a ``-m``
+    there, and where the hook's Python cannot import that reader: the whole pair runs."""
+    try:
+        from devtools.pre_test_commit import read_makefile
+
+        rules, _ = read_makefile(root / MAKEFILE)
+    except ImportError, OSError:
+        return None
+    for line in rules.get(HOST_TARGET, ([], []))[1]:
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            continue
+        if "pytest" in words:
+            options = words[words.index("pytest") + 1 :]
+            values = [value for option, value in pairwise(options) if option == "-m"]
+            if values:
+                return values[-1]
+    return None
 
 
 def repository_root(path: Path, fallback: Path) -> Path:
@@ -116,13 +160,21 @@ def handle(payload: dict, root: Path) -> dict | None:
         argv = ["npx", "vitest", "run", test.relative_to(root / FRONTEND).as_posix()]
         proc = subprocess.run(argv, cwd=root / FRONTEND, capture_output=True, text=True)
     else:
+        selection = host_selection(root)
+        selected = [] if selection is None else ["-m", selection]
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_rel],
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *selected, test_rel],
             cwd=root,
             env={**os.environ, "PYTHONPATH": import_path(root)},
             capture_output=True,
             text=True,
         )
+        summary = proc.stdout.strip().rpartition("\n")[2]
+        if selected and proc.returncode == NO_TESTS_RAN and DESELECTED.search(summary):
+            return _tell_agent(
+                f"{test_rel}: no test of it runs: a test `make test` leaves out is not run"
+                " at an edit. Have the module run directly when the change needs it."
+            )
     if proc.returncode == 0:
         return None
     tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-OUTPUT_TAIL_LINES:])

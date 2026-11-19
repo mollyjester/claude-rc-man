@@ -24,7 +24,10 @@ the on-demand run. When each runs, and how a run is read, are working rules:
 [the full check runs at the edges of a change](working-rules.md#tests-and-guards),
 and the on-demand run happens once, at the end, when required. The pre-test
 hook counts every one of these targets that runs tests as a test run (see
-[Pre-test hook](#pre-test-hook)).
+[Pre-test hook](#pre-test-hook)). In a Claude Code session a test run is
+given to the `test-runner` agent, whose definition says how it starts a run,
+waits for it and reports it:
+[.claude/agents/test-runner.md](../.claude/agents/test-runner.md).
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The Python tests are split by where they run, not by how long they take:
@@ -932,7 +935,7 @@ snapshot is removed when the session ends.
 | `frontend/` | The React application, its component tests and the screenshot capture — see [frontend.md](frontend.md) |
 | `tests/container/` | The container suites, what they run in their containers, and the system image they run rcman's installer in (`tests/container/system/`) |
 | `install.sh`, `installer/` | The installer — see [installer.md](installer.md) |
-| `devtools/` | Development tooling, run by hand, by the edit-time hook or by the tests, which never imports the tests; each module's docstring says what it is |
+| `devtools/` | Development tooling, run by hand, as a hook of a Claude Code session or by the tests, which never imports the tests; each module's docstring says what it is |
 
 ## What a killed run leaves
 
@@ -1248,12 +1251,28 @@ checkout, and a worktree under `.claude/worktrees/` lies inside it. A Python
 test runs with that checkout's packages ahead of any the hook's Python has
 installed.
 
+What the hook has pytest run, the docs guard included, runs with the
+selection `make test` gives pytest: the `-m` written in the `test` rule's own
+recipe in that checkout's `Makefile`, which the
+[pre-test hook](#pre-test-hook)'s reader reads for it, no prerequisite
+followed. So a test `make test` leaves out is not run at an edit, and its
+module is run directly when a change needs it ([Running](#running)); when
+every test of a file is left out, the agent alone is told so, and nothing is
+reported as failed. Where no such selection can be read, the whole paired
+test runs.
+
 A Python module outside `tests/` with no paired test is reported; a
 package's `__init__.py`, and a module in `tests/` that is not a test module,
 run nothing. The hook is silent when the
 test passes; on failure it reports to the operator and to the agent. Its own
 tests, including one that checks the wiring in `.claude/settings.json`, are in
-`tests/test_on_edit.py`.
+`tests/test_on_edit.py`. The same module holds that `.claude/settings.json`
+asks Claude Code for the one-hour prompt cache, with
+`ENABLE_PROMPT_CACHING_1H` in its `env`.
+
+What it does not see: an edit made through a shell command, as `sed -i`, a
+heredoc or a script that writes makes; and a file moved, removed or
+generated. After such a change the paired test is run by hand.
 
 ## Pre-test hook
 

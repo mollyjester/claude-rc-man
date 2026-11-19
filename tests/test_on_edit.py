@@ -67,6 +67,22 @@ def test_missing_pair_is_reported_not_skipped(tmp_path):
     assert "tests/test_lonely.py" in out["systemMessage"]
 
 
+def test_a_file_whose_tests_are_all_on_demand_runs_none_and_tells_the_agent(tmp_path):
+    """The hook gives pytest the selection ``make test`` gives it, read from the Makefile: the
+    marker is this test's own, and nothing but the planted Makefile names it."""
+    rule = 'test:\n\tuv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow_tier"\n'
+    on_demand = "import pytest\n\n\n@pytest.mark.slow_tier\n" + FAILING
+    root = make_root(tmp_path, {"Makefile": rule, "tests/test_thing.py": on_demand})
+
+    out = on_edit.handle(payload(root, "tests/test_thing.py"), root)
+
+    assert out is not None
+    assert "systemMessage" not in out, out["systemMessage"]
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert "tests/test_thing.py" in context and "no test of it runs" in context
+    assert "planted failure" not in context
+
+
 # --- worktrees ------------------------------------------------------------------
 
 
@@ -142,6 +158,11 @@ def test_settings_route_file_edits_to_the_hook():
     assert wired, "no PostToolUse hook runs devtools/on_edit.py"
     matchers = {tool for matcher, _ in wired for tool in matcher.split("|")}
     assert {"Edit", "Write"} <= matchers
+
+
+def test_settings_ask_for_the_one_hour_cache():
+    settings = json.loads((REPO / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["env"]["ENABLE_PROMPT_CACHING_1H"] == "1"
 
 
 # --- frontend ---------------------------------------------------------------------
