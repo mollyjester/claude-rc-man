@@ -36,36 +36,49 @@ and keep iterating with them until you are satisfied with the outcome.
   what is lost or deferred, what is left behind, and blockers.
 - Subagent output is a hint, not verified truth: confirm what matters
   yourself, totals above all, before acting on it or reporting it.
-- Every test run goes to a runner on a small model (`model: haiku`), never to
-  you or to an implementation, review or documentation subagent. You dispatch
-  the `make check` baseline, every gating `make check` (an implementer's at
-  handover and after each round of review findings included), and the
-  on-demand run. Implementation, review and documentation subagents have
-  only the targeted tests of what they change run, each on a runner of their
-  own, briefed as below, and read its report. Every brief says so, and every
-  brief that would otherwise end in a gating or on-demand run says so too and
-  names the runner instead, and you dispatch the runner when the subagent
-  hands back.
-- A runner's brief names the commands, the log files and the lines to report:
-  each part's totals, collected count, each failing test with its first error
-  line, and each exit code. A foreground command is cut off at ten minutes,
-  and a background command is stopped when the runner hands back, however far
-  the run has got. So
-  a run that can last longer than ten minutes is started in the background
-  with a timeout long enough for it, its exit code appended to its log. The
-  runner waits for the background command's own completion notice, and hands
-  back only after it arrives. It gets that notice only if it was itself
-  launched in the background (the Agent tool's `run_in_background`), by you
-  or by the subagent that dispatches it: a runner launched in the foreground
-  ends its turn without the notice, and its run is stopped with it. The same
-  holds one level up: an implementation, review or documentation subagent
-  that dispatches its own runner is itself launched in the background, or it
-  hands back before that runner reports. One runner
-  runs at a time in the working tree, since the pre-test hook commits and two
-  at once collide on git's index. It never waits with a loop that matches
-  command lines (`pgrep -f`) or a log line, which can match itself or never
-  come, and never end. Check
-  its headline numbers against the log with one grep.
+- Subagents run one at a time, and a subagent spawns nothing but its test
+  runner: an implementation, review or documentation subagent does its work
+  in its own context. Every brief says so.
+- Repository files are edited with the Edit and Write tools, never through a
+  shell command (`sed -i`, a heredoc, a script that writes): the edit-time
+  hook runs a file's paired test only after those tools
+  ([tests.md](../../../project-knowledge/tests.md#edit-time-hook)), and an
+  edit made through the shell is checked by nothing until the next test
+  run. A change no tool can make, a move or a generated file, is followed
+  by its paired test on the runner. Every implementation and documentation
+  brief says so.
+- Every test run goes to the `test-runner` agent
+  ([.claude/agents/test-runner.md](../../agents/test-runner.md), on a small
+  model), dispatched by its type, never to you or to an implementation,
+  review or documentation subagent: it is cheap, and it keeps a run's output
+  and the wait for it out of a large context. You dispatch the `make check`
+  baseline, every gating `make check`, and the on-demand run.
+  Implementation, review and documentation subagents dispatch only the
+  targeted tests of what they change, and read the report. Every brief says
+  so, and every brief that would otherwise end in a gating or on-demand run
+  says so too and names the runner instead, and you dispatch it when the
+  subagent hands back.
+- A runner's brief is the folder, the command and the log file, one of its
+  own for each run, in the scratch directory; how a run is started, waited
+  for and reported is the definition's, and no brief repeats it. The command
+  carries its own `timeout -k`, with a limit beyond the hang guard of the
+  tests it runs
+  ([tests.md](../../../project-knowledge/tests.md#the-hang-guard)), so that
+  the guard ends and names a hung test first; `make` is given `-k`, so that
+  a part that fails does not hide the parts after it. One runner runs at a
+  time in the working tree, since the pre-test hook commits and two at once
+  collide on git's index. Check a report's headline numbers against the log
+  with one grep.
+- A run has ended when its marker, `<log>.exit`, exists; the runner hands
+  back only then, or to say at once that the run was killed or outlived its
+  limit. Whoever dispatched it, you or a subagent, reads nothing from the log
+  before the report. When a report has not come by the command's limit and its grace,
+  or comes without the marker, the run is treated as killed: one look for
+  the marker file settles it, that runner is stopped, and a fresh one is
+  dispatched. Nobody, you included, waits for a run with a loop over a log
+  line or a command line (`until grep`, `pgrep -f`), which can match itself
+  or never come, and never end. Every brief for a subagent that dispatches
+  runners repeats this bullet.
 
 ## 1. Plan
 
@@ -103,7 +116,9 @@ Stop before dispatching any implementation. Report to the operator a short
 version of the plan in plain words: what will change, which tests come
 first, which documentation moves, what coverage or behaviour is given up, and
 any open question. Wait for the operator's go-ahead; change the plan if they
-ask.
+ask. Ask with the plan whether the pull request may be opened once the final
+gating check is green; a go-ahead that says so is the operator's asking of
+step 6.
 
 ## 3. Record a plain-text task as an issue
 
@@ -135,10 +150,15 @@ as a comment on it.
   back, and a re-review goes to the reviewer that found the issues. After a
   review and its re-review, findings marked minor are fixed with the next
   change or left with the reason, without another round; anything blocking
-  or should-fix is still reviewed until it is clean.
+  or should-fix is still reviewed until it is clean. A round of review fixes
+  gets no gating run of its own: the implementer has their targeted tests
+  run, and the next gating `make check` on the tree covers them, the next
+  implementation task's at its handover or the one that follows the
+  documentation review; where the on-demand run is required, a gating
+  `make check` is dispatched after the fixes and before it, and covers them.
 - The test runs the working rules require — the `make check` baseline before,
   targeted while working, the gating `make check` at handover, every one of
-  them on a small-model runner of "Subagents" above — are read by
+  them on the `test-runner` agent of "Subagents" above — are read by
   their totals, collected count and failing names, never by exit code alone.
   Output goes to a file and is read by grep; the summary lines are read
   whether the run is green or red. Stopping at the first failure (`-x`,
@@ -147,7 +167,7 @@ as a comment on it.
 - The on-demand run (`make test-container`) happens once, at the end of the
   implementation, only when the working rules require it for this change, and
   has no baseline. A subagent has the modules it changes run directly, on its
-  small-model runner, not the whole on-demand run.
+  runner, not the whole on-demand run.
   If it is red, fix everything red together and repeat the run only after
   the operator confirms.
 
@@ -158,9 +178,12 @@ even where implementation passes already edited it: it searches for every
 page the change affects and for terms the change made stale, makes the
 documentation match the code, and checks it against the documentation rules
 in the working rules. A mismatch where the code looks wrong is reported to
-you, not fixed by it. Its edits are followed by the gating `make check` again,
-on the runner;
-an on-demand run already green is not repeated for documentation edits.
+you, not fixed by it. Its edits, and the review fixes since the last gating
+run, are followed by one gating `make check`, on the runner. If it is red,
+the failing tests say whose edit it was: the fix goes to the subagent that
+made the edit, and the gating `make check` runs again in full after every
+fix to a red run, as the working rules require. An on-demand run already
+green is not repeated for documentation edits.
 
 ## 6. Clean up and hand over
 
@@ -170,11 +193,14 @@ an on-demand run already green is not repeated for documentation edits.
   what is left afterwards is listed to verify it.
 - Beyond the work-in-progress commits and pushes the pre-test hook makes
   before tests run, commit, push and open the pull request only when the
-  operator asks. Before it is opened, and again before it is merged, the
-  work-in-progress commits are rewritten into clean commits and force-pushed
-  with lease to the feature branch at once, before any further test run, as
-  the pull-request section of CONTRIBUTING.md says; the description follows
-  that section too.
+  operator asks, or has asked with the go-ahead of step 2: then it is opened
+  once the final gating `make check` is green, and the on-demand run where
+  the working rules require it, and not while anything is red, skipped or
+  left for the operator to decide. Merging is the operator's. Before it is
+  opened, and again before it is merged, the work-in-progress commits are
+  rewritten into clean commits and force-pushed with lease to the feature
+  branch at once, before any further test run, as the pull-request section
+  of CONTRIBUTING.md says; the description follows that section too.
 - Report faithfully: what was done, which tests were written first and which
   were not, what documentation changed, the `make check` totals, whether the
   on-demand run was required and, if so, its totals (or why it was

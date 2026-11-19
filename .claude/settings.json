@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ENABLE_PROMPT_CACHING_1H": "1"
+  },
   "hooks": {
     "PreToolUse": [
       {
