@@ -40,9 +40,6 @@
       "exit_code": null
     },
     "login_succeeded": {
-      "exit_code": null
-    },
-    "login_succeeded_done": {
       "exit_code": 0
     },
     "rc_logged_out": {

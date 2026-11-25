@@ -33,7 +33,7 @@ function api(claude: Reply, extra: Routes = {}) {
 test("connecting: link, then code, then connected", async () => {
   let connected = false;
   const fake = api(() => (connected ? CONNECTED : NOT_CONNECTED), {
-    "POST /api/claude/login": { url: "https://claude.com/cai/oauth/authorize?x=1" },
+    "POST /api/claude/login": { url: "https://claude.ai/oauth/authorize?x&login_hint=a%40b.c" },
     "POST /api/claude/code": () => {
       connected = true;
       return CONNECTED;
@@ -44,7 +44,7 @@ test("connecting: link, then code, then connected", async () => {
   await userEvent.click(screen.getByRole("button", { name: m.connect }));
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
   const link = await screen.findByRole("link", { name: m.connectLink });
-  expect(link).toHaveAttribute("href", "https://claude.com/cai/oauth/authorize?x=1");
+  expect(link).toHaveAttribute("href", "https://claude.ai/oauth/authorize?x&login_hint=a%40b.c");
   expect(link).toHaveAttribute("target", "_blank");
   expect(fake.made("POST", "/api/claude/login")[0].body).toEqual({});
   await userEvent.type(screen.getByLabelText(m.connectCode), "CODE#STATE");

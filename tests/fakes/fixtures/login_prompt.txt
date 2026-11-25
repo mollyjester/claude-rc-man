@@ -1,3 +1,4 @@
 Opening browser to sign in…
-If the browser didn't open, visit: {login_url}
+If the browser didn't open, visit:
+{login_url}
 Paste code here if prompted >

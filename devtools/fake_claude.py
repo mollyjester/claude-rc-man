@@ -104,9 +104,9 @@ MANIFEST = "manifest.json"
 FAKE_CLAUDE = REPO / "tests" / "fakes" / "claude"
 # The version the fake reports unless FAKE_CLAUDE_VERSION names another, and the one the
 # fake store holds unless a test asks for another (devtools/fake_store.py).
-FAKE_VERSION = "2.1.322"
+FAKE_VERSION = "2.1.332"
 
-LOGIN_URL_PREFIX = "https://claude.com/cai/oauth/authorize?"
+LOGIN_URL_PREFIX = "https://claude.ai/oauth/authorize?"
 ENVIRONMENT_URL_PREFIX = "https://claude.ai/code?environment="
 
 PLACEHOLDERS = (
@@ -281,6 +281,9 @@ def write_state(
         (config_dir / CREDENTIALS).write_text("", encoding="utf-8")
 
 
+FAKE_ACCOUNT_UUID = "00000000-0000-0000-0000-000000000001"
+
+
 def credentials() -> dict:
     """A sign-in's credentials, with the keys a real sign-in writes."""
     now = int(time.time() * 1000)
@@ -293,6 +296,9 @@ def credentials() -> dict:
             "scopes": ["user:inference", "user:profile", "user:sessions:claude_code"],
             "subscriptionType": FAKE_ACCOUNT["subscription_type"],
             "rateLimitTier": "default_claude_max_20x",
+            "subscriptionTypeSource": "fake-subscription-source",
+            "accountUuid": FAKE_ACCOUNT_UUID,
+            "organizationUuid": FAKE_ACCOUNT["org_id"],
         }
     }
 
@@ -300,7 +306,7 @@ def credentials() -> dict:
 def oauth_account(email: str) -> dict:
     """The account a sign-in names in ``.claude.json``, with the keys a real one writes."""
     return {
-        "accountUuid": "00000000-0000-0000-0000-000000000001",
+        "accountUuid": FAKE_ACCOUNT_UUID,
         "emailAddress": email,
         "organizationUuid": FAKE_ACCOUNT["org_id"],
         "organizationName": FAKE_ACCOUNT["org_name"],
@@ -517,8 +523,9 @@ class Fake:
             self.wait_for_interrupt()
             return 1
         email = _option(self.args, "--email") or ""
+        # As the real one shapes it: an opaque handle, then the address, %40-encoded.
         self.values["login_url"] = (
-            LOGIN_URL_PREFIX + "fake=1&login_hint=" + email.replace("@", "%40")
+            LOGIN_URL_PREFIX + "fake-sign-in-handle&login_hint=" + email.replace("@", "%40")
         )
         self.show("login_prompt", prompt=True)
         code = self.read_line().strip()
@@ -526,9 +533,7 @@ class Fake:
             return self.show("login_failed")
         Path(self.state_dir).mkdir(parents=True, exist_ok=True)
         sign_in(Path(self.state_dir), email or FAKE_ACCOUNT["email"])
-        self.show("login_succeeded", prompt=True)
-        self.read_line()  # Claude Code waits for Enter
-        return self.show("login_succeeded_done")
+        return self.show("login_succeeded")
 
     def config(self) -> dict:
         try:

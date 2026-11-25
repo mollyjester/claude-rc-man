@@ -68,7 +68,7 @@ def test_a_failing_check_reports_what_was_run_and_what_came_back(tmp_path):
     assert "something else entirely" in said(failures["version"])
 
 
-SIGN_IN_URL = "https://claude.com/cai/oauth/authorize?code=true&state=SECRETSTATE"
+SIGN_IN_URL = "https://claude.ai/oauth/authorize?SECRETSTATE-handle&login_hint=u%40example.com"
 TOKEN = "sk-ant-oat01-SECRETTOKEN_x-y"
 
 
