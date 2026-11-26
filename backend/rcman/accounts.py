@@ -256,8 +256,7 @@ class Accounts:
         )
         if found["state"] != "succeeded":
             raise Problem("login_failed")
-        if found["exit_code"] is None:
-            tmux.type("")  # Claude Code waits for Enter after signing in
+        if found["exit_code"] is None:  # Claude Code exits on its own once signed in
             self._wait(sign_in, lambda s: s["exit_code"] is not None)
         layout = tmux.layout
         config = sign_in.channel.run([*layout.tool("cat"), f"{layout.config}/.claude.json"])

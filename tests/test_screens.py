@@ -42,7 +42,6 @@ LOGIN_STATES = {
     "login_prompt": "awaiting_code",
     "login_failed": "failed",
     "login_succeeded": "succeeded",
-    "login_succeeded_done": "succeeded",
 }
 NOT_READ_AS_SCREENS = {
     "version": "read by `claude --version` output, not a screen",
@@ -55,7 +54,7 @@ VALUES = {
     **fake.ANY_VALUES,
     "cwd": "/home/u/projects/x",
     "folder": "x",
-    "login_url": fake.LOGIN_URL_PREFIX + "code=true&state=abc",
+    "login_url": fake.LOGIN_URL_PREFIX + "abc-handle&login_hint=u%40example.com",
     "environment_url": fake.ENVIRONMENT_URL_PREFIX + "env_abc",
     "session_name": "pfx-quiet-otter",
     "time": "01:02:03",
@@ -232,7 +231,7 @@ def wrongly_reconnected(states: dict[str, str]) -> list[str]:
 
 def test_a_reconnect_appended_to_any_other_live_screen_is_not_reconnected():
     states = reconnect_appended(live_screens())
-    assert len(states) == sum(1 for _, code in live_screens().values() if code is None) > 18
+    assert len(states) == sum(1 for _, code in live_screens().values() if code is None) >= 18
     for name in RECONNECTED_SCENARIOS:  # positive control: the allowed ones are found
         assert states[f"observed {name}"] == "reconnected"
     assert wrongly_reconnected(states) == []

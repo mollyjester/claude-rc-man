@@ -598,9 +598,12 @@ the session `SESSION`, in the window size `WIDTH` by `HEIGHT`
 (`helpers/screens.py`), started through `env -i` with exactly `child_env` (`runtime.py`'s):
 the workspace's `CLAUDE_CONFIG_DIR` and `HOME`, `GH_CONFIG_DIR` naming the person's git
 folder (`gh_config_dir`), so that gh reads the token rcman writes there on every command and
-a change of it reaches a server that runs, and `DISABLE_AUTOUPDATER=1`,
+a change of it reaches a server that runs, `DISABLE_AUTOUPDATER=1`,
 since Claude would otherwise install a version of its own into the workspace,
-the read-only store notwithstanding. A server keeps the environment it started with: a
+the read-only store notwithstanding, and `BROWSER=/bin/false`, so that Claude opens no
+browser: a sign-in (`claude auth login`, started with the same environment, see
+[backend.md](backend.md#claude-accounts)) goes by the link it prints alone, which ends on a
+page showing the code. A server keeps the environment it started with: a
 change to `child_env` reaches it when it is next started or resumed, with no restart of its
 container, and a terminal at its next start. rcman sets no `GH_TOKEN` or `GITHUB_TOKEN`; one a plan sets
 comes first, and gh then takes it over `hosts.yml`. Its options are `server_command`'s, which

@@ -155,11 +155,9 @@ def test_the_accepted_code_signs_in_with_its_screens(pane, tmp_path):
     run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
     pane.wait_for(r"Paste code here", timeout=HANG_GUARD)
     pane.type_line(fake.ACCEPTED_CODE)
-    pane.wait_for(r"Login successful", timeout=HANG_GUARD)
-    pane.type_line("")
-    assert (
-        pane.wait_exit(timeout=HANG_GUARD) == fake.load_fixtures()["login_succeeded_done"].exit_code
-    )
+    # Claude Code exits on its own once signed in: nothing is typed after the code.
+    assert pane.wait_exit(timeout=HANG_GUARD) == fake.load_fixtures()["login_succeeded"].exit_code
+    assert "Login successful" in pane.text()
     credentials = cfg / fake.CREDENTIALS
     assert json.loads(credentials.read_text())["claudeAiOauth"]["refreshToken"]
     assert (credentials.stat().st_mode & 0o777) == 0o600
@@ -181,8 +179,9 @@ def test_logout_removes_the_credentials_file_as_the_real_one_does(pane, tmp_path
 # The keys a real sign-in writes, as seen with a real account (real-claude-checklist.md,
 # The shared sign-in).
 REAL_CREDENTIAL_KEYS = {
-    "accessToken", "expiresAt", "rateLimitTier", "refreshToken", "refreshTokenExpiresAt",
-    "scopes", "subscriptionType",
+    "accessToken", "accountUuid", "expiresAt", "organizationUuid", "rateLimitTier",
+    "refreshToken", "refreshTokenExpiresAt", "scopes", "subscriptionType",
+    "subscriptionTypeSource",
 }  # fmt: skip
 REAL_OAUTH_ACCOUNT_KEYS = {
     "accountCreatedAt", "accountUuid", "billingType", "ccOnboardingFlags",

@@ -57,9 +57,9 @@ STARTUP_LINES = (
 LOGGED_OUT = "You must be logged in to use Remote Control"
 TRUST_DECLINED = "Remote Control did not start:"
 STOPPED = "Environment preserved."
-LOGIN_URL = re.compile(r"https://claude\.com/cai/oauth/authorize\?\S+")
+LOGIN_URL = re.compile(r"https://claude\.ai/oauth/authorize\?\S+")
 LOGIN_PROMPT = "Paste code here if prompted"
-LOGIN_FAILED = "Login failed"
+LOGIN_FAILED = "Couldn't log in"
 LOGIN_SUCCEEDED = "Login successful"
 
 

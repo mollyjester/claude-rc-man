@@ -14,7 +14,7 @@ from devtools import fake_claude as fake
 from tests.conftest import ALICE, BOB, as_user, changing, made_workspace
 from tests.hang_guard import HANG_GUARD
 
-URL_START = "https://claude.com/cai/oauth/authorize?"
+URL_START = fake.LOGIN_URL_PREFIX
 
 
 @pytest.fixture
